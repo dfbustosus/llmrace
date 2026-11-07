@@ -80,3 +80,22 @@ jobs:
             *.tar.gz.sha256
             *.zip
             *.zip.sha256
+
+  publish-crates-io:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify version is not already published
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          if curl -sf -A "llmrace-ci" "https://crates.io/api/v1/crates/llmrace/$version" > /dev/null; then
+            echo "::error::llmrace v$version is already on crates.io — bump Cargo.toml version before tagging"
+            exit 1
+          fi
+          echo "ready to publish v$version"
+      - name: Publish
+        run: cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
