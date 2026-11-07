@@ -1,0 +1,28 @@
+[package]
+name = "llmrace"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Race LLM providers head-to-head in your terminal: latency, tokens/s, TTFB and cost — live."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dfbustosus/llmrace"
+homepage = "https://github.com/dfbustosus/llmrace"
+readme = "README.md"
+keywords = ["llm", "ai", "benchmark", "cli", "openai"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+lto = true
+strip = true
