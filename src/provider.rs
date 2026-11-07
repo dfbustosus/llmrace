@@ -94,6 +94,61 @@ impl ProviderSpec {
         )
     }
 
+    /// DeepSeek official API.
+    pub fn deepseek() -> Self {
+        spec(
+            "deepseek",
+            "https://api.deepseek.com/v1/chat/completions",
+            Some("DEEPSEEK_API_KEY"),
+            "deepseek-chat",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Mistral official API.
+    pub fn mistral() -> Self {
+        spec(
+            "mistral",
+            "https://api.mistral.ai/v1/chat/completions",
+            Some("MISTRAL_API_KEY"),
+            "mistral-small-latest",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Together inference cloud.
+    pub fn together() -> Self {
+        spec(
+            "together",
+            "https://api.together.xyz/v1/chat/completions",
+            Some("TOGETHER_API_KEY"),
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Fireworks inference cloud.
+    pub fn fireworks() -> Self {
+        spec(
+            "fireworks",
+            "https://api.fireworks.ai/inference/v1/chat/completions",
+            Some("FIREWORKS_API_KEY"),
+            "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Cerebras wafer-scale inference.
+    pub fn cerebras() -> Self {
+        spec(
+            "cerebras",
+            "https://api.cerebras.ai/v1/chat/completions",
+            Some("CEREBRAS_API_KEY"),
+            "llama-3.3-70b",
+            Wire::OpenAiCompat,
+        )
+    }
+
     /// Local Ollama daemon.
     pub fn ollama() -> Self {
         spec(
@@ -123,6 +178,11 @@ impl ProviderSpec {
             ProviderSpec::anthropic(),
             ProviderSpec::gemini(),
             ProviderSpec::groq(),
+            ProviderSpec::deepseek(),
+            ProviderSpec::mistral(),
+            ProviderSpec::together(),
+            ProviderSpec::fireworks(),
+            ProviderSpec::cerebras(),
             ProviderSpec::openrouter(),
             ProviderSpec::ollama(),
             ProviderSpec::mock(),

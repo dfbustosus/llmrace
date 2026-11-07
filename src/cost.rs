@@ -26,6 +26,21 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
         ("groq/llama-3.3-70b-versatile", 0.59, 0.79),
         ("groq/llama-3.1-8b-instant", 0.05, 0.08),
         ("groq/mixtral-8x7b-32768", 0.24, 0.24),
+        ("deepseek/deepseek-chat", 0.27, 1.10),
+        ("deepseek/deepseek-reasoner", 0.55, 2.19),
+        ("mistral/mistral-small-latest", 0.20, 0.60),
+        ("mistral/mistral-large-latest", 2.00, 6.00),
+        (
+            "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            0.88,
+            0.88,
+        ),
+        (
+            "fireworks/accounts/fireworks/models/llama-v3p3-70b-instruct",
+            0.90,
+            0.90,
+        ),
+        ("cerebras/llama-3.3-70b", 0.85, 1.20),
         ("openrouter/openai/gpt-4o-mini", 0.15, 0.60),
     ];
     table

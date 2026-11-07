@@ -370,3 +370,46 @@ fn gemini_registry_entry() {
         Some((0.10, 0.40))
     );
 }
+
+#[test]
+fn openai_compat_provider_batch_specs() {
+    let cases = [
+        ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat"),
+        ("mistral", "MISTRAL_API_KEY", "mistral-small-latest"),
+        (
+            "together",
+            "TOGETHER_API_KEY",
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        ),
+        (
+            "fireworks",
+            "FIREWORKS_API_KEY",
+            "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        ),
+        ("cerebras", "CEREBRAS_API_KEY", "llama-3.3-70b"),
+    ];
+    for (id, key_env, model) in cases {
+        let spec = llmrace::provider::ProviderSpec::find(id)
+            .unwrap_or_else(|| panic!("provider {id} missing from registry"));
+        assert_eq!(spec.wire, Wire::OpenAiCompat, "{id}");
+        assert_eq!(spec.api_key_env.as_deref(), Some(key_env), "{id}");
+        assert_eq!(*spec.default_model, *model, "{id}");
+        assert!(spec.endpoint.starts_with("https://"), "{id}");
+    }
+}
+
+#[test]
+fn openai_compat_provider_batch_pricing() {
+    assert_eq!(
+        llmrace::cost::pricing("deepseek", "deepseek-chat"),
+        Some((0.27, 1.10))
+    );
+    assert_eq!(
+        llmrace::cost::pricing("mistral", "mistral-small-latest"),
+        Some((0.20, 0.60))
+    );
+    assert_eq!(
+        llmrace::cost::pricing("cerebras", "llama-3.3-70b"),
+        Some((0.85, 1.20))
+    );
+}
