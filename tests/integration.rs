@@ -326,3 +326,47 @@ fn regression_reports_new_and_skipped_providers() {
     assert!(table.contains("new provider"));
     assert!(table.contains("not benchmarked"));
 }
+
+#[test]
+fn gemini_wire_decodes_deltas_and_usage() {
+    let delta = decode_payload(
+        r#"{"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]}"#,
+        Wire::Gemini,
+    )
+    .unwrap();
+    assert_eq!(delta.token.as_deref(), Some("Hel"));
+
+    let usage = decode_payload(
+        r#"{"candidates":[],"usageMetadata":{"candidatesTokenCount":42}}"#,
+        Wire::Gemini,
+    )
+    .unwrap();
+    assert_eq!(usage.completion_tokens, Some(42));
+
+    assert!(
+        decode_payload(
+            r#"{"candidates":[{"content":{"parts":[{"text":""}]}}]}"#,
+            Wire::Gemini
+        )
+        .is_none()
+            || decode_payload(
+                r#"{"candidates":[{"content":{"parts":[{"text":""}]}}]}"#,
+                Wire::Gemini
+            )
+            .map(|e| e.token.is_none())
+            .unwrap_or(true)
+    );
+}
+
+#[test]
+fn gemini_registry_entry() {
+    let spec = llmrace::provider::ProviderSpec::find("gemini").unwrap();
+    assert_eq!(spec.wire, Wire::Gemini);
+    assert_eq!(*spec.default_model, *"gemini-2.0-flash");
+    assert_eq!(spec.api_key_env.as_deref(), Some("GEMINI_API_KEY"));
+    assert!(spec.endpoint.contains("{model}"));
+    assert_eq!(
+        llmrace::cost::pricing("gemini", "gemini-2.0-flash"),
+        Some((0.10, 0.40))
+    );
+}
