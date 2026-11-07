@@ -76,6 +76,14 @@ struct Cli {
     #[arg(long)]
     csv: bool,
 
+    /// Compare results against a baseline JSON report (CI quality gate).
+    #[arg(long)]
+    baseline: Option<String>,
+
+    /// Maximum tolerated regression in percent when --baseline is set.
+    #[arg(long, default_value_t = 15.0)]
+    max_regression: f64,
+
     /// Output report path (markdown).
     #[arg(short, long, default_value = "llmrace-report.md")]
     out: String,
@@ -230,6 +238,18 @@ async fn main() -> Result<()> {
         let path = report_sibling(&cli.out, "csv");
         std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
         println!("📈 csv report saved to {path}");
+    }
+
+    if let Some(baseline_path) = &cli.baseline {
+        let raw = std::fs::read_to_string(baseline_path)
+            .with_context(|| format!("reading baseline {baseline_path}"))?;
+        let baseline = llmrace::regression::BaselineReport::from_json_str(&raw)
+            .with_context(|| format!("parsing baseline {baseline_path}"))?;
+        let regression = llmrace::regression::evaluate(&summaries, &baseline, cli.max_regression);
+        println!("\n{}", regression.terminal_table(cli.max_regression));
+        if regression.any_regressed() {
+            std::process::exit(1);
+        }
     }
 
     Ok(())

@@ -10,6 +10,7 @@
 //! - [`bench`]: the benchmark engine and lane summaries
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
+//! - [`regression`]: baseline comparison for CI quality gates
 //! - [`tui`]: the live terminal race view
 //!
 //! ## Example
@@ -48,6 +49,7 @@ pub mod bench;
 pub mod cost;
 pub mod error;
 pub mod provider;
+pub mod regression;
 pub mod report;
 pub mod sse;
 pub mod stats;
