@@ -101,7 +101,7 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let (cli, profile) = apply_profile(cli)?;
+    let (cli, _profile) = apply_profile(cli)?;
 
     if cli.list {
         let header = format!("{:<14} {:<30} {}\n", "PROVIDER", "DEFAULT MODEL", "NEEDS");
