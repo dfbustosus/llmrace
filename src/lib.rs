@@ -8,6 +8,7 @@
 //! - [`sse`]: incremental Server-Sent Events parsing
 //! - [`stats`]: descriptive statistics with t-based confidence intervals
 //! - [`bench`]: the benchmark engine and lane summaries
+//! - [`config`]: named profiles from `llmrace.toml`
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
 //! - [`regression`]: baseline comparison for CI quality gates
@@ -46,6 +47,7 @@
 #![deny(clippy::unwrap_used)]
 
 pub mod bench;
+pub mod config;
 pub mod cost;
 pub mod error;
 pub mod provider;

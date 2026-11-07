@@ -88,6 +88,10 @@ struct Cli {
     #[arg(short, long, default_value = "llmrace-report.md")]
     out: String,
 
+    /// Load a named profile from llmrace.toml (explicit flags win).
+    #[arg(long)]
+    profile: Option<String>,
+
     /// List built-in providers.
     #[arg(long)]
     list: bool,
@@ -96,6 +100,8 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    let (cli, profile) = apply_profile(cli)?;
 
     if cli.list {
         let header = format!("{:<14} {:<30} {}\n", "PROVIDER", "DEFAULT MODEL", "NEEDS");
@@ -258,6 +264,65 @@ async fn main() -> Result<()> {
 fn report_sibling(out: &str, ext: &str) -> String {
     let stem = out.strip_suffix(".md").unwrap_or(out.trim_end_matches('.'));
     format!("{stem}.{ext}")
+}
+
+fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)> {
+    let Some(name) = cli.profile.clone() else {
+        return Ok((cli, None));
+    };
+    let config = llmrace::config::Config::discover().with_context(|| "loading llmrace.toml")?;
+    let profile = config
+        .profile(&name)
+        .with_context(|| format!("profile '{name}'"))?
+        .clone();
+
+    if cli.providers.is_empty() && !profile.providers.is_empty() {
+        cli.providers = profile.providers.clone();
+    }
+    if cli.model.is_none() {
+        cli.model = profile.model.clone();
+    }
+    if arg_not_passed(&["-p", "--prompt"]) {
+        if let Some(prompt) = &profile.prompt {
+            cli.prompt = prompt.clone();
+        }
+    }
+    if arg_not_passed(&["-n", "--runs"]) {
+        if let Some(v) = profile.runs {
+            cli.runs = v;
+        }
+    }
+    if arg_not_passed(&["--warmup"]) {
+        if let Some(v) = profile.warmup {
+            cli.warmup = v;
+        }
+    }
+    if arg_not_passed(&["-c", "--concurrency"]) {
+        if let Some(v) = profile.concurrency {
+            cli.concurrency = v;
+        }
+    }
+    if arg_not_passed(&["--max-tokens"]) {
+        if let Some(v) = profile.max_tokens {
+            cli.max_tokens = v;
+        }
+    }
+    if arg_not_passed(&["--timeout"]) {
+        if let Some(v) = profile.timeout {
+            cli.timeout = v;
+        }
+    }
+    println!("⚙  profile '{name}' loaded");
+    Ok((cli, Some(profile)))
+}
+
+fn arg_not_passed(flags: &[&str]) -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    !args.iter().any(|a| {
+        flags
+            .iter()
+            .any(|f| a == *f || a.starts_with(&format!("{f}=")) || a.starts_with(&format!("{f} ")))
+    })
 }
 
 async fn duration_rounds(
