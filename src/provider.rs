@@ -15,6 +15,8 @@ pub enum Wire {
     OpenAiCompat,
     /// Anthropic `/v1/messages` streaming.
     Anthropic,
+    /// Google Gemini `streamGenerateContent` streaming.
+    Gemini,
     /// Built-in deterministic provider for tests and demos.
     Mock,
 }
@@ -81,6 +83,17 @@ impl ProviderSpec {
         )
     }
 
+    /// Google Gemini via `streamGenerateContent`.
+    pub fn gemini() -> Self {
+        spec(
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse",
+            Some("GEMINI_API_KEY"),
+            "gemini-2.0-flash",
+            Wire::Gemini,
+        )
+    }
+
     /// Local Ollama daemon.
     pub fn ollama() -> Self {
         spec(
@@ -108,6 +121,7 @@ impl ProviderSpec {
         vec![
             ProviderSpec::openai(),
             ProviderSpec::anthropic(),
+            ProviderSpec::gemini(),
             ProviderSpec::groq(),
             ProviderSpec::openrouter(),
             ProviderSpec::ollama(),
@@ -266,6 +280,23 @@ pub async fn stream_completion(
             let resp = check_status(spec, resp).await?;
             Ok(EventStream::Http(SseStream::new(resp, Wire::Anthropic)))
         }
+        Wire::Gemini => {
+            let key = spec.api_key()?;
+            let endpoint = spec.endpoint.replace("{model}", req.model);
+            let body = json!({
+                "contents": [{"parts": [{"text": req.prompt}]}],
+                "generationConfig": {"maxOutputTokens": req.max_tokens},
+            });
+            let resp = client
+                .post(endpoint)
+                .header("x-goog-api-key", key.as_deref().unwrap_or_default())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| Error::Stream(e.to_string()))?;
+            let resp = check_status(spec, resp).await?;
+            Ok(EventStream::Http(SseStream::new(resp, Wire::Gemini)))
+        }
     }
 }
 
@@ -389,6 +420,23 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 }),
                 _ => None,
             }
+        }
+        Wire::Gemini => {
+            let token = v
+                .pointer("/candidates/0/content/parts/0/text")
+                .and_then(|c| c.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let usage = v
+                .pointer("/usageMetadata/candidatesTokenCount")
+                .and_then(|c| c.as_u64());
+            if token.is_none() && usage.is_none() {
+                return None;
+            }
+            Some(StreamEvent {
+                token,
+                completion_tokens: usage,
+            })
         }
         Wire::Mock => None,
     }
