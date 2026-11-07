@@ -141,11 +141,13 @@ llmrace openai groq --out race.md --json --csv
 
 ## Roadmap
 
-- [ ] `--compare-branch` to alert on latency regressions in CI
-- [ ] Custom OpenAI-compatible endpoints (vLLM, Together, Fireworks, LiteLLM proxy)
-- [ ] Prompt-variant sweeps (short vs long prompts, JSON mode, tool calls)
-- [ ] Region probes via proxy
-- [ ] Homebrew + cargo-binstall distribution
+Tracked in [GitHub milestones](https://github.com/dfbustosus/llmrace/milestones) — highlights:
+
+- **[v0.3.0](https://github.com/dfbustosus/llmrace/milestone/1)** — regression mode as a CI quality gate, Gemini + DeepSeek/Mistral/Together/Fireworks/Cerebras providers, config profiles, prompt-variant sweeps, watch mode, real-HTTP integration tests
+- **[v0.4.0](https://github.com/dfbustosus/llmrace/milestone/2)** — Homebrew tap, code coverage, cargo-deny + dependabot, SSE fuzzing, MSRV enforcement, changelog discipline
+- **[v1.0.0](https://github.com/dfbustosus/llmrace/milestone/3)** — persistent history + `llmrace trend`, community health files, stability guarantees
+
+Most provider additions are tagged [`good first issue`](https://github.com/dfbustosus/llmrace/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — grab one.
 
 ## Contributing
 
