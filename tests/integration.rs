@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use llmrace::bench::{spawn_lane, BenchConfig, RunMetrics};
 use llmrace::provider::{decode_payload, stream_completion, CompletionRequest, ProviderSpec, Wire};
+use llmrace::regression::{evaluate, BaselineReport};
 use llmrace::sse::{parse_data_events, SseParser};
 use llmrace::stats::Sample;
 use llmrace::{cost, report};
@@ -251,4 +252,77 @@ fn cost_estimates_and_pricing_sane() {
     );
     assert_eq!(cost::pricing("custom-anything", "whatever"), None);
     assert_eq!(cost::format_usd(0.000234), "$0.000234");
+}
+
+fn regression_summary(
+    name: &str,
+    mean_ms: f64,
+    p95_ms: f64,
+    ttfb_ms: f64,
+    tps: f64,
+) -> llmrace::bench::LaneSummary {
+    let gen_s = (mean_ms - ttfb_ms).max(0.0) / 1000.0;
+    let run = RunMetrics {
+        total_ms: mean_ms,
+        ttfb_ms,
+        tokens: (tps * gen_s).round() as u64,
+        chars: 400,
+        prompt_tokens: 0,
+    };
+    let _ = p95_ms;
+    llmrace::bench::LaneSummary {
+        name: name.into(),
+        model: "m".into(),
+        runs: vec![run],
+        error: None,
+        prompt: "p".into(),
+        concurrency: 1,
+    }
+}
+
+#[test]
+fn regression_passes_within_threshold() {
+    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"mock-1","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#;
+    let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
+    let current = vec![regression_summary("mock", 110.0, 130.0, 22.0, 76.0)];
+    let report = evaluate(&current, &baseline, 15.0);
+    assert!(!report.any_regressed());
+    assert!(report.comparisons.len() == 1);
+    assert!(report.new_providers.is_empty());
+    assert!(report.skipped_providers.is_empty());
+}
+
+#[test]
+fn regression_fails_beyond_threshold() {
+    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"mock-1","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#;
+    let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
+
+    let slow = vec![regression_summary("mock", 130.0, 150.0, 20.0, 78.0)];
+    let report = evaluate(&slow, &baseline, 15.0);
+    assert!(report.any_regressed());
+    let mean = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.label == "mean latency")
+        .unwrap();
+    assert!(mean.regressed);
+    assert!((mean.delta_pct - 30.0).abs() < 1e-9);
+
+    let dropped_tps = vec![regression_summary("mock", 100.0, 120.0, 20.0, 60.0)];
+    let report = evaluate(&dropped_tps, &baseline, 15.0);
+    assert!(report.any_regressed());
+}
+
+#[test]
+fn regression_reports_new_and_skipped_providers() {
+    let baseline_raw = r#"{"providers":[{"provider":"groq","model":"m","mean_total_ms":100.0,"mean_tokens_per_sec":80.0}]}"#;
+    let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
+    let current = vec![regression_summary("mock", 100.0, 100.0, 10.0, 80.0)];
+    let report = evaluate(&current, &baseline, 15.0);
+    assert_eq!(report.new_providers, vec!["mock".to_string()]);
+    assert_eq!(report.skipped_providers, vec!["groq".to_string()]);
+    assert!(!report.any_regressed());
+    let table = report.terminal_table(15.0);
+    assert!(table.contains("new provider"));
+    assert!(table.contains("not benchmarked"));
 }
