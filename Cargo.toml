@@ -2,7 +2,7 @@
 name = "llmrace"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Race LLM providers head-to-head in your terminal: latency, TTFB, tokens/s, p95 and cost — live."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dfbustosus/llmrace"
