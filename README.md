@@ -130,6 +130,20 @@ llmrace openai groq --out race.md --json --csv
 - `race.json` — full per-run data, confidence intervals and outliers for CI pipelines
 - `race.csv` — per-run rows for spreadsheets and dashboards
 
+## Using llmrace as a CI quality gate
+
+Record a baseline once, then fail your pipeline when a provider regresses:
+
+```bash
+# 1. Record the baseline (commit llmrace-report.json to your repo)
+llmrace openai groq --json --out llmrace-report.json
+
+# 2. In CI: race again and compare — exits 1 on regression
+llmrace openai groq --baseline llmrace-report.json --max-regression 15
+```
+
+The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table, and flags providers that are new or missing from the baseline.
+
 ## Engineering
 
 - `#![deny(missing_docs)]` and `#![deny(clippy::unwrap_used)]` on the library
