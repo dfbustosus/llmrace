@@ -8,6 +8,7 @@ Latency · Time-to-first-byte · Tokens/s · p95 · Cost — live, in one comman
 
 [![CI](https://img.shields.io/github/actions/workflow/status/dfbustosus/llmrace/ci.yml?style=flat-square&logo=githubactions&label=CI)](https://github.com/dfbustosus/llmrace/actions)
 [![Crates.io](https://img.shields.io/crates/v/llmrace?style=flat-square&logo=rust&color=3390FF)](https://crates.io/crates/llmrace)
+[![Codecov](https://img.shields.io/codecov/c/github/dfbustosus/llmrace?style=flat-square&logo=codecov&color=3390FF)](https://codecov.io/gh/dfbustosus/llmrace)
 [![License](https://img.shields.io/crates/l/llmrace?style=flat-square&color=8B949E)](#license)
 [![Made with Rust](https://img.shields.io/badge/built%20with-Rust-DEA584?style=flat-square&logo=rust)](https://www.rust-lang.org)
 
