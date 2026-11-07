@@ -45,11 +45,21 @@ q/Esc quit · report written on exit
 
 ## Install
 
+**Prebuilt binary** (no Rust toolchain needed):
+
+```bash
+cargo binstall llmrace
+```
+
+Or grab a binary for your platform from the [releases page](https://github.com/dfbustosus/llmrace/releases) — Linux (x86_64), macOS (Apple Silicon & Intel), Windows (x86_64), each with SHA-256 checksums.
+
+**From crates.io:**
+
 ```bash
 cargo install llmrace
 ```
 
-Or from source:
+**From source:**
 
 ```bash
 git clone https://github.com/dfbustosus/llmrace
