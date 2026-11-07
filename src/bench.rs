@@ -1,23 +1,35 @@
-use crate::cost;
-use crate::provider::{stream_completion, CompletionRequest, Provider, StreamEvent};
-use anyhow::Result;
+//! Benchmark engine: runs rounds of concurrent streaming requests per provider
+//! and aggregates latency, throughput and token statistics.
+
+use crate::error::Error;
+use crate::provider::{stream_completion, CompletionRequest, ProviderSpec, StreamEvent};
+use crate::stats::Sample;
 use futures_util::StreamExt;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
+/// Raw measurements from a single streamed completion.
 #[derive(Debug, Clone, Default)]
 pub struct RunMetrics {
+    /// Wall-clock time from request to last token, in milliseconds.
     pub total_ms: f64,
+    /// Time from request to first token, in milliseconds.
     pub ttfb_ms: f64,
+    /// Completion tokens (provider-reported usage when available).
     pub tokens: u64,
+    /// Sum of token character lengths.
     pub chars: u64,
+    /// Estimated prompt tokens (0 when unknown).
     pub prompt_tokens: u64,
 }
 
 impl RunMetrics {
+    /// Generation window: total time minus time-to-first-byte.
     pub fn gen_ms(&self) -> f64 {
         (self.total_ms - self.ttfb_ms).max(0.0)
     }
 
+    /// Single-run throughput over the generation window.
     pub fn tokens_per_sec(&self) -> f64 {
         if self.tokens == 0 || self.gen_ms() <= 0.0 {
             0.0
@@ -27,58 +39,116 @@ impl RunMetrics {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ProviderSummary {
-    pub name: String,
-    pub model: String,
-    pub runs: Vec<RunMetrics>,
-    pub error: Option<String>,
-    pub prompt_cache: String,
+/// Tuning parameters of one benchmark lane.
+#[derive(Debug, Clone)]
+pub struct BenchConfig {
+    /// Prompt sent to every provider.
+    pub prompt: String,
+    /// Sampling cap sent as `max_tokens`.
+    pub max_tokens: u64,
+    /// Number of measured rounds per provider.
+    pub runs: usize,
+    /// Warmup rounds excluded from statistics.
+    pub warmup: usize,
+    /// Concurrent requests per provider within one round.
+    ///
+    /// With `concurrency > 1` the aggregate tokens/s is computed over the
+    /// summed generation windows of all requests in a round, measuring
+    /// saturation throughput instead of single-stream speed.
+    pub concurrency: usize,
+    /// Per-request timeout in seconds.
+    pub timeout_secs: u64,
 }
 
-impl ProviderSummary {
-    fn ok_runs(&self) -> &[RunMetrics] {
-        &self.runs
+impl Default for BenchConfig {
+    fn default() -> Self {
+        BenchConfig {
+            prompt: String::new(),
+            max_tokens: 256,
+            runs: 3,
+            warmup: 1,
+            concurrency: 1,
+            timeout_secs: 120,
+        }
+    }
+}
+
+/// Live progress notification emitted while a lane runs.
+#[derive(Debug, Clone)]
+pub struct LaneUpdate {
+    /// Provider id (shared, cheap to clone).
+    pub provider: Arc<str>,
+    /// Tokens received so far in the current request.
+    pub tokens: u64,
+    /// Elapsed milliseconds of the current request.
+    pub elapsed_ms: f64,
+    /// Time-to-first-byte once observed.
+    pub ttfb_ms: Option<f64>,
+    /// Whether the current round just finished.
+    pub finished: bool,
+    /// Round or lane error message.
+    pub error: Option<String>,
+}
+
+/// Aggregated results for one provider lane.
+#[derive(Debug, Clone, Default)]
+pub struct LaneSummary {
+    /// Provider id.
+    pub name: String,
+    /// Model that was benchmarked.
+    pub model: String,
+    /// Measured rounds.
+    pub runs: Vec<RunMetrics>,
+    /// Fatal lane error, when no round succeeded.
+    pub error: Option<String>,
+    /// Prompt used (for token estimation in cost calculations).
+    pub prompt: String,
+    /// Concurrency level of the rounds.
+    pub concurrency: usize,
+}
+
+impl LaneSummary {
+    fn total_sample(&self) -> Sample {
+        Sample::from_values(self.runs.iter().map(|r| r.total_ms).collect())
     }
 
+    /// Mean of round total latencies.
     pub fn mean_total_ms(&self) -> f64 {
-        mean(
-            &self
-                .ok_runs()
-                .iter()
-                .map(|r| r.total_ms)
-                .collect::<Vec<_>>(),
-        )
+        self.total_sample().mean()
     }
 
+    /// Median of round total latencies.
     pub fn median_total_ms(&self) -> f64 {
-        percentile(
-            &self.runs.iter().map(|r| r.total_ms).collect::<Vec<_>>(),
-            50.0,
-        )
+        self.total_sample().median()
     }
 
+    /// p95 of round total latencies (linear interpolation).
     pub fn p95_total_ms(&self) -> f64 {
-        percentile(
-            &self.runs.iter().map(|r| r.total_ms).collect::<Vec<_>>(),
-            95.0,
-        )
+        self.total_sample().percentile(95.0)
     }
 
+    /// 95% confidence interval of the mean total latency.
+    pub fn ci95_total_ms(&self) -> Option<(f64, f64)> {
+        self.total_sample().t_ci95()
+    }
+
+    /// Mean time-to-first-byte.
     pub fn mean_ttfb_ms(&self) -> f64 {
-        mean(&self.runs.iter().map(|r| r.ttfb_ms).collect::<Vec<_>>())
+        if self.runs.is_empty() {
+            return 0.0;
+        }
+        Sample::from_values(self.runs.iter().map(|r| r.ttfb_ms).collect()).mean()
     }
 
+    /// Mean completion tokens per round.
     pub fn mean_tokens(&self) -> f64 {
-        mean(
-            &self
-                .runs
-                .iter()
-                .map(|r| r.tokens as f64)
-                .collect::<Vec<_>>(),
-        )
+        if self.runs.is_empty() {
+            return 0.0;
+        }
+        self.runs.iter().map(|r| r.tokens as f64).sum::<f64>() / self.runs.len() as f64
     }
 
+    /// Aggregate throughput: total tokens over the summed generation window.
     pub fn mean_tokens_per_sec(&self) -> f64 {
         if self.runs.is_empty() {
             return 0.0;
@@ -92,133 +162,174 @@ impl ProviderSummary {
         }
     }
 
+    /// Indices of rounds whose total latency is a 3-sigma outlier.
+    pub fn outlier_runs(&self) -> Vec<usize> {
+        self.total_sample().outliers_3sigma()
+    }
+
+    /// Estimated cost per round in USD, when the model has known pricing.
     pub fn cost_per_run_usd(&self) -> Option<f64> {
-        let (pin, pout) = cost::pricing(&self.name, &self.model)?;
-        Some((self.mean_tokens() * pout + self.prompt_tokens_estimate() * pin) / 1_000_000.0)
+        let (pin, pout) = crate::cost::pricing(&self.name, &self.model)?;
+        let prompt_tokens = crate::cost::estimate_prompt_tokens(&self.prompt);
+        Some((self.mean_tokens() * pout + prompt_tokens * pin) / 1_000_000.0)
     }
 
-    pub fn prompt_tokens_estimate(&self) -> f64 {
-        cost::estimate_prompt_tokens(&self.prompt_cache)
-    }
-
+    /// `true` when at least one measured round succeeded.
     pub fn successful(&self) -> bool {
         self.error.is_none() && !self.runs.is_empty()
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct BenchConfig {
-    pub prompt: String,
-    pub max_tokens: u64,
-    pub runs: usize,
-    pub warmup: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct LaneUpdate {
-    pub provider: String,
-    pub tokens: u64,
-    pub elapsed_ms: f64,
-    pub ttfb_ms: Option<f64>,
-    pub finished: bool,
-    pub error: Option<String>,
-}
-
-pub async fn run_lane(
+/// Spawns a benchmark lane as an independent task.
+///
+/// Returns the task handle yielding the final [`LaneSummary`] plus a receiver
+/// of live [`LaneUpdate`] progress. Warmup rounds run first, then measured
+/// rounds; every round fires `concurrency` requests simultaneously. Panics in
+/// a single request are contained and surface as errors, never aborting the
+/// process.
+pub fn spawn_lane(
     client: reqwest::Client,
-    provider: Provider,
+    spec: ProviderSpec,
     model: String,
     config: BenchConfig,
-    prompt_cache: String,
-    mut on_update: impl FnMut(LaneUpdate) + Send + 'static,
-) -> ProviderSummary {
-    let mut summary = ProviderSummary {
-        name: provider.name.to_string(),
-        model: model.clone(),
-        runs: Vec::new(),
-        error: None,
-        prompt_cache,
-    };
-
-    for run_idx in 0..config.warmup + config.runs {
-        let counted = run_idx >= config.warmup;
-        let result = single_run(
-            &client,
-            &provider,
-            &model,
-            &config,
-            counted,
-            |tokens, elapsed_ms, ttfb_ms| {
-                on_update(LaneUpdate {
-                    provider: provider.name.to_string(),
-                    tokens,
-                    elapsed_ms,
-                    ttfb_ms,
-                    finished: false,
-                    error: None,
-                })
-            },
-        )
-        .await;
-
-        match result {
-            Ok(m) => {
-                if counted {
-                    summary.runs.push(RunMetrics {
-                        total_ms: m.total_ms,
-                        ttfb_ms: m.ttfb_ms,
-                        tokens: m.tokens,
-                        chars: m.chars,
-                        prompt_tokens: m.prompt_tokens,
-                    });
+) -> (
+    tokio::task::JoinHandle<LaneSummary>,
+    mpsc::Receiver<LaneUpdate>,
+) {
+    let (tx, rx) = mpsc::channel();
+    let handle = tokio::spawn(async move {
+        let mut summary = LaneSummary {
+            name: spec.id.to_string(),
+            model: model.clone(),
+            runs: Vec::new(),
+            error: None,
+            prompt: config.prompt.clone(),
+            concurrency: config.concurrency,
+        };
+        let total_rounds = config.warmup + config.runs;
+        for round in 0..total_rounds {
+            let counted = round >= config.warmup;
+            let outcome = run_round(&client, &spec, &model, &config, &tx).await;
+            match outcome {
+                Ok(metrics) => {
+                    if counted {
+                        summary.runs.extend(metrics);
+                    }
                 }
-                on_update(LaneUpdate {
-                    provider: provider.name.to_string(),
-                    tokens: m.tokens,
-                    elapsed_ms: m.total_ms,
-                    ttfb_ms: Some(m.ttfb_ms),
-                    finished: true,
-                    error: None,
-                });
+                Err(e) => {
+                    let _ = tx.send(LaneUpdate {
+                        provider: Arc::clone(&spec.id),
+                        tokens: 0,
+                        elapsed_ms: 0.0,
+                        ttfb_ms: None,
+                        finished: true,
+                        error: Some(e.to_string()),
+                    });
+                    if summary.runs.is_empty() && round + 1 == total_rounds {
+                        summary.error = Some(e.to_string());
+                        return summary;
+                    }
+                }
             }
-            Err(e) => {
-                summary.error = Some(e.to_string());
-                on_update(LaneUpdate {
-                    provider: provider.name.to_string(),
-                    tokens: 0,
-                    elapsed_ms: 0.0,
-                    ttfb_ms: None,
-                    finished: true,
-                    error: Some(e.to_string()),
-                });
-                return summary;
+        }
+        if summary.runs.is_empty() {
+            summary.error = Some("no successful rounds".to_string());
+        }
+        let _ = tx.send(LaneUpdate {
+            provider: Arc::from(summary.name.as_str()),
+            tokens: summary.mean_tokens() as u64,
+            elapsed_ms: summary.mean_total_ms(),
+            ttfb_ms: Some(summary.mean_ttfb_ms()),
+            finished: true,
+            error: None,
+        });
+        summary
+    });
+    (handle, rx)
+}
+
+async fn run_round(
+    client: &reqwest::Client,
+    spec: &ProviderSpec,
+    model: &str,
+    config: &BenchConfig,
+    progress: &mpsc::Sender<LaneUpdate>,
+) -> crate::error::Result<Vec<RunMetrics>> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..config.concurrency.max(1) {
+        let client = client.clone();
+        let spec = spec.clone();
+        let model = model.to_string();
+        let prompt = config.prompt.clone();
+        let max_tokens = config.max_tokens;
+        let timeout = Duration::from_secs(config.timeout_secs);
+        let progress = progress.clone();
+        tasks.spawn(async move {
+            single_request(
+                &client, &spec, &model, &prompt, max_tokens, timeout, &progress,
+            )
+            .await
+        });
+    }
+
+    let mut all = Vec::new();
+    let mut first_err: Option<Error> = None;
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(Ok(m)) => all.push(m),
+            Ok(Err(e)) => {
+                first_err.get_or_insert(e);
+            }
+            Err(join_err) => {
+                first_err
+                    .get_or_insert(Error::Stream(format!("request task panicked: {join_err}")));
             }
         }
     }
-    summary
+    if all.is_empty() {
+        Err(first_err.unwrap_or_else(|| Error::Protocol("round produced no metrics".into())))
+    } else {
+        Ok(vec![RunMetrics {
+            total_ms: all.iter().map(|m| m.total_ms).fold(f64::MIN, f64::max),
+            ttfb_ms: all.iter().map(|m| m.ttfb_ms).fold(f64::MAX, f64::min),
+            tokens: all.iter().map(|m| m.tokens).sum(),
+            chars: all.iter().map(|m| m.chars).sum(),
+            prompt_tokens: all.iter().map(|m| m.prompt_tokens).sum(),
+        }])
+    }
 }
 
-async fn single_run(
+async fn single_request(
     client: &reqwest::Client,
-    provider: &Provider,
+    spec: &ProviderSpec,
     model: &str,
-    config: &BenchConfig,
-    _counted: bool,
-    mut on_progress: impl FnMut(u64, f64, Option<f64>) + Send,
-) -> Result<RunMetrics> {
+    prompt: &str,
+    max_tokens: u64,
+    timeout: Duration,
+    progress: &mpsc::Sender<LaneUpdate>,
+) -> crate::error::Result<RunMetrics> {
     let req = CompletionRequest {
         model,
-        prompt: &config.prompt,
-        max_tokens: config.max_tokens,
+        prompt,
+        max_tokens,
     };
-    let mut stream = stream_completion(client, provider, &req).await?;
+    let mut stream = stream_completion(client, spec, &req).await?;
     let start = Instant::now();
+    let deadline = tokio::time::Instant::now() + timeout;
     let mut ttfb: Option<Duration> = None;
     let mut tokens = 0u64;
     let mut chars = 0u64;
-    let mut usage_tokens: Option<u64> = None;
+    let mut usage: Option<u64> = None;
 
-    while let Some(event) = stream.next().await {
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(Error::Stream(format!("{}: request timed out", spec.id)));
+            }
+            item = stream.next() => item,
+        };
+        let Some(event) = next else { break };
         let event: StreamEvent = event?;
         let now = Instant::now();
         if ttfb.is_none() && (event.token.is_some() || event.completion_tokens.is_some()) {
@@ -227,49 +338,31 @@ async fn single_run(
         if let Some(t) = &event.token {
             tokens += 1;
             chars += t.len() as u64;
-            on_progress(
+            let _ = progress.send(LaneUpdate {
+                provider: Arc::clone(&spec.id),
                 tokens,
-                (now - start).as_secs_f64() * 1000.0,
-                ttfb.map(|d| d.as_secs_f64() * 1000.0),
-            );
+                elapsed_ms: (now - start).as_secs_f64() * 1000.0,
+                ttfb_ms: ttfb.map(|d| d.as_secs_f64() * 1000.0),
+                finished: false,
+                error: None,
+            });
         }
         if let Some(n) = event.completion_tokens {
-            usage_tokens = Some(n);
+            usage = Some(n);
         }
     }
 
     let total = start.elapsed();
-    if ttfb.is_none() {
-        anyhow::bail!("empty response stream");
-    }
-    if let Some(n) = usage_tokens {
+    let ttfb =
+        ttfb.ok_or_else(|| Error::Protocol(format!("{}: empty response stream", spec.id)))?;
+    if let Some(n) = usage {
         tokens = n;
     }
     Ok(RunMetrics {
         total_ms: total.as_secs_f64() * 1000.0,
-        ttfb_ms: ttfb.map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0),
+        ttfb_ms: ttfb.as_secs_f64() * 1000.0,
         tokens,
         chars,
         prompt_tokens: 0,
     })
-}
-
-pub fn mean(xs: &[f64]) -> f64 {
-    if xs.is_empty() {
-        return 0.0;
-    }
-    xs.iter().sum::<f64>() / xs.len() as f64
-}
-
-pub fn percentile(xs: &[f64], p: f64) -> f64 {
-    if xs.is_empty() {
-        return 0.0;
-    }
-    let mut sorted = xs.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    if sorted.len() == 1 {
-        return sorted[0];
-    }
-    let idx = (p / 100.0 * (sorted.len() - 1) as f64).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
 }

@@ -1,59 +1,154 @@
-use llmrace::provider::{parse_sse_chunk, Wire};
+use futures_util::StreamExt;
+use llmrace::bench::{spawn_lane, BenchConfig, RunMetrics};
+use llmrace::provider::{decode_payload, stream_completion, CompletionRequest, ProviderSpec, Wire};
+use llmrace::sse::{parse_data_events, SseParser};
+use llmrace::stats::Sample;
+use llmrace::{cost, report};
 
-fn oai_chunk(data: &str) -> String {
-    format!("data: {data}\n\n")
+#[test]
+fn sse_parses_events_split_at_every_boundary() {
+    let payload = "data: {\"a\":1}\n\ndata: {\"b\":2}\n\ndata: [DONE]\n\n";
+    let bytes = payload.as_bytes();
+    for split in 1..bytes.len() {
+        let mut parser = SseParser::new();
+        let mut blocks = parser.feed(&bytes[..split]);
+        blocks.extend(parser.feed(&bytes[split..]));
+        assert_eq!(blocks.len(), 3, "split at {split}");
+    }
 }
 
 #[test]
-fn parses_openai_streaming_deltas() {
-    let chunk = format!(
-        "{}{}{}",
-        oai_chunk(r#"{"choices":[{"delta":{"content":"Hel"}}]}"#),
-        oai_chunk(r#"{"choices":[{"delta":{"content":"lo"}}]}"#),
-        oai_chunk(r#"{"choices":[{"delta":{}}],"usage":{"completion_tokens":2}}"#)
-    );
-    let events = parse_sse_chunk(&chunk, Wire::OpenAiCompat);
-    assert_eq!(events.len(), 3);
+fn sse_handles_crlf_and_mixed_separators() {
+    let mut parser = SseParser::new();
+    let blocks = parser.feed(b"data: one\r\n\r\ndata: two\n\ndata: three\r\n\r\n");
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(parse_data_events(&blocks[0]), vec!["one"]);
+    assert_eq!(parse_data_events(&blocks[1]), vec!["two"]);
+    assert_eq!(parse_data_events(&blocks[2]), vec!["three"]);
 }
 
 #[test]
-fn ignores_done_and_empty_deltas() {
-    let chunk = format!(
-        "{}{}",
-        oai_chunk("[DONE]"),
-        oai_chunk(r#"{"choices":[{"delta":{"content":""}}]}"#)
-    );
-    let events = parse_sse_chunk(&chunk, Wire::OpenAiCompat);
-    assert!(events.is_empty());
+fn sse_finish_flushes_trailing_block() {
+    let mut parser = SseParser::new();
+    assert!(parser.feed(b"data: complete\n\n").len() == 1);
+    let flushed = parser.finish();
+    assert!(flushed.is_empty());
+    let mut parser = SseParser::new();
+    parser.feed(b"data: complete\n\ndata: partial");
+    assert_eq!(parser.finish().len(), 1);
 }
 
 #[test]
-fn parses_anthropic_events() {
-    let chunk = format!(
-        "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":\"Hi\"}}}}\n\n{}\n\n",
-        r#"event: message_delta
-data: {"type":"message_delta","usage":{"output_tokens":17}}"#
+fn sse_ignores_non_data_lines() {
+    let mut parser = SseParser::new();
+    let blocks = parser.feed(b": comment\nevent: x\nid: 7\ndata: payload\n\n");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(parse_data_events(&blocks[0]), vec!["payload"]);
+}
+
+#[test]
+fn percentile_linear_interpolation_is_exact() {
+    let s = Sample::from_values(vec![10.0, 20.0, 30.0, 40.0, 100.0]);
+    assert!((s.percentile(50.0) - 30.0).abs() < 1e-12);
+    assert!((s.percentile(0.0) - 10.0).abs() < 1e-12);
+    assert!((s.percentile(100.0) - 100.0).abs() < 1e-12);
+    assert!((s.percentile(95.0) - 88.0).abs() < 1e-12);
+    assert!((s.percentile(25.0) - 20.0).abs() < 1e-12);
+}
+
+#[test]
+fn t_ci95_width_matches_table() {
+    let s = Sample::from_values(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    let (lo, hi) = s.t_ci95().unwrap();
+    let mean = 3.0;
+    let expected_half = 2.776 * s.stddev() / 5.0_f64.sqrt();
+    assert!((mean - lo - expected_half).abs() < 1e-3);
+    assert!((hi - mean - expected_half).abs() < 1e-3);
+    assert!(Sample::new().t_ci95().is_none());
+}
+
+#[test]
+fn outliers_flagged_beyond_three_sigma() {
+    let mut values = vec![0.0; 20];
+    values.push(100.0);
+    let s = Sample::from_values(values);
+    assert_eq!(s.outliers_3sigma(), vec![20]);
+}
+
+#[test]
+fn openai_wire_decodes_deltas_and_usage() {
+    let delta = decode_payload(
+        r#"{"choices":[{"delta":{"content":"Hel"}}]}"#,
+        Wire::OpenAiCompat,
+    )
+    .unwrap();
+    assert_eq!(delta.token.as_deref(), Some("Hel"));
+
+    let empty = decode_payload(
+        r#"{"choices":[{"delta":{"content":""}}]}"#,
+        Wire::OpenAiCompat,
+    )
+    .unwrap();
+    assert!(empty.token.is_none());
+
+    let usage = decode_payload(
+        r#"{"choices":[{"delta":{}}],"usage":{"completion_tokens":2}}"#,
+        Wire::OpenAiCompat,
+    )
+    .unwrap();
+    assert_eq!(usage.completion_tokens, Some(2));
+
+    assert!(decode_payload("[DONE]", Wire::OpenAiCompat).is_none());
+}
+
+#[test]
+fn anthropic_wire_decodes_events() {
+    let delta = decode_payload(
+        r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}"#,
+        Wire::Anthropic,
+    )
+    .unwrap();
+    assert_eq!(delta.token.as_deref(), Some("Hi"));
+
+    let usage = decode_payload(
+        r#"{"type":"message_delta","usage":{"output_tokens":17}}"#,
+        Wire::Anthropic,
+    )
+    .unwrap();
+    assert_eq!(usage.completion_tokens, Some(17));
+
+    assert!(decode_payload(r#"{"type":"ping"}"#, Wire::Anthropic).is_none());
+}
+
+#[test]
+fn custom_provider_points_at_custom_endpoint() {
+    let spec = ProviderSpec::custom(
+        "vllm",
+        "http://gpu-box:8000/v1/chat/completions",
+        Some("VLLM_API_KEY"),
+        "meta-llama/Llama-3.1-8B-Instruct",
     );
-    let events = parse_sse_chunk(&chunk, Wire::Anthropic);
-    assert_eq!(events.len(), 2);
+    assert_eq!(*spec.id, *"vllm");
+    assert_eq!(
+        spec.endpoint.as_ref(),
+        "http://gpu-box:8000/v1/chat/completions"
+    );
+    assert_eq!(spec.wire, Wire::OpenAiCompat);
+    assert_eq!(spec.api_key_env.as_deref(), Some("VLLM_API_KEY"));
 }
 
 #[tokio::test]
-async fn mock_race_completes_with_usage() {
-    use llmrace::bench::{BenchConfig, RunMetrics};
-    use llmrace::provider::{stream_completion, CompletionRequest, Provider};
-
+async fn mock_stream_emits_tokens_and_usage() {
     let client = reqwest::Client::new();
-    let provider = Provider::mock();
+    let spec = ProviderSpec::mock();
     let req = CompletionRequest {
         model: "mock-1",
         prompt: "hello",
         max_tokens: 32,
     };
-    let mut stream = stream_completion(&client, &provider, &req).await.unwrap();
+    let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
     let mut tokens = 0u64;
     let mut usage = None;
-    use futures_util::StreamExt;
     while let Some(ev) = stream.next().await {
         let ev = ev.unwrap();
         if ev.token.is_some() {
@@ -65,101 +160,95 @@ async fn mock_race_completes_with_usage() {
     }
     assert_eq!(tokens, 24);
     assert_eq!(usage, Some(24));
+}
 
-    let metrics = RunMetrics {
+#[tokio::test]
+async fn full_mock_race_produces_reports() {
+    let config = BenchConfig {
+        prompt: "demo".into(),
+        runs: 2,
+        warmup: 0,
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(
+        reqwest::Client::new(),
+        ProviderSpec::mock(),
+        "mock-1".into(),
+        config,
+    );
+    drop(progress);
+    let summary = handle.await.unwrap();
+    assert!(summary.successful(), "error: {:?}", summary.error);
+    assert_eq!(summary.runs.len(), 2);
+    assert!(summary.mean_tokens_per_sec() > 0.0);
+    assert!(summary.ci95_total_ms().is_some());
+
+    let md = report::markdown(std::slice::from_ref(&summary), "demo", 2, 32);
+    assert!(md.contains("# 🏁 llmrace report"));
+    assert!(md.contains("mock"));
+    assert!(md.contains("±"));
+
+    let csv = report::csv(std::slice::from_ref(&summary));
+    assert!(csv.starts_with("provider,model,run,total_ms"));
+    assert_eq!(csv.lines().count(), 3);
+
+    let json = report::json_report(&[summary], "demo", 2, 32);
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["providers"][0]["provider"], "mock");
+}
+
+#[tokio::test]
+async fn concurrency_two_measures_saturation_throughput() {
+    let config = BenchConfig {
+        prompt: "demo".into(),
+        runs: 1,
+        warmup: 0,
+        concurrency: 2,
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(
+        reqwest::Client::new(),
+        ProviderSpec::mock(),
+        "mock-1".into(),
+        config,
+    );
+    drop(progress);
+    let summary = handle.await.unwrap();
+    assert!(summary.successful());
+    assert_eq!(summary.runs.len(), 1);
+    assert_eq!(summary.concurrency, 2);
+    assert_eq!(summary.runs[0].tokens, 48);
+    let single_stream = 24.0 / (0.276);
+    assert!(
+        summary.mean_tokens_per_sec() > single_stream * 1.5,
+        "aggregate {} should approximate saturation throughput, not the per-stream {}",
+        summary.mean_tokens_per_sec(),
+        single_stream
+    );
+}
+
+#[test]
+fn run_metrics_generation_math() {
+    let m = RunMetrics {
         total_ms: 1000.0,
         ttfb_ms: 200.0,
         tokens: 160,
         chars: 640,
         prompt_tokens: 0,
     };
-    let _ = BenchConfig::default();
-    assert!((metrics.tokens_per_sec() - 200.0).abs() < 1e-9);
-}
-
-#[tokio::test]
-async fn full_mock_race_produces_report() {
-    use llmrace::bench::{run_lane, BenchConfig, LaneUpdate};
-
-    let provider = llmrace::provider::Provider::mock();
-    let cfg = BenchConfig {
-        prompt: "demo".into(),
-        max_tokens: 32,
-        runs: 2,
-        warmup: 0,
-    };
-    let client = reqwest::Client::new();
-    let summary = run_lane(
-        client,
-        provider,
-        "mock-1".into(),
-        cfg,
-        "demo".into(),
-        |_: LaneUpdate| {},
-    )
-    .await;
-    assert!(
-        summary.successful(),
-        "mock lane should succeed: {:?}",
-        summary.error
-    );
-    assert_eq!(summary.runs.len(), 2);
-    assert!(summary.mean_tokens_per_sec() > 0.0);
-
-    let report = llmrace::report::markdown(&[summary], "demo", 2, 32);
-    assert!(report.contains("# 🏁 llmrace report"));
-    assert!(report.contains("mock"));
-
-    let json = llmrace::report::json_report(&[], "demo", 2, 32);
-    assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
+    assert!((m.gen_ms() - 800.0).abs() < 1e-9);
+    assert!((m.tokens_per_sec() - 200.0).abs() < 1e-9);
 }
 
 #[test]
-fn metrics_aggregation() {
-    use llmrace::bench::{percentile, ProviderSummary, RunMetrics};
-
-    let xs = vec![10.0, 20.0, 30.0, 40.0, 100.0];
-    assert_eq!(percentile(&xs, 50.0), 30.0);
-    assert_eq!(percentile(&xs, 95.0), 100.0);
-    assert_eq!(percentile(&xs, 0.0), 10.0);
-
-    let mut s = ProviderSummary {
-        name: "openai".into(),
-        model: "gpt-4o-mini".into(),
-        runs: vec![
-            RunMetrics {
-                total_ms: 1000.0,
-                ttfb_ms: 200.0,
-                tokens: 160,
-                chars: 640,
-                prompt_tokens: 0,
-            },
-            RunMetrics {
-                total_ms: 2000.0,
-                ttfb_ms: 300.0,
-                tokens: 340,
-                chars: 1360,
-                prompt_tokens: 0,
-            },
-        ],
-        error: None,
-        prompt_cache: "Explain zero-knowledge proofs in two paragraphs.".into(),
-    };
-    assert!((s.mean_tokens_per_sec() - 200.0).abs() < 1e-6);
-    let cost = s
-        .cost_per_run_usd()
-        .expect("gpt-4o-mini should have pricing");
-    assert!(cost > 0.0 && cost < 0.01, "cost sanity: {cost}");
-    s.error = Some("boom".into());
-    assert!(!s.successful());
-}
-
-#[test]
-fn cost_estimates_sane() {
-    use llmrace::cost::{estimate_prompt_tokens, format_usd, pricing};
-    let t = estimate_prompt_tokens("Explain zero-knowledge proofs in two paragraphs.");
+fn cost_estimates_and_pricing_sane() {
+    let t = cost::estimate_prompt_tokens("Explain zero-knowledge proofs in two paragraphs.");
     assert!(t > 5.0 && t < 20.0, "estimate: {t}");
-    assert_eq!(pricing("openai", "gpt-4o-mini"), Some((0.15, 0.60)));
-    assert_eq!(pricing("ollama", "whatever"), None);
-    assert_eq!(format_usd(0.000234), "$0.000234");
+    assert_eq!(cost::pricing("openai", "gpt-4o-mini"), Some((0.15, 0.60)));
+    assert_eq!(
+        cost::pricing("anthropic", "claude-sonnet-4-5"),
+        Some((3.0, 15.0))
+    );
+    assert_eq!(cost::pricing("custom-anything", "whatever"), None);
+    assert_eq!(cost::format_usd(0.000234), "$0.000234");
 }

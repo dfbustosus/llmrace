@@ -1,162 +1,254 @@
-use anyhow::{anyhow, Result};
+//! Provider registry, wire protocols and streaming request plumbing.
+
+use crate::error::{Error, Result};
+use crate::sse::parse_data_events;
 use serde_json::json;
-use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
+/// Streaming wire protocol spoken by a provider endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wire {
+    /// OpenAI `/v1/chat/completions` streaming (also Groq, OpenRouter, Ollama, vLLM…).
     OpenAiCompat,
+    /// Anthropic `/v1/messages` streaming.
     Anthropic,
+    /// Built-in deterministic provider for tests and demos.
     Mock,
 }
 
+/// A fully-resolved provider description.
 #[derive(Debug, Clone)]
-pub struct Provider {
-    pub name: &'static str,
-    pub base_url: String,
-    pub api_key_env: Option<&'static str>,
-    pub default_model: &'static str,
+pub struct ProviderSpec {
+    /// Stable lowercase identifier used on the CLI (e.g. `openai`).
+    pub id: Arc<str>,
+    /// Name shown in the TUI and reports.
+    pub display_name: Arc<str>,
+    /// Absolute endpoint URL.
+    pub endpoint: Arc<str>,
+    /// Environment variable that holds the API key, if any.
+    pub api_key_env: Option<Arc<str>>,
+    /// Model used when `--model` is not given.
+    pub default_model: Arc<str>,
+    /// Wire protocol of the endpoint.
     pub wire: Wire,
 }
 
-impl Provider {
+impl ProviderSpec {
+    /// OpenAI official API.
     pub fn openai() -> Self {
-        Provider {
-            name: "openai",
-            base_url: "https://api.openai.com/v1/chat/completions".into(),
-            api_key_env: Some("OPENAI_API_KEY"),
-            default_model: "gpt-4o-mini",
-            wire: Wire::OpenAiCompat,
-        }
+        spec(
+            "openai",
+            "https://api.openai.com/v1/chat/completions",
+            Some("OPENAI_API_KEY"),
+            "gpt-4o-mini",
+            Wire::OpenAiCompat,
+        )
     }
 
-    pub fn groq() -> Self {
-        Provider {
-            name: "groq",
-            base_url: "https://api.groq.com/openai/v1/chat/completions".into(),
-            api_key_env: Some("GROQ_API_KEY"),
-            default_model: "llama-3.3-70b-versatile",
-            wire: Wire::OpenAiCompat,
-        }
-    }
-
-    pub fn openrouter() -> Self {
-        Provider {
-            name: "openrouter",
-            base_url: "https://openrouter.ai/api/v1/chat/completions".into(),
-            api_key_env: Some("OPENROUTER_API_KEY"),
-            default_model: "openai/gpt-4o-mini",
-            wire: Wire::OpenAiCompat,
-        }
-    }
-
-    pub fn ollama() -> Self {
-        Provider {
-            name: "ollama",
-            base_url: "http://localhost:11434/v1/chat/completions".into(),
-            api_key_env: None,
-            default_model: "llama3.2",
-            wire: Wire::OpenAiCompat,
-        }
-    }
-
+    /// Anthropic official API.
     pub fn anthropic() -> Self {
-        Provider {
-            name: "anthropic",
-            base_url: "https://api.anthropic.com/v1/messages".into(),
-            api_key_env: Some("ANTHROPIC_API_KEY"),
-            default_model: "claude-3-5-haiku-latest",
-            wire: Wire::Anthropic,
-        }
+        spec(
+            "anthropic",
+            "https://api.anthropic.com/v1/messages",
+            Some("ANTHROPIC_API_KEY"),
+            "claude-3-5-haiku-latest",
+            Wire::Anthropic,
+        )
     }
 
+    /// Groq ultra-low-latency inference.
+    pub fn groq() -> Self {
+        spec(
+            "groq",
+            "https://api.groq.com/openai/v1/chat/completions",
+            Some("GROQ_API_KEY"),
+            "llama-3.3-70b-versatile",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// OpenRouter multi-provider gateway.
+    pub fn openrouter() -> Self {
+        spec(
+            "openrouter",
+            "https://openrouter.ai/api/v1/chat/completions",
+            Some("OPENROUTER_API_KEY"),
+            "openai/gpt-4o-mini",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Local Ollama daemon.
+    pub fn ollama() -> Self {
+        spec(
+            "ollama",
+            "http://localhost:11434/v1/chat/completions",
+            None,
+            "llama3.2",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Deterministic in-process provider for tests and demos.
     pub fn mock() -> Self {
-        Provider {
-            name: "mock",
-            base_url: String::new(),
-            api_key_env: None,
-            default_model: "mock-1",
-            wire: Wire::Mock,
-        }
+        spec("mock", "", None, "mock-1", Wire::Mock)
     }
 
-    pub fn registry() -> Vec<Provider> {
+    /// Builds a custom provider against any OpenAI-compatible endpoint
+    /// (vLLM, LiteLLM proxy, Together, Fireworks…).
+    pub fn custom(name: &str, endpoint: &str, key_env: Option<&str>, model: &str) -> Self {
+        spec(name, endpoint, key_env, model, Wire::OpenAiCompat)
+    }
+
+    /// All built-in providers.
+    pub fn registry() -> Vec<ProviderSpec> {
         vec![
-            Provider::openai(),
-            Provider::anthropic(),
-            Provider::groq(),
-            Provider::openrouter(),
-            Provider::ollama(),
-            Provider::mock(),
+            ProviderSpec::openai(),
+            ProviderSpec::anthropic(),
+            ProviderSpec::groq(),
+            ProviderSpec::openrouter(),
+            ProviderSpec::ollama(),
+            ProviderSpec::mock(),
         ]
     }
 
-    pub fn find(name: &str) -> Option<Provider> {
-        Provider::registry().into_iter().find(|p| p.name == name)
+    /// Looks up a built-in provider by CLI name.
+    pub fn find(name: &str) -> Option<ProviderSpec> {
+        ProviderSpec::registry()
+            .into_iter()
+            .find(|p| *p.id == *name)
     }
 
-    fn key(&self) -> Result<Option<String>> {
-        match self.api_key_env {
-            Some(env) => std::env::var(env)
+    /// `true` when the required API key is present in the environment.
+    pub fn is_available(&self) -> bool {
+        self.api_key_env
+            .as_ref()
+            .map(|env| std::env::var(env.as_ref()).is_ok())
+            .unwrap_or(true)
+    }
+
+    fn api_key(&self) -> Result<Option<String>> {
+        match &self.api_key_env {
+            Some(env) => std::env::var(env.as_ref())
                 .ok()
                 .map(Some)
-                .ok_or_else(|| anyhow!("missing env var {}", env)),
+                .ok_or_else(|| Error::Config(format!("missing env var {}", env))),
             None => Ok(None),
         }
     }
+}
 
-    pub fn is_available(&self) -> bool {
-        self.api_key_env
-            .map(|env| std::env::var(env).is_ok())
-            .unwrap_or(true)
+fn spec(id: &str, endpoint: &str, key_env: Option<&str>, model: &str, wire: Wire) -> ProviderSpec {
+    ProviderSpec {
+        id: Arc::from(id),
+        display_name: Arc::from(id),
+        endpoint: Arc::from(endpoint),
+        api_key_env: key_env.map(Arc::from),
+        default_model: Arc::from(model),
+        wire,
     }
 }
 
+/// One decoded streaming event.
 #[derive(Debug, Clone, Default)]
 pub struct StreamEvent {
+    /// A generated text fragment, when this event carries one.
     pub token: Option<String>,
+    /// Provider-reported completion token count, when available.
     pub completion_tokens: Option<u64>,
 }
 
+/// Parameters of a single completion request.
+#[derive(Debug, Clone)]
 pub struct CompletionRequest<'a> {
+    /// Model identifier sent to the provider.
     pub model: &'a str,
+    /// User prompt.
     pub prompt: &'a str,
+    /// Sampling cap passed as `max_tokens`.
     pub max_tokens: u64,
 }
 
-pub type EventStream = Pin<Box<dyn futures_util::Stream<Item = Result<StreamEvent>> + Send>>;
+/// The stream returned by [`stream_completion`].
+///
+/// A named enum instead of a boxed trait object so that common cases avoid
+/// virtual dispatch and the type is `Unpin + Send` by construction.
+pub enum EventStream {
+    /// Deterministic mock provider stream.
+    Mock(MockStream),
+    /// HTTP SSE stream.
+    Http(SseStream),
+}
 
+impl futures_util::Stream for EventStream {
+    type Item = Result<StreamEvent>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        match &mut *self {
+            EventStream::Mock(s) => Pin::new(s).poll_next(cx),
+            EventStream::Http(s) => Pin::new(s).poll_next(cx),
+        }
+    }
+}
+
+/// Starts a streaming completion against `spec` and returns a live event stream.
+///
+/// ```
+/// use llmrace::provider::{stream_completion, CompletionRequest, ProviderSpec};
+///
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// let client = reqwest::Client::new();
+/// let spec = ProviderSpec::mock();
+/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8 };
+/// let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
+/// use futures_util::StreamExt;
+/// let mut tokens = 0;
+/// while let Some(ev) = stream.next().await {
+///     if ev.unwrap().token.is_some() { tokens += 1; }
+/// }
+/// assert!(tokens > 0);
+/// # });
+/// ```
 pub async fn stream_completion(
     client: &reqwest::Client,
-    provider: &Provider,
+    spec: &ProviderSpec,
     req: &CompletionRequest<'_>,
 ) -> Result<EventStream> {
-    match provider.wire {
-        Wire::Mock => Ok(Box::pin(MockStream::new(Duration::from_millis(12), 24))),
+    match spec.wire {
+        Wire::Mock => Ok(EventStream::Mock(MockStream::new(
+            Duration::from_millis(12),
+            24,
+        ))),
         Wire::OpenAiCompat => {
-            let key = provider.key()?;
+            let key = spec.api_key()?;
             let mut body = json!({
                 "model": req.model,
                 "messages": [{"role": "user", "content": req.prompt}],
                 "max_tokens": req.max_tokens,
                 "stream": true,
             });
-            if provider.name != "ollama" {
+            if *spec.id != *"ollama" {
                 body["stream_options"] = json!({"include_usage": true});
             }
-            let mut r = client.post(&provider.base_url).json(&body);
+            let mut request = client.post(spec.endpoint.as_ref()).json(&body);
             if let Some(k) = &key {
-                r = r.bearer_auth(k);
+                request = request.bearer_auth(k);
             }
-            let resp = r.send().await?;
-            check_status(provider, resp)
+            let resp = request
+                .send()
                 .await
-                .map(|resp| Box::pin(SseStream::new(resp, Wire::OpenAiCompat)) as EventStream)
+                .map_err(|e| Error::Stream(e.to_string()))?;
+            let resp = check_status(spec, resp).await?;
+            Ok(EventStream::Http(SseStream::new(resp, Wire::OpenAiCompat)))
         }
         Wire::Anthropic => {
-            let key = provider.key()?;
+            let key = spec.api_key()?;
             let body = json!({
                 "model": req.model,
                 "max_tokens": req.max_tokens,
@@ -164,96 +256,38 @@ pub async fn stream_completion(
                 "stream": true,
             });
             let resp = client
-                .post(&provider.base_url)
+                .post(spec.endpoint.as_ref())
                 .header("x-api-key", key.as_deref().unwrap_or_default())
                 .header("anthropic-version", "2023-06-01")
                 .json(&body)
                 .send()
-                .await?;
-            check_status(provider, resp)
                 .await
-                .map(|resp| Box::pin(SseStream::new(resp, Wire::Anthropic)) as EventStream)
+                .map_err(|e| Error::Stream(e.to_string()))?;
+            let resp = check_status(spec, resp).await?;
+            Ok(EventStream::Http(SseStream::new(resp, Wire::Anthropic)))
         }
     }
 }
 
-async fn check_status(provider: &Provider, resp: reqwest::Response) -> Result<reqwest::Response> {
+async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<reqwest::Response> {
     let status = resp.status();
     if status.is_success() {
-        Ok(resp)
-    } else {
-        let text = resp.text().await.unwrap_or_default();
-        Err(anyhow!(
-            "{} HTTP {}: {}",
-            provider.name,
-            status,
-            truncate(&text, 300)
-        ))
+        return Ok(resp);
     }
+    let body = resp.text().await.unwrap_or_default();
+    Err(Error::Http {
+        provider: spec.id.to_string(),
+        status: status.as_u16(),
+        body: truncate(&body, 300),
+    })
 }
 
-pub enum RawEvent {
-    Delta(String),
-    Usage(u64),
-}
-
-pub fn parse_sse_chunk(chunk: &str, wire: Wire) -> Vec<RawEvent> {
-    let mut out = Vec::new();
-    for line in chunk.split('\n') {
-        let line = line.trim();
-        let Some(payload) = line.strip_prefix("data:") else {
-            continue;
-        };
-        let payload = payload.trim();
-        if payload == "[DONE]" {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
-            continue;
-        };
-        match wire {
-            Wire::OpenAiCompat => {
-                if let Some(delta) = v
-                    .pointer("/choices/0/delta/content")
-                    .and_then(|c| c.as_str())
-                {
-                    if !delta.is_empty() {
-                        out.push(RawEvent::Delta(delta.to_string()));
-                    }
-                }
-                if let Some(n) = v
-                    .pointer("/usage/completion_tokens")
-                    .and_then(|c| c.as_u64())
-                {
-                    out.push(RawEvent::Usage(n));
-                }
-            }
-            Wire::Anthropic => {
-                let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                if kind == "content_block_delta" {
-                    if let Some(delta) = v.pointer("/delta/text").and_then(|c| c.as_str()) {
-                        if !delta.is_empty() {
-                            out.push(RawEvent::Delta(delta.to_string()));
-                        }
-                    }
-                }
-                if kind == "message_delta" {
-                    if let Some(n) = v.pointer("/usage/output_tokens").and_then(|c| c.as_u64()) {
-                        out.push(RawEvent::Usage(n));
-                    }
-                }
-            }
-            Wire::Mock => {}
-        }
-    }
-    out
-}
-
+/// A live HTTP SSE body decoded into [`StreamEvent`]s.
 pub struct SseStream {
     stream: Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
-    buf: Vec<u8>,
+    parser: crate::sse::SseParser,
     wire: Wire,
-    pending: VecDeque<Result<StreamEvent>>,
+    pending: std::collections::VecDeque<StreamEvent>,
     upstream_done: bool,
 }
 
@@ -261,10 +295,20 @@ impl SseStream {
     fn new(resp: reqwest::Response, wire: Wire) -> Self {
         SseStream {
             stream: Box::pin(resp.bytes_stream()),
-            buf: Vec::new(),
+            parser: crate::sse::SseParser::new(),
             wire,
-            pending: VecDeque::new(),
+            pending: std::collections::VecDeque::new(),
             upstream_done: false,
+        }
+    }
+
+    fn enqueue_block(&mut self, block: &str) {
+        for payload in parse_data_events(block) {
+            if let Some(event) = decode_payload(payload, self.wire) {
+                if event.token.is_some() || event.completion_tokens.is_some() {
+                    self.pending.push_back(event);
+                }
+            }
         }
     }
 }
@@ -278,22 +322,25 @@ impl futures_util::Stream for SseStream {
     ) -> Poll<Option<Self::Item>> {
         loop {
             if let Some(event) = self.pending.pop_front() {
-                return Poll::Ready(Some(event));
+                return Poll::Ready(Some(Ok(event)));
             }
             if self.upstream_done {
                 return Poll::Ready(None);
             }
             match futures_util::StreamExt::poll_next_unpin(&mut self.stream, cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
-                    self.buf.extend_from_slice(&bytes);
-                    self.drain_complete_chunks();
+                    for block in self.parser.feed(&bytes) {
+                        self.enqueue_block(&block);
+                    }
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    return Poll::Ready(Some(Err(anyhow!("stream error: {}", e))));
+                    return Poll::Ready(Some(Err(Error::Stream(e.to_string()))));
                 }
                 Poll::Ready(None) => {
                     self.upstream_done = true;
-                    self.flush_remaining();
+                    for block in self.parser.finish() {
+                        self.enqueue_block(&block);
+                    }
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -301,48 +348,58 @@ impl futures_util::Stream for SseStream {
     }
 }
 
-impl SseStream {
-    fn drain_complete_chunks(&mut self) {
-        while let Some(pos) = find_separator(&self.buf) {
-            let chunk: Vec<u8> = self.buf.drain(..pos).collect();
-            self.buf.drain(..separator_len(&self.buf));
-            self.enqueue_chunk(&chunk);
-        }
+/// Decodes one SSE `data:` payload into a [`StreamEvent`] for the given wire.
+///
+/// Returns `None` for control payloads (`[DONE]`, keepalives) or unrecognized
+/// events.
+pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
+    if payload == "[DONE]" {
+        return None;
     }
-
-    fn flush_remaining(&mut self) {
-        if !self.buf.is_empty() {
-            let chunk = std::mem::take(&mut self.buf);
-            self.enqueue_chunk(&chunk);
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    match wire {
+        Wire::OpenAiCompat => {
+            let token = v
+                .pointer("/choices/0/delta/content")
+                .and_then(|c| c.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let usage = v
+                .pointer("/usage/completion_tokens")
+                .and_then(|c| c.as_u64());
+            Some(StreamEvent {
+                token,
+                completion_tokens: usage,
+            })
         }
-    }
-
-    fn enqueue_chunk(&mut self, chunk: &[u8]) {
-        let text = String::from_utf8_lossy(chunk).to_string();
-        let mut usage: Option<u64> = None;
-        for event in parse_sse_chunk(&text, self.wire) {
-            match event {
-                RawEvent::Delta(d) => self.pending.push_back(Ok(StreamEvent {
-                    token: Some(d),
+        Wire::Anthropic => {
+            let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match kind {
+                "content_block_delta" => Some(StreamEvent {
+                    token: v
+                        .pointer("/delta/text")
+                        .and_then(|c| c.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
                     completion_tokens: None,
-                })),
-                RawEvent::Usage(n) => usage = Some(n),
+                }),
+                "message_delta" => Some(StreamEvent {
+                    token: None,
+                    completion_tokens: v.pointer("/usage/output_tokens").and_then(|c| c.as_u64()),
+                }),
+                _ => None,
             }
         }
-        if let Some(n) = usage {
-            self.pending.push_back(Ok(StreamEvent {
-                token: None,
-                completion_tokens: Some(n),
-            }));
-        }
+        Wire::Mock => None,
     }
 }
 
-struct MockStream {
+/// Deterministic token stream used by the mock provider.
+pub struct MockStream {
     n_tokens: usize,
     emitted: usize,
     delay: Duration,
-    elapsed: Option<tokio::time::Instant>,
+    start: Option<tokio::time::Instant>,
     usage_sent: bool,
 }
 
@@ -352,7 +409,7 @@ impl MockStream {
             n_tokens,
             emitted: 0,
             delay,
-            elapsed: None,
+            start: None,
             usage_sent: false,
         }
     }
@@ -375,8 +432,8 @@ impl futures_util::Stream for MockStream {
                 completion_tokens: Some(self.n_tokens as u64),
             })));
         }
-        let start = *self.elapsed.get_or_insert_with(tokio::time::Instant::now);
-        let target = start + self.delay * (self.emitted as u32 + 1);
+        let start = *self.start.get_or_insert_with(tokio::time::Instant::now);
+        let target = start + self.delay * self.emitted as u32 + self.delay;
         let now = tokio::time::Instant::now();
         if now < target {
             let waker = cx.waker().clone();
@@ -391,20 +448,6 @@ impl futures_util::Stream for MockStream {
             token: Some("token ".to_string()),
             completion_tokens: None,
         })))
-    }
-}
-
-fn find_separator(buf: &[u8]) -> Option<usize> {
-    buf.windows(2)
-        .position(|w| w == b"\n\n")
-        .or_else(|| buf.windows(4).position(|w| w == b"\r\n\r\n"))
-}
-
-fn separator_len(buf: &[u8]) -> usize {
-    if buf.starts_with(b"\r\n\r\n") {
-        4
-    } else {
-        2
     }
 }
 

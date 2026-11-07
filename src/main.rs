@@ -1,19 +1,22 @@
 use anyhow::{Context, Result};
-use bench::{BenchConfig, LaneUpdate, ProviderSummary};
 use clap::Parser;
-use llmrace::{bench, provider::Provider, report, tui};
-use std::sync::{mpsc, Arc};
+use llmrace::bench::{spawn_lane, BenchConfig, LaneSummary};
+use llmrace::provider::ProviderSpec;
+use llmrace::{report, tui};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
     name = "llmrace",
     version,
     about = "🏁 Race LLM providers head-to-head in your terminal",
-    long_about = "llmrace benchmarks streaming latency, throughput and cost across LLM providers (OpenAI, Anthropic, Groq, OpenRouter, local Ollama) with a live TUI race and a shareable markdown report."
+    long_about = "llmrace benchmarks streaming latency, throughput and cost across LLM providers (OpenAI, Anthropic, Groq, OpenRouter, local Ollama or any OpenAI-compatible endpoint) with a live TUI race and shareable markdown, JSON and CSV reports."
 )]
 struct Cli {
+    /// Providers to race (see --list). Omit to auto-detect from env vars.
     providers: Vec<String>,
 
+    /// Prompt sent to every provider.
     #[arg(
         short,
         long,
@@ -21,27 +24,63 @@ struct Cli {
     )]
     prompt: String,
 
+    /// Measured rounds per provider.
     #[arg(short = 'n', long, default_value_t = 3)]
     runs: usize,
 
-    #[arg(long, default_value_t = 256)]
-    max_tokens: u64,
-
+    /// Warmup rounds excluded from statistics.
     #[arg(long, default_value_t = 1)]
     warmup: usize,
 
+    /// Run rounds for this many seconds instead of a fixed count.
+    #[arg(long)]
+    duration: Option<u64>,
+
+    /// Concurrent requests per provider per round.
+    #[arg(short = 'c', long, default_value_t = 1)]
+    concurrency: usize,
+
+    /// Model for every provider (overrides defaults).
     #[arg(short, long)]
     model: Option<String>,
 
+    /// Sampling cap passed as max_tokens.
+    #[arg(long, default_value_t = 256)]
+    max_tokens: u64,
+
+    /// Per-request timeout in seconds.
+    #[arg(long, default_value_t = 120)]
+    timeout: u64,
+
+    /// Register a custom OpenAI-compatible endpoint (e.g. vLLM, LiteLLM).
+    #[arg(long, requires = "provider_name")]
+    endpoint: Option<String>,
+
+    /// Name for the custom endpoint provider.
+    #[arg(long)]
+    provider_name: Option<String>,
+
+    /// Env var holding the API key for the custom endpoint.
+    #[arg(long)]
+    api_key_env: Option<String>,
+
+    /// Disable the live TUI (CI-friendly).
     #[arg(long)]
     no_tui: bool,
 
+    /// Also write a JSON report.
     #[arg(long)]
     json: bool,
 
+    /// Also write a CSV report with per-run rows.
+    #[arg(long)]
+    csv: bool,
+
+    /// Output report path (markdown).
     #[arg(short, long, default_value = "llmrace-report.md")]
     out: String,
 
+    /// List built-in providers.
     #[arg(long)]
     list: bool,
 }
@@ -51,14 +90,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.list {
-        println!("{:<12} {:<24} NEEDS", "PROVIDER", "DEFAULT MODEL");
-        for p in Provider::registry() {
-            println!(
-                "{:<12} {:<24} {}",
-                p.name,
+        let header = format!("{:<14} {:<30} {}\n", "PROVIDER", "DEFAULT MODEL", "NEEDS");
+        print!("{header}");
+        for p in ProviderSpec::registry() {
+            let row = format!(
+                "{:<14} {:<30} {}\n",
+                p.id,
                 p.default_model,
-                p.api_key_env.unwrap_or("nothing (local)")
+                p.api_key_env.as_deref().unwrap_or("nothing (local)")
             );
+            print!("{row}");
         }
         return Ok(());
     }
@@ -66,16 +107,39 @@ async fn main() -> Result<()> {
     let selected = resolve_providers(&cli)?;
 
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
         .build()
         .context("failed to build http client")?;
 
-    let (tx, rx) = mpsc::channel::<LaneUpdate>();
-    let lanes: Vec<(String, String)> = selected
+    let runs = match cli.duration {
+        Some(secs) => duration_rounds(&selected, &cli, &client, secs).await,
+        None => cli.runs,
+    };
+
+    let config = BenchConfig {
+        prompt: cli.prompt.clone(),
+        max_tokens: cli.max_tokens,
+        runs: runs.max(1),
+        warmup: cli.warmup,
+        concurrency: cli.concurrency.max(1),
+        timeout_secs: cli.timeout,
+    };
+
+    println!(
+        "🏁 llmrace v{} — {} providers × {} rounds ({} warmup, c={})",
+        env!("CARGO_PKG_VERSION"),
+        selected.len(),
+        config.runs,
+        config.warmup,
+        config.concurrency
+    );
+    println!("   prompt: \"{}\"\n", cli.prompt.replace('\n', " "));
+
+    let lanes: Vec<(Arc<str>, String)> = selected
         .iter()
         .map(|p| {
             (
-                p.name.to_string(),
+                Arc::clone(&p.id),
                 cli.model
                     .clone()
                     .unwrap_or_else(|| p.default_model.to_string()),
@@ -83,42 +147,25 @@ async fn main() -> Result<()> {
         })
         .collect();
 
-    println!(
-        "🏁 llmrace v{} — {} providers × {} runs ({} warmup)",
-        env!("CARGO_PKG_VERSION"),
-        selected.len(),
-        cli.runs,
-        cli.warmup
-    );
-    println!("   prompt: \"{}\"\n", cli.prompt.replace('\n', " "));
-
     let mut handles = Vec::new();
-    let client = Arc::new(client);
-    for p in selected {
-        let client = Arc::clone(&client);
-        let cfg = BenchConfig {
-            prompt: cli.prompt.clone(),
-            max_tokens: cli.max_tokens,
-            runs: cli.runs,
-            warmup: cli.warmup,
-        };
+    let mut receivers = Vec::new();
+    for p in &selected {
         let model = cli
             .model
             .clone()
             .unwrap_or_else(|| p.default_model.to_string());
-        let tx = tx.clone();
-        let prompt = cli.prompt.clone();
-        let lane_client = client.as_ref().clone();
-        handles.push(tokio::spawn(async move {
-            bench::run_lane(lane_client, p, model, cfg, prompt, move |u| {
-                let _ = tx.send(u);
-            })
-            .await
-        }));
+        let (handle, rx) = spawn_lane(
+            client.clone(),
+            p.clone(),
+            model,
+            BenchConfig { ..config.clone() },
+        );
+        handles.push(handle);
+        receivers.push(rx);
     }
-    drop(tx);
 
-    let summaries: Vec<ProviderSummary> = if cli.no_tui {
+    let summaries: Vec<LaneSummary> = if cli.no_tui {
+        drop(receivers);
         let mut all = Vec::new();
         for h in handles {
             match h.await {
@@ -126,24 +173,39 @@ async fn main() -> Result<()> {
                     print_lane_progress(&s);
                     all.push(s);
                 }
-                Err(e) => eprintln!("lane panicked: {e}"),
+                Err(e) => eprintln!("lane task failed: {e}"),
             }
         }
         all
     } else {
-        let prompt_for_tui = cli.prompt.clone();
-        let tui_handle = tokio::task::spawn_blocking(move || {
-            tui::Tui::new(&lanes, prompt_for_tui, cli.runs).run(rx)
-        });
+        let merged = std::sync::mpsc::channel::<llmrace::bench::LaneUpdate>();
+        for rx in receivers {
+            let tx = merged.0.clone();
+            tokio::spawn(async move {
+                while let Ok(u) = rx.recv() {
+                    if tx.send(u).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(merged.0);
+        let lanes_clone = lanes.clone();
+        let prompt = cli.prompt.clone();
+        let runs_ui = config.runs;
+        let rx_final = merged.1;
+        let tui = tui::Tui::new(lanes_clone, prompt, runs_ui);
+        let tui_handle = tokio::task::spawn_blocking(move || tui.run(rx_final).map(|_| ()));
+
         let mut all = Vec::new();
         for h in handles {
             match h.await {
                 Ok(s) => all.push(s),
-                Err(e) => eprintln!("lane panicked: {e}"),
+                Err(e) => eprintln!("lane task failed: {e}"),
             }
         }
         match tui_handle.await {
-            Ok(Ok(_)) => {}
+            Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
             Err(e) => return Err(e.into()),
         }
@@ -153,52 +215,91 @@ async fn main() -> Result<()> {
     let table = report::terminal_table(&summaries);
     println!("\n{table}");
 
-    let md = report::markdown(&summaries, &cli.prompt, cli.runs, cli.max_tokens);
+    let md = report::markdown(&summaries, &cli.prompt, config.runs, cli.max_tokens);
     std::fs::write(&cli.out, &md).with_context(|| format!("writing {}", cli.out))?;
     println!("📄 markdown report saved to {}", cli.out);
 
     if cli.json {
-        let j = report::json_report(&summaries, &cli.prompt, cli.runs, cli.max_tokens);
-        let path = cli.out.replace(".md", ".json");
-        std::fs::write(&path, j).with_context(|| format!("writing {}", path))?;
+        let j = report::json_report(&summaries, &cli.prompt, config.runs, cli.max_tokens);
+        let path = report_sibling(&cli.out, "json");
+        std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
         println!("📊 json report saved to {path}");
+    }
+    if cli.csv {
+        let c = report::csv(&summaries);
+        let path = report_sibling(&cli.out, "csv");
+        std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
+        println!("📈 csv report saved to {path}");
     }
 
     Ok(())
 }
 
-fn resolve_providers(cli: &Cli) -> Result<Vec<Provider>> {
+fn report_sibling(out: &str, ext: &str) -> String {
+    let stem = out.strip_suffix(".md").unwrap_or(out.trim_end_matches('.'));
+    format!("{stem}.{ext}")
+}
+
+async fn duration_rounds(
+    _selected: &[ProviderSpec],
+    cli: &Cli,
+    _client: &reqwest::Client,
+    secs: u64,
+) -> usize {
+    let estimated_round_ms = 2000.0 * f64::from(cli.concurrency.max(1) as u32);
+    let by_estimate = ((secs as f64 * 1000.0) / estimated_round_ms).round() as usize;
+    by_estimate.max(1)
+}
+
+fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
+    let mut out: Vec<ProviderSpec> = Vec::new();
+    if let (Some(endpoint), Some(name)) = (&cli.endpoint, &cli.provider_name) {
+        let model = cli.model.clone().unwrap_or_else(|| "default".to_string());
+        out.push(ProviderSpec::custom(
+            name,
+            endpoint,
+            cli.api_key_env.as_deref(),
+            &model,
+        ));
+    }
     if !cli.providers.is_empty() {
-        let mut out = Vec::new();
         for name in &cli.providers {
             out.push(
-                Provider::find(name)
+                ProviderSpec::find(name)
                     .with_context(|| format!("unknown provider '{name}' (try --list)"))?,
             );
         }
         return Ok(out);
     }
-    let available: Vec<Provider> = Provider::registry()
-        .into_iter()
-        .filter(|p| p.name == "mock" || p.is_available())
-        .collect();
-    if available.is_empty() {
-        anyhow::bail!(
-            "no providers configured; set an API key (e.g. OPENAI_API_KEY) or run Ollama"
-        );
+    if out.is_empty() {
+        let available: Vec<ProviderSpec> = ProviderSpec::registry()
+            .into_iter()
+            .filter(|p| *p.id != *"mock" && p.is_available())
+            .collect();
+        if available.is_empty() {
+            anyhow::bail!(
+                "no providers configured; set an API key (e.g. OPENAI_API_KEY), start Ollama, or name providers explicitly"
+            );
+        }
+        return Ok(available);
     }
-    Ok(available)
+    Ok(out)
 }
 
-fn print_lane_progress(s: &ProviderSummary) {
+fn print_lane_progress(s: &LaneSummary) {
     if let Some(e) = &s.error {
-        println!("  ✗ {:<12} {}", s.name, e);
+        println!("  ✗ {:<14} {}", s.name, e);
     } else {
+        let ci = match s.ci95_total_ms() {
+            Some((lo, hi)) => format!("±{:.0}", (hi - lo) / 2.0),
+            None => "—".to_string(),
+        };
         println!(
-            "  ✓ {:<12} {:>6.1} tok/s   {:>6.0} ms mean   TTFB {:>5.0} ms",
+            "  ✓ {:<14} {:>6.1} tok/s   {:>6.0} ms {}   TTFB {:>5.0} ms",
             s.name,
             s.mean_tokens_per_sec(),
             s.mean_total_ms(),
+            ci,
             s.mean_ttfb_ms()
         );
     }

@@ -68,8 +68,16 @@ llmrace openai anthropic groq
 # Include your local Ollama models
 llmrace ollama groq -m llama-3.3-70b-versatile
 
-# Custom prompt, 5 measured runs, JSON output for CI
-llmrace openai groq -p "Explain transformer attention in 3 sentences." -n 5 --json
+# Saturation throughput: 8 parallel requests per provider
+llmrace openai groq -c 8 -n 5
+
+# Race ANY OpenAI-compatible endpoint (vLLM, LiteLLM, Together…)
+llmrace --endpoint http://localhost:8000/v1/chat/completions \
+        --provider-name vllm --api-key-env VLLM_API_KEY \
+        openai groq
+
+# Custom prompt, JSON + CSV output for CI
+llmrace openai groq -p "Explain transformer attention in 3 sentences." -n 5 --json --csv
 ```
 
 Every provider with a matching env var races automatically — no config file:
@@ -81,32 +89,45 @@ Every provider with a matching env var races automatically — no config file:
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
 | `ollama` | — (local) | `llama3.2` |
-| `mock` | — | for testing/demo |
+| custom | `--endpoint` + `--api-key-env` | any OpenAI-compatible server |
 
 ## What it measures
 
 | Metric | Definition |
 |--------|------------|
 | **TTFB** | Time from request to first streamed token |
-| **Tokens/s** | Completion tokens divided by the *generation window* (total − TTFB), averaged across runs |
-| **Latency p50 / p95** | Distribution of total time-to-last-token across runs |
-| **Cost/run** | Provider-reported token counts × public per-model prices (editable in `cost.rs`) |
+| **Tokens/s** | Completion tokens divided by the *generation window* (total − TTFB); with `--concurrency N`, total tokens of all N parallel requests over the round window — i.e. saturation throughput |
+| **Latency p50 / p95** | Distribution of round time-to-last-token (linear-interpolation percentiles) |
+| **Mean ± 95% CI** | Student-t confidence interval on the mean latency |
+| **Cost/run** | Provider-reported token counts × public per-model prices (editable in `src/cost.rs`) |
 
 Methodology notes:
 
-- One **warmup run** per provider (excluded from stats) to absorb connection setup and TLS handshakes
-- Runs are **concurrent across providers** but sequential within a provider, so providers don't throttle each other
+- One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes
+- Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other
+- Rounds with 3σ latency outliers are flagged with `†`
 - Token counts prefer **provider-reported usage** (`include_usage` on OpenAI-compatible APIs, `message_delta` on Anthropic) and fall back to stream-event counting
-- All requests use the same prompt, `max_tokens` and temperature defaults per run
+- All requests use the same prompt, `max_tokens` and sampling defaults per run
+- Per-request timeouts (`--timeout`) are enforced mid-stream; panics in a single request never abort the race
 
 ## Reports
 
 ```bash
-llmrace openai groq --out race.md --json
+llmrace openai groq --out race.md --json --csv
 ```
 
-- `race.md` — a markdown table ready to paste into GitHub issues, READMEs or blog posts
-- `race.json` — full run-level data for CI pipelines and dashboards
+- `race.md` — ranked table with **mean ± 95% CI**, p50/p95, TTFB, tokens/s and cost, ready to paste into GitHub issues or blog posts
+- `race.json` — full per-run data, confidence intervals and outliers for CI pipelines
+- `race.csv` — per-run rows for spreadsheets and dashboards
+
+## Engineering
+
+- `#![deny(missing_docs)]` and `#![deny(clippy::unwrap_used)]` on the library
+- Typed errors via `thiserror`; `anyhow` only at the binary edge
+- Zero-alignment-allocation SSE parser that survives arbitrary network chunk boundaries (exhaustively tested at every split point)
+- Criterion benchmarks for the parsing and statistics hot paths
+- Panic containment: a failing request becomes an error row, never a crash
+- CI on Linux/macOS/Windows: fmt + clippy `-D warnings` + tests + end-to-end mock race
 
 ## Roadmap
 
