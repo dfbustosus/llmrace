@@ -11,6 +11,10 @@ readme = "README.md"
 keywords = ["llm", "ai", "benchmark", "cli", "openai"]
 categories = ["command-line-utilities", "development-tools"]
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
