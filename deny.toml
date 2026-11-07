@@ -1,5 +1,9 @@
 [advisories]
 yanked = "deny"
+ignore = [
+  # paste: unmaintained (not vulnerable); dev-only, pulled by criterion 0.5
+  "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
