@@ -27,4 +27,4 @@ jobs:
       - run: cargo test --all-targets
       - run: cargo bench --no-run
       - run: cargo doc --no-deps
-      - run: cargo run -- mock --no-tui -n 1 --warmup 0 --out /tmp/report.md --json --csv
+      - run: cargo run -- mock --no-tui -n 1 --warmup 0 --out report.md --json --csv
