@@ -67,12 +67,7 @@ impl RegressionReport {
                 let mark = if m.regressed { " ✗" } else { "" };
                 out.push_str(&format!(
                     "{:<14} {:<16} {:>16.1} → {:<16.1} {:>+8.1}%{}\n",
-                    c.name,
-                    m.label,
-                    m.baseline,
-                    m.current,
-                    m.delta_pct,
-                    mark
+                    c.name, m.label, m.baseline, m.current, m.delta_pct, mark
                 ));
             }
         }
@@ -141,19 +136,30 @@ pub fn evaluate(
     let mut compared: Vec<String> = Vec::new();
 
     for lane in current.iter().filter(|s| s.successful()) {
-        let Some(base) = baseline
-            .providers
-            .iter()
-            .find(|p| p.provider == lane.name)
-        else {
+        let Some(base) = baseline.providers.iter().find(|p| p.provider == lane.name) else {
             report.new_providers.push(lane.name.clone());
             continue;
         };
         compared.push(lane.name.clone());
         let metrics = vec![
-            latency_metric("mean latency", base.mean_total_ms, lane.mean_total_ms(), max_regression_pct),
-            latency_metric("p95 latency", base.p95_total_ms, lane.p95_total_ms(), max_regression_pct),
-            latency_metric("ttfb", base.mean_ttfb_ms, lane.mean_ttfb_ms(), max_regression_pct),
+            latency_metric(
+                "mean latency",
+                base.mean_total_ms,
+                lane.mean_total_ms(),
+                max_regression_pct,
+            ),
+            latency_metric(
+                "p95 latency",
+                base.p95_total_ms,
+                lane.p95_total_ms(),
+                max_regression_pct,
+            ),
+            latency_metric(
+                "ttfb",
+                base.mean_ttfb_ms,
+                lane.mean_ttfb_ms(),
+                max_regression_pct,
+            ),
             throughput_metric(
                 "tokens/s",
                 base.mean_tokens_per_sec,
@@ -178,7 +184,12 @@ pub fn evaluate(
     report
 }
 
-fn latency_metric(label: &'static str, baseline: f64, current: f64, threshold: f64) -> MetricComparison {
+fn latency_metric(
+    label: &'static str,
+    baseline: f64,
+    current: f64,
+    threshold: f64,
+) -> MetricComparison {
     let delta_pct = if baseline.abs() < f64::EPSILON {
         0.0
     } else {
@@ -193,7 +204,12 @@ fn latency_metric(label: &'static str, baseline: f64, current: f64, threshold: f
     }
 }
 
-fn throughput_metric(label: &'static str, baseline: f64, current: f64, threshold: f64) -> MetricComparison {
+fn throughput_metric(
+    label: &'static str,
+    baseline: f64,
+    current: f64,
+    threshold: f64,
+) -> MetricComparison {
     let delta_pct = if baseline.abs() < f64::EPSILON {
         0.0
     } else {
