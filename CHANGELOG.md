@@ -1,0 +1,47 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+
+- `--profile <name>`: benchmark profiles loaded from `llmrace.toml` (repo root or XDG config), explicit CLI flags win (#20)
+- Regression mode: `--baseline <report.json> --max-regression <pct>` compares fresh results against a saved report, prints an old → new diff table and exits `1` when any provider regresses (#16)
+- Providers: Google Gemini native streaming (#17); DeepSeek, Mistral, Together, Fireworks, Cerebras (#18)
+- Supply-chain CI: cargo-deny (advisories, licenses, sources) and dependabot for cargo + actions (#23, #24)
+
+### Changed
+
+- MSRV raised from 1.82 to **1.88**: the 2026 dependency graph (clap 4.6 / darling, ICU4X, ratatui) requires edition-2024-capable toolchains (#22)
+
+### Fixed
+
+- Saturation-throughput aggregation under `--concurrency N`: rounds now aggregate wall-clock window instead of averaging per-stream rates
+
+## [0.2.0] - 2026-11-07
+
+### Added
+
+- Live TUI race with per-lane streaming token counts, TTFB and finish times
+- Benchmarks: TTFB, tokens/s over the generation window, p50/p95 with linear interpolation, 95% Student-t confidence intervals, 3σ outlier flagging, warmup rounds excluded from stats
+- `--concurrency` saturation mode, `--timeout` mid-stream enforcement, panic containment per request
+- Reports: markdown (paste-ready), JSON (full per-run data), CSV
+- Custom OpenAI-compatible endpoints via `--endpoint` / `--provider-name` / `--api-key-env` (vLLM, LiteLLM, Together…)
+- Library-grade core: typed `thiserror` errors, `#![deny(missing_docs)]`, `#![deny(clippy::unwrap_used)]`, zero-copy SSE parser with exhaustive chunk-boundary tests
+- Criterion benchmarks for SSE parsing and statistics
+- Cross-platform CI (Linux, macOS, Windows): fmt, clippy `-D warnings`, tests, benches, docs, end-to-end mock race
+- Release pipeline: tagged builds ship binaries for 4 targets with SHA-256 checksums and auto-publish to crates.io
+
+## [0.1.0] - 2026-11-07
+
+### Added
+
+- Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
+
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dfbustosus/llmrace/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/dfbustosus/llmrace/releases/tag/v0.1.0
