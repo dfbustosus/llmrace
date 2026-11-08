@@ -88,6 +88,14 @@ struct Cli {
     #[arg(short, long, default_value = "llmrace-report.md")]
     out: String,
 
+    /// Continuous monitoring: re-run the race every N seconds and alert on degradation.
+    #[arg(long)]
+    watch: bool,
+
+    /// Seconds between watch rounds (with --watch).
+    #[arg(long, default_value_t = 900)]
+    every: u64,
+
     /// Run the race once per comma-separated prompt variant (short,long,code,json,reasoning).
     #[arg(long)]
     sweep: Option<String>,
@@ -128,6 +136,10 @@ async fn main() -> Result<()> {
         .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
         .build()
         .context("failed to build http client")?;
+
+    if cli.watch {
+        return watch_main(cli, selected, client).await;
+    }
 
     let runs = match cli.duration {
         Some(secs) => duration_rounds(&selected, &cli, &client, secs).await,
@@ -282,6 +294,88 @@ async fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Client) -> Result<()> {
+    let model = cli
+        .model
+        .clone()
+        .unwrap_or_else(|| selected[0].default_model.to_string());
+    let bench = BenchConfig {
+        prompt: cli.prompt.clone(),
+        max_tokens: cli.max_tokens,
+        runs: cli.runs,
+        warmup: cli.warmup,
+        concurrency: cli.concurrency.max(1),
+        timeout_secs: cli.timeout,
+    };
+    let watch_config = llmrace::watch::WatchConfig {
+        every_secs: cli.every,
+        max_regression_pct: cli.max_regression,
+        rounds: None,
+        bench,
+    };
+
+    println!(
+        "👀 llmrace watch — every {}s, alert threshold {}% (Ctrl+C to stop)\n",
+        cli.every, cli.max_regression
+    );
+
+    let ctrl_c_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_flag = std::sync::Arc::clone(&ctrl_c_flag);
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        println!("\n⏹ interrupted — finishing current round, then writing reports…");
+    });
+
+    let report = llmrace::watch::watch(
+        selected,
+        model,
+        watch_config,
+        client,
+        |round, summaries, alerts| {
+            for s in summaries {
+                if s.successful() {
+                    println!(
+                        "  r{round} ✓ {:<14} {:>6.1} tok/s   TTFB {:>5.0} ms",
+                        s.name,
+                        s.mean_tokens_per_sec(),
+                        s.mean_ttfb_ms()
+                    );
+                } else {
+                    println!(
+                        "  r{round} ✗ {:<14} {}",
+                        s.name,
+                        s.error.clone().unwrap_or_default()
+                    );
+                }
+            }
+            for a in alerts {
+                println!(
+                    "  ⚠ ALERT r{} {} {} {:.0} → {:.0} ms (+{:.0}%)",
+                    a.round, a.provider, a.metric, a.baseline, a.current, a.delta_pct
+                );
+            }
+        },
+        move || ctrl_c_flag.load(std::sync::atomic::Ordering::Relaxed),
+    )
+    .await;
+
+    println!(
+        "\nsession: {} rounds, {} alert(s)",
+        report.rounds.len(),
+        report.alerts.len()
+    );
+    let last = report.last_round();
+    if !last.is_empty() {
+        let table = report::terminal_table(last);
+        println!("\n{table}");
+        let md = report::markdown(last, &cli.prompt, cli.runs, cli.max_tokens);
+        std::fs::write(&cli.out, md).with_context(|| format!("writing {}", cli.out))?;
+        println!("📄 report saved to {}", cli.out);
+    }
     Ok(())
 }
 
