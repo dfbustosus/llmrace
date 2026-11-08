@@ -50,6 +50,7 @@
 pub mod bench;
 pub mod config;
 pub mod cost;
+pub mod dashboard;
 pub mod error;
 pub mod history;
 pub mod prom;
