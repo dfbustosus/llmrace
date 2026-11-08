@@ -154,6 +154,7 @@ pub fn json_report(
                 "mean_tokens_per_sec": s.mean_tokens_per_sec(),
                 "outlier_runs": s.outlier_runs(),
                 "cost_per_run_usd": s.cost_per_run_usd(),
+                "tool_validity": s.tool_validity(),
             })
         })
         .collect();

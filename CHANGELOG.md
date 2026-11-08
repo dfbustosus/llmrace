@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tool-call benchmark mode: `--tools` races a weather-function task with per-wire tool schemas (OpenAI, Anthropic, Gemini, Cohere), decodes streamed argument fragments, and reports `tool_validity` (valid JSON containing `city`) per provider in JSON reports
+- Provider: Cohere (native v2 chat streaming with legacy v1 decoding)
+- Providers: xAI Grok, Perplexity Sonar
+- Azure OpenAI support via `AuthKind::ApiKeyHeader` (`ProviderSpec::azure_openai`)
+- Percentile histograms: `--histogram` renders p10–p99 ladders and block-bar latency distributions
+- Doc-tests across cost, variants, regression and history modules
+
 ## [0.3.0] - 2026-11-07
 
 ### Added

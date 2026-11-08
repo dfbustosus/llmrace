@@ -104,6 +104,10 @@ struct Cli {
     #[arg(long)]
     histogram: bool,
 
+    /// Benchmark tool calling: send a weather-function task and measure argument validity.
+    #[arg(long)]
+    tools: bool,
+
     /// Continuous monitoring: re-run the race every N seconds and alert on degradation.
     #[arg(long)]
     watch: bool,
@@ -178,12 +182,17 @@ async fn main() -> Result<()> {
     };
 
     let config = BenchConfig {
-        prompt: cli.prompt.clone(),
+        prompt: if cli.tools {
+            llmrace::tools::tool_task_prompt().to_string()
+        } else {
+            cli.prompt.clone()
+        },
         max_tokens: cli.max_tokens,
         runs: runs.max(1),
         warmup: cli.warmup,
         concurrency: cli.concurrency.max(1),
         timeout_secs: cli.timeout,
+        tools: cli.tools,
     };
 
     println!(
@@ -195,6 +204,10 @@ async fn main() -> Result<()> {
         config.concurrency
     );
     println!("   prompt: \"{}\"\n", cli.prompt.replace('\n', " "));
+
+    if cli.tools {
+        println!("🛠 tool-calling mode: weather task, argument validity tracked");
+    }
 
     let variants: Vec<Option<llmrace::variants::Variant>> = match &cli.sweep {
         Some(spec) => llmrace::variants::parse(spec)
@@ -352,12 +365,17 @@ async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Clie
         .clone()
         .unwrap_or_else(|| selected[0].default_model.to_string());
     let bench = BenchConfig {
-        prompt: cli.prompt.clone(),
+        prompt: if cli.tools {
+            llmrace::tools::tool_task_prompt().to_string()
+        } else {
+            cli.prompt.clone()
+        },
         max_tokens: cli.max_tokens,
         runs: cli.runs,
         warmup: cli.warmup,
         concurrency: cli.concurrency.max(1),
         timeout_secs: cli.timeout,
+        tools: cli.tools,
     };
     let watch_config = llmrace::watch::WatchConfig {
         every_secs: cli.every,

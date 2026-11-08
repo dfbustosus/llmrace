@@ -150,6 +150,7 @@ async fn mock_stream_emits_tokens_and_usage() {
         model: "mock-1",
         prompt: "hello",
         max_tokens: 32,
+        tools: false,
     };
     let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
     let mut tokens = 0u64;
@@ -235,6 +236,7 @@ async fn concurrency_two_measures_saturation_throughput() {
 #[test]
 fn run_metrics_generation_math() {
     let m = RunMetrics {
+        tool_args: String::new(),
         total_ms: 1000.0,
         ttfb_ms: 200.0,
         tokens: 160,
@@ -267,6 +269,7 @@ fn regression_summary(
 ) -> llmrace::bench::LaneSummary {
     let gen_s = (mean_ms - ttfb_ms).max(0.0) / 1000.0;
     let run = RunMetrics {
+        tool_args: String::new(),
         total_ms: mean_ms,
         ttfb_ms,
         tokens: (tps * gen_s).round() as u64,
@@ -457,6 +460,7 @@ fn xai_and_perplexity_specs() {
 async fn percentile_ladder_and_histogram_render() {
     let runs: Vec<RunMetrics> = (0..10)
         .map(|i| RunMetrics {
+            tool_args: String::new(),
             total_ms: 100.0 + i as f64 * 50.0,
             ttfb_ms: 10.0,
             tokens: 10,
