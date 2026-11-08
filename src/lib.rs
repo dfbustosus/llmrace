@@ -12,6 +12,7 @@
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
 //! - [`regression`]: baseline comparison for CI quality gates
+//! - [`variants`]: built-in prompt variants for multi-shape sweeps
 //! - [`tui`]: the live terminal race view
 //!
 //! ## Example
@@ -56,3 +57,4 @@ pub mod report;
 pub mod sse;
 pub mod stats;
 pub mod tui;
+pub mod variants;

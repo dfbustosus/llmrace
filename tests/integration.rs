@@ -277,6 +277,7 @@ fn regression_summary(
         error: None,
         prompt: "p".into(),
         concurrency: 1,
+        variant: None,
     }
 }
 

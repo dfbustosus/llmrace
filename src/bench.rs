@@ -105,6 +105,8 @@ pub struct LaneSummary {
     pub prompt: String,
     /// Concurrency level of the rounds.
     pub concurrency: usize,
+    /// Prompt variant label when running a sweep, otherwise `None`.
+    pub variant: Option<String>,
 }
 
 impl LaneSummary {
@@ -205,6 +207,7 @@ pub fn spawn_lane(
             error: None,
             prompt: config.prompt.clone(),
             concurrency: config.concurrency,
+            variant: None,
         };
         let total_rounds = config.warmup + config.runs;
         for round in 0..total_rounds {
