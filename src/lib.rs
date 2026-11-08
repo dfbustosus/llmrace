@@ -58,3 +58,4 @@ pub mod sse;
 pub mod stats;
 pub mod tui;
 pub mod variants;
+pub mod watch;
