@@ -1,5 +1,50 @@
 //! Per-model pricing and prompt-token estimation for cost reporting.
 
+use crate::error::{Error, Result};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+type Overrides = HashMap<String, (f64, f64)>;
+
+fn overrides() -> &'static std::sync::RwLock<Overrides> {
+    static OVERRIDES: OnceLock<std::sync::RwLock<Overrides>> = OnceLock::new();
+    OVERRIDES.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+/// Installs user-supplied price overrides (`provider/model` → `(input,
+/// output)` USD per million tokens). Values take precedence over the
+/// built-in table.
+pub fn set_overrides(pairs: Vec<(String, f64, f64)>) {
+    let mut map = overrides().write().expect("price overrides lock");
+    for (key, pin, pout) in pairs {
+        map.insert(key, (pin, pout));
+    }
+}
+
+/// Parses a `--price` argument: `provider/model=1.25:5`.
+pub fn parse_override(raw: &str) -> Result<(String, f64, f64)> {
+    let (key, prices) = raw.split_once('=').ok_or_else(|| {
+        Error::Config(format!(
+            "invalid --price '{raw}': expected provider/model=in:out"
+        ))
+    })?;
+    let (pin, pout) = prices
+        .split_once(':')
+        .ok_or_else(|| Error::Config(format!("invalid --price '{raw}': expected in:out prices")))?;
+    let pin: f64 = pin
+        .trim()
+        .parse()
+        .map_err(|_| Error::Config(format!("invalid input price in '{raw}'")))?;
+    let pout: f64 = pout
+        .trim()
+        .parse()
+        .map_err(|_| Error::Config(format!("invalid output price in '{raw}'")))?;
+    if pin < 0.0 || pout < 0.0 {
+        return Err(Error::Config(format!("negative price in '{raw}'")));
+    }
+    Ok((key.trim().to_ascii_lowercase(), pin, pout))
+}
+
 /// Returns `(input, output)` USD price per million tokens for a provider/model
 /// pair, when known. `provider` is the lane id and `model` the model id.
 ///
@@ -13,6 +58,11 @@
 pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
     let m = model.to_ascii_lowercase();
     let key = format!("{}/{}", provider, m);
+    if let Ok(map) = overrides().read() {
+        if let Some(v) = map.get(&format!("{}/{}", provider, model.to_ascii_lowercase())) {
+            return Some(*v);
+        }
+    }
     let table: &[(&str, f64, f64)] = &[
         ("openai/gpt-4o", 2.50, 10.00),
         ("openai/gpt-4o-mini", 0.15, 0.60),
