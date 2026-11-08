@@ -6,6 +6,7 @@
 //! The crate is organised as:
 //! - [`provider`]: provider registry, wire protocols, streaming plumbing
 //! - [`sse`]: incremental Server-Sent Events parsing
+//! - [`sqlite`]: optional SQLite history backend (feature `sqlite`)
 //! - [`stats`]: descriptive statistics with t-based confidence intervals
 //! - [`bench`]: the benchmark engine and lane summaries
 //! - [`config`]: named profiles from `llmrace.toml`
@@ -57,6 +58,8 @@ pub mod prom;
 pub mod provider;
 pub mod regression;
 pub mod report;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod sse;
 pub mod stats;
 pub mod tools;
