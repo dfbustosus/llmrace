@@ -108,6 +108,10 @@ struct Cli {
     #[arg(long)]
     tools: bool,
 
+    /// Push race metrics to a Prometheus pushgateway job URL after the race.
+    #[arg(long)]
+    push_gateway: Option<String>,
+
     /// Continuous monitoring: re-run the race every N seconds and alert on degradation.
     #[arg(long)]
     watch: bool,
@@ -327,6 +331,13 @@ async fn main() -> Result<()> {
         let path = report_sibling(&cli.out, "csv");
         std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
         println!("📈 csv report saved to {path}");
+    }
+
+    if let Some(gateway) = &cli.push_gateway {
+        llmrace::prom::push(&client, gateway, &summaries)
+            .await
+            .with_context(|| format!("pushing metrics to {gateway}"))?;
+        println!("📡 metrics pushed to {gateway}");
     }
 
     if cli.record {
