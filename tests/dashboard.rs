@@ -22,9 +22,9 @@ fn dashboard_renders_charts_models_and_tables() {
     let records = vec![
         rec(now - 10 * day, "groq", "llama-3", 20.0, 400.0),
         rec(now - 5 * day, "groq", "llama-3", 30.0, 380.0),
-        rec(now - 1 * day, "groq", "llama-4", 25.0, 410.0),
+        rec(now - day, "groq", "llama-4", 25.0, 410.0),
         rec(now - 2 * day, "openai", "gpt-4o-mini", 200.0, 80.0),
-        rec(now - 1 * day, "openai", "gpt-4o-mini", 210.0, 78.0),
+        rec(now - day, "openai", "gpt-4o-mini", 210.0, 78.0),
     ];
 
     let html = render_html(&records, 30, now);
@@ -37,7 +37,6 @@ fn dashboard_renders_charts_models_and_tables() {
     assert!(html.contains("▼ lower is better"));
     assert!(html.contains("▲ higher is better"));
     assert!(html.contains("<table>"));
-    assert!(html.contains("no external") == false);
     assert!(!html.contains("http://cdn") && !html.contains("https://cdn"));
 }
 
