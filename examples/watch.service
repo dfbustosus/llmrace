@@ -1,0 +1,15 @@
+[Unit]
+Description=llmrace continuous LLM provider monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/llmrace groq openai --watch --every 900 --record --max-regression 25
+Environment=GROQ_API_KEY=
+Environment=OPENAI_API_KEY=
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

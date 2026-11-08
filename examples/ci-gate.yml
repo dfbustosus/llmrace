@@ -1,0 +1,36 @@
+name: llmrace quality gate
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 */6 * * *"
+
+jobs:
+  latency-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install llmrace
+        uses: taiki-e/install-action@cargo-binstall
+        with:
+          tool: llmrace
+
+      - name: Race and compare against baseline
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          llmrace groq openai \
+            -n 5 --warmup 1 \
+            --baseline baseline/llmrace-report.json \
+            --max-regression 20 \
+            --json --out llmrace-report.json
+
+      - name: Upload fresh report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: llmrace-report
+          path: llmrace-report.json
