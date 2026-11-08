@@ -63,6 +63,21 @@ pub fn builtins() -> Vec<Variant> {
 ///
 /// Fails with a [`Error::Config`] naming the unknown variant and listing the
 /// available ones.
+/// Resolves a comma-separated sweep list (e.g. `short,json`) into variants.
+///
+/// Fails with a [`Error::Config`](crate::error::Error::Config) naming the
+/// unknown variant and listing the available ones.
+///
+/// ```
+/// use llmrace::variants;
+///
+/// let vs = variants::parse("short, json").unwrap();
+/// assert_eq!(vs.len(), 2);
+/// assert_eq!(vs[0].name, "short");
+///
+/// let err = variants::parse("nope").unwrap_err();
+/// assert!(err.to_string().contains("unknown variant 'nope'"));
+/// ```
 pub fn parse(spec: &str) -> Result<Vec<Variant>> {
     let all = builtins();
     let mut out = Vec::new();

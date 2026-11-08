@@ -43,6 +43,27 @@ pub fn history_path() -> PathBuf {
 }
 
 /// Appends records to `path` as JSON lines, creating parent directories.
+///
+/// ```
+/// use llmrace::history::{append, load, HistoryRecord};
+///
+/// let dir = std::env::temp_dir().join("llmrace-doctest");
+/// let path = dir.join("history.jsonl");
+/// let record = HistoryRecord {
+///     timestamp_unix: 1_700_000_000,
+///     provider: "mock".into(),
+///     model: "mock-1".into(),
+///     variant: None,
+///     concurrency: 1,
+///     mean_total_ms: 290.0,
+///     p95_total_ms: 295.0,
+///     mean_ttfb_ms: 14.0,
+///     mean_tokens_per_sec: 87.0,
+/// };
+/// append(&path, &[record.clone()]).unwrap();
+/// assert_eq!(load(&path), vec![record]);
+/// # let _ = std::fs::remove_file(&path);
+/// ```
 pub fn append(path: &std::path::Path, records: &[HistoryRecord]) -> std::io::Result<()> {
     use std::io::Write;
     if let Some(dir) = path.parent() {

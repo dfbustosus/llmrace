@@ -127,6 +127,30 @@ impl BaselineReport {
 /// Latency metrics (mean, p95, TTFB) regress when they increase beyond the
 /// threshold; throughput regresses when it decreases beyond the threshold.
 /// Providers must have succeeded in the current run to be compared.
+///
+/// ```
+/// use llmrace::regression::{evaluate, BaselineReport};
+///
+/// let baseline = BaselineReport::from_json_str(
+///     r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,
+///        "p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#,
+/// ).unwrap();
+///
+/// let current = llmrace::bench::LaneSummary {
+///     name: "mock".into(),
+///     model: "m".into(),
+///     runs: vec![llmrace::bench::RunMetrics {
+///         total_ms: 105.0, ttfb_ms: 21.0, tokens: 6, chars: 24,
+///         prompt_tokens: 0,
+///     }],
+///     error: None,
+///     prompt: "p".into(),
+///     concurrency: 1,
+///     variant: None,
+/// };
+/// let report = evaluate(&[current], &baseline, 15.0);
+/// assert!(!report.any_regressed());
+/// ```
 pub fn evaluate(
     current: &[LaneSummary],
     baseline: &BaselineReport,

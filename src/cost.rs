@@ -2,6 +2,14 @@
 
 /// Returns `(input, output)` USD price per million tokens for a provider/model
 /// pair, when known. `provider` is the lane id and `model` the model id.
+///
+/// ```
+/// use llmrace::cost::pricing;
+///
+/// let (input, output) = pricing("openai", "gpt-4o-mini").unwrap();
+/// assert_eq!((input, output), (0.15, 0.60));
+/// assert!(pricing("ollama", "llama3.2").is_none());
+/// ```
 pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
     let m = model.to_ascii_lowercase();
     let key = format!("{}/{}", provider, m);
@@ -51,6 +59,15 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
 
 /// Estimates prompt token count as the maximum of a word-based and a
 /// character-based heuristic.
+/// Estimates prompt token count as the maximum of a word-based and a
+/// character-based heuristic.
+///
+/// ```
+/// use llmrace::cost::estimate_prompt_tokens;
+///
+/// let tokens = estimate_prompt_tokens("Explain zero-knowledge proofs briefly.");
+/// assert!(tokens > 3.0 && tokens < 20.0, "got {tokens}");
+/// ```
 pub fn estimate_prompt_tokens(prompt: &str) -> f64 {
     let words = prompt.split_whitespace().count() as f64;
     let chars = prompt.chars().count() as f64;
@@ -60,6 +77,14 @@ pub fn estimate_prompt_tokens(prompt: &str) -> f64 {
 }
 
 /// Formats a USD amount for compact display in reports.
+/// Formats a USD amount for compact display in reports.
+///
+/// ```
+/// use llmrace::cost::format_usd;
+///
+/// assert_eq!(format_usd(0.000234), "$0.000234");
+/// assert_eq!(format_usd(1.5), "$1.500");
+/// ```
 pub fn format_usd(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()
