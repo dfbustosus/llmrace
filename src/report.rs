@@ -311,7 +311,7 @@ pub fn histogram_section(summaries: &[LaneSummary]) -> String {
             .unwrap_or(0.0);
         let scale = if upper > 0.0 { upper } else { 1.0 };
         let width = scale / BUCKETS as f64;
-        let mut histogram = vec![0usize; BUCKETS];
+        let mut histogram = [0usize; BUCKETS];
         for v in &values {
             let idx = ((v / scale) * (BUCKETS - 1) as f64).round() as usize;
             histogram[idx.min(BUCKETS - 1)] += 1;
