@@ -112,9 +112,19 @@ Every provider with a matching env var races automatically — no config file:
 |----------|---------|---------------|
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
+| `mistral` | `MISTRAL_API_KEY` | `mistral-small-latest` |
+| `together` | `TOGETHER_API_KEY` | `Llama-3.3-70B-Instruct-Turbo` |
+| `fireworks` | `FIREWORKS_API_KEY` | `llama-v3p3-70b-instruct` |
+| `cerebras` | `CEREBRAS_API_KEY` | `llama-3.3-70b` |
+| `xai` | `XAI_API_KEY` | `grok-3-mini` |
+| `perplexity` | `PERPLEXITY_API_KEY` | `sonar` |
+| `cohere` | `CO_API_KEY` | `command-a-03-2025` |
 | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
 | `ollama` | — (local) | `llama3.2` |
+| azure | `AZURE_OPENAI_API_KEY` (library: `ProviderSpec::azure_openai`) | per deployment |
 | custom | `--endpoint` + `--api-key-env` | any OpenAI-compatible server |
 
 ## What it measures
