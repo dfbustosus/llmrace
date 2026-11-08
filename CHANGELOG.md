@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `llmrace --doctor`: environment diagnostics — API keys, endpoint egress (any HTTP status counts), local Ollama, config discovery and history validity, with a bug-report-ready summary
 - Shell completions: `llmrace --completions <bash|zsh|fish|powershell|elvish>`
 
 ### Changed
