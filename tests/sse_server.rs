@@ -144,6 +144,7 @@ async fn irregular_chunk_boundaries_survive_the_full_stack() {
             model: "test-model",
             prompt: "hi",
             max_tokens: 16,
+            tools: false,
         },
     )
     .await
@@ -246,6 +247,7 @@ async fn azure_style_auth_sends_api_key_header_not_bearer() {
             model: "d",
             prompt: "hi",
             max_tokens: 8,
+            tools: false,
         },
     )
     .await
