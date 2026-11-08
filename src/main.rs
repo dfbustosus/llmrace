@@ -100,6 +100,10 @@ struct Cli {
     #[arg(long, default_value_t = 30)]
     days: u64,
 
+    /// Include the latency distribution section (percentiles + histogram) in the markdown report.
+    #[arg(long)]
+    histogram: bool,
+
     /// Continuous monitoring: re-run the race every N seconds and alert on degradation.
     #[arg(long)]
     watch: bool,
@@ -292,7 +296,10 @@ async fn main() -> Result<()> {
     let table = report::terminal_table(&summaries);
     println!("\n{table}");
 
-    let md = report::markdown(&summaries, &cli.prompt, config.runs, cli.max_tokens);
+    let mut md = report::markdown(&summaries, &cli.prompt, config.runs, cli.max_tokens);
+    if cli.histogram {
+        md.push_str(&report::histogram_section(&summaries));
+    }
     std::fs::write(&cli.out, &md).with_context(|| format!("writing {}", cli.out))?;
     println!("📄 markdown report saved to {}", cli.out);
 
