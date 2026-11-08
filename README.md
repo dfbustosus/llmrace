@@ -46,6 +46,12 @@ q/Esc quit · report written on exit
 
 ## Install
 
+**Homebrew (macOS & Linux):**
+
+```bash
+brew install dfbustosus/tap/llmrace
+```
+
 **Prebuilt binary** (no Rust toolchain needed):
 
 ```bash
