@@ -1,8 +1,6 @@
-use futures_util::StreamExt;
 use llmrace::bench::{spawn_lane, BenchConfig};
-use llmrace::provider::{decode_payload, stream_completion, CompletionRequest, ProviderSpec, Wire};
+use llmrace::provider::{decode_payload, ProviderSpec, Wire};
 use llmrace::tools::{tool_task_prompt, validate_args, weather_tool};
-use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -28,7 +26,6 @@ fn validate_args_accepts_city_only() {
     assert!(!validate_args(r#"{"units":"celsius"}"#));
     assert!(!validate_args(r#"not json"#));
     assert!(!validate_args(r#"{"city":""}"#));
-    assert!(validate_args(r#"  {"city": "Paris"}  "#) == false || true);
 }
 
 #[test]
@@ -159,5 +156,4 @@ async fn plain_runs_have_no_tool_validity() {
     );
     let summary = handle.await.unwrap();
     assert_eq!(summary.tool_validity(), None);
-    let _ = &stream_completion;
 }
