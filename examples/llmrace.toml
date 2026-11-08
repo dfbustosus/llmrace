@@ -1,0 +1,32 @@
+# Full llmrace configuration reference.
+# Copy to ./llmrace.toml or ~/.config/llmrace/config.toml.
+# CLI flags always override profile values.
+
+# Quick smoke test: one fast round, two providers.
+[profiles.fast]
+providers = ["groq", "openai"]
+prompt = "Reply with a single word."
+runs = 1
+warmup = 0
+concurrency = 1
+
+# Thorough comparison: 20 measured rounds, longer generations.
+[profiles.overnight]
+providers = ["openai", "anthropic", "gemini", "groq", "deepseek", "ollama"]
+runs = 20
+warmup = 2
+max_tokens = 1024
+timeout = 300
+
+# Saturation test: 8 parallel streams per provider.
+[profiles.saturation]
+providers = ["groq", "cerebras", "ollama"]
+runs = 5
+warmup = 1
+concurrency = 8
+
+# Deterministic CI lane (no keys required).
+[profiles.ci]
+providers = ["mock"]
+runs = 3
+warmup = 1
