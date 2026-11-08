@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Persistent history and trends: `--record` appends every race to `~/.local/share/llmrace/history.jsonl`; `--trend [--days N] [providers…]` renders per-provider TTFB/throughput drift versus the rolling median with model-swap annotations
+- Homebrew distribution: `brew install dfbustosus/tap/llmrace` ([tap](https://github.com/dfbustosus/homebrew-tap))
 - Watch mode: `llmrace --watch --every 900` re-runs the race on an interval, compares TTFB and p95 against rolling medians, prints `⚠ ALERT` lines on degradation, and exits gracefully on Ctrl+C with a session summary and final report
 - Prompt-variant sweeps: `--sweep short,long,code,json,reasoning` runs the full race once per prompt shape; reports emit one ranked table per variant and JSON entries carry a `variant` label
 - `--profile <name>`: benchmark profiles loaded from `llmrace.toml` (repo root or XDG config), explicit CLI flags win (#20)
