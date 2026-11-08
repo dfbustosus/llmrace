@@ -1,0 +1,6 @@
+target
+corpus/*
+!corpus/sse_parser
+corpus/sse_parser/*
+!corpus/sse_parser/*.txt
+artifacts

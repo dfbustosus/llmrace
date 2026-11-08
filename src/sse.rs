@@ -15,13 +15,26 @@ pub struct SseParser {
 }
 
 impl SseParser {
+    /// Maximum bytes buffered while searching for the next event separator.
+    pub const MAX_BUFFER_BYTES: usize = 1024 * 1024;
+
     /// Creates an empty parser.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Feeds raw bytes and returns all event blocks completed by this write.
-    pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+    ///
+    /// Returns [`Error::Protocol`](crate::error::Error::Protocol) when the
+    /// internal buffer would exceed [`SseParser::MAX_BUFFER_BYTES`] without a
+    /// separator — a hardening bound against hostile or broken streams.
+    pub fn feed(&mut self, bytes: &[u8]) -> crate::error::Result<Vec<String>> {
+        if self.buf.len() + bytes.len() > Self::MAX_BUFFER_BYTES {
+            return Err(crate::error::Error::Protocol(format!(
+                "sse buffer exceeded {} bytes without a separator",
+                Self::MAX_BUFFER_BYTES
+            )));
+        }
         self.buf.extend_from_slice(bytes);
         let mut blocks = Vec::new();
         while let Some(pos) = find_separator(&self.buf) {
@@ -35,7 +48,7 @@ impl SseParser {
                 blocks.push(text);
             }
         }
-        blocks
+        Ok(blocks)
     }
 
     /// Flushes and returns a trailing unterminated block, if any.

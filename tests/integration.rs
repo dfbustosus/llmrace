@@ -12,8 +12,8 @@ fn sse_parses_events_split_at_every_boundary() {
     let bytes = payload.as_bytes();
     for split in 1..bytes.len() {
         let mut parser = SseParser::new();
-        let mut blocks = parser.feed(&bytes[..split]);
-        blocks.extend(parser.feed(&bytes[split..]));
+        let mut blocks = parser.feed(&bytes[..split]).unwrap();
+        blocks.extend(parser.feed(&bytes[split..]).unwrap());
         assert_eq!(blocks.len(), 3, "split at {split}");
     }
 }
@@ -21,7 +21,9 @@ fn sse_parses_events_split_at_every_boundary() {
 #[test]
 fn sse_handles_crlf_and_mixed_separators() {
     let mut parser = SseParser::new();
-    let blocks = parser.feed(b"data: one\r\n\r\ndata: two\n\ndata: three\r\n\r\n");
+    let blocks = parser
+        .feed(b"data: one\r\n\r\ndata: two\n\ndata: three\r\n\r\n")
+        .unwrap();
     assert_eq!(blocks.len(), 3);
     assert_eq!(parse_data_events(&blocks[0]), vec!["one"]);
     assert_eq!(parse_data_events(&blocks[1]), vec!["two"]);
@@ -31,18 +33,20 @@ fn sse_handles_crlf_and_mixed_separators() {
 #[test]
 fn sse_finish_flushes_trailing_block() {
     let mut parser = SseParser::new();
-    assert!(parser.feed(b"data: complete\n\n").len() == 1);
+    assert!(parser.feed(b"data: complete\n\n").unwrap().len() == 1);
     let flushed = parser.finish();
     assert!(flushed.is_empty());
     let mut parser = SseParser::new();
-    parser.feed(b"data: complete\n\ndata: partial");
+    parser.feed(b"data: complete\n\ndata: partial").unwrap();
     assert_eq!(parser.finish().len(), 1);
 }
 
 #[test]
 fn sse_ignores_non_data_lines() {
     let mut parser = SseParser::new();
-    let blocks = parser.feed(b": comment\nevent: x\nid: 7\ndata: payload\n\n");
+    let blocks = parser
+        .feed(b": comment\nevent: x\nid: 7\ndata: payload\n\n")
+        .unwrap();
     assert_eq!(blocks.len(), 1);
     assert_eq!(parse_data_events(&blocks[0]), vec!["payload"]);
 }
@@ -413,4 +417,16 @@ fn openai_compat_provider_batch_pricing() {
         llmrace::cost::pricing("cerebras", "llama-3.3-70b"),
         Some((0.85, 1.20))
     );
+}
+
+#[test]
+fn sse_buffer_cap_rejects_separatorless_flood() {
+    let mut parser = SseParser::new();
+    let flood = vec![b'a'; SseParser::MAX_BUFFER_BYTES + 1];
+    let err = parser.feed(&flood).expect_err("cap must trip");
+    assert!(err.to_string().contains("buffer exceeded"));
+
+    let mut parser = SseParser::new();
+    let exact = vec![b'a'; SseParser::MAX_BUFFER_BYTES];
+    assert!(parser.feed(&exact).is_ok());
 }
