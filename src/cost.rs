@@ -49,6 +49,10 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
             0.90,
         ),
         ("cerebras/llama-3.3-70b", 0.85, 1.20),
+        ("xai/grok-3-mini", 0.30, 0.50),
+        ("xai/grok-4", 3.00, 15.00),
+        ("perplexity/sonar", 1.00, 1.00),
+        ("perplexity/sonar-pro", 3.00, 15.00),
         ("openrouter/openai/gpt-4o-mini", 0.15, 0.60),
     ];
     table

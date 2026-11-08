@@ -430,3 +430,25 @@ fn sse_buffer_cap_rejects_separatorless_flood() {
     let exact = vec![b'a'; SseParser::MAX_BUFFER_BYTES];
     assert!(parser.feed(&exact).is_ok());
 }
+
+#[test]
+fn xai_and_perplexity_specs() {
+    let xai = llmrace::provider::ProviderSpec::find("xai").unwrap();
+    assert_eq!(xai.wire, Wire::OpenAiCompat);
+    assert_eq!(*xai.default_model, *"grok-3-mini");
+    assert_eq!(xai.api_key_env.as_deref(), Some("XAI_API_KEY"));
+
+    let pplx = llmrace::provider::ProviderSpec::find("perplexity").unwrap();
+    assert_eq!(pplx.wire, Wire::OpenAiCompat);
+    assert_eq!(*pplx.default_model, *"sonar");
+    assert_eq!(pplx.api_key_env.as_deref(), Some("PERPLEXITY_API_KEY"));
+
+    assert_eq!(
+        llmrace::cost::pricing("xai", "grok-3-mini"),
+        Some((0.30, 0.50))
+    );
+    assert_eq!(
+        llmrace::cost::pricing("perplexity", "sonar"),
+        Some((1.00, 1.00))
+    );
+}
