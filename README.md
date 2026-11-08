@@ -82,6 +82,9 @@ llmrace ollama groq -m llama-3.3-70b-versatile
 # Saturation throughput: 8 parallel requests per provider
 llmrace openai groq -c 8 -n 5
 
+# Prompt-variant sweep: same race across prompt shapes
+llmrace openai groq --sweep short,long,code,json,reasoning
+
 # Race ANY OpenAI-compatible endpoint (vLLM, LiteLLM, Together…)
 llmrace --endpoint http://localhost:8000/v1/chat/completions \
         --provider-name vllm --api-key-env VLLM_API_KEY \
