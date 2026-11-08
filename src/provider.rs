@@ -301,6 +301,8 @@ fn spec(id: &str, endpoint: &str, key_env: Option<&str>, model: &str, wire: Wire
 pub struct StreamEvent {
     /// A generated text fragment, when this event carries one.
     pub token: Option<String>,
+    /// A tool-call argument JSON fragment, when this event carries one.
+    pub tool_args: Option<String>,
     /// Provider-reported completion token count, when available.
     pub completion_tokens: Option<u64>,
 }
@@ -314,6 +316,8 @@ pub struct CompletionRequest<'a> {
     pub prompt: &'a str,
     /// Sampling cap passed as `max_tokens`.
     pub max_tokens: u64,
+    /// Enable the tool-calling task and attach tool schemas.
+    pub tools: bool,
 }
 
 /// The stream returned by [`stream_completion`].
@@ -349,7 +353,7 @@ impl futures_util::Stream for EventStream {
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// let client = reqwest::Client::new();
 /// let spec = ProviderSpec::mock();
-/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8 };
+/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8, tools: false };
 /// let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
 /// use futures_util::StreamExt;
 /// let mut tokens = 0;
@@ -380,6 +384,9 @@ pub async fn stream_completion(
             if *spec.id != *"ollama" {
                 body["stream_options"] = json!({"include_usage": true});
             }
+            if req.tools {
+                body["tools"] = crate::tools::weather_tool(Wire::OpenAiCompat);
+            }
             let mut request = client.post(spec.endpoint.as_ref()).json(&body);
             if let Some(k) = &key {
                 request = match spec.auth {
@@ -396,12 +403,15 @@ pub async fn stream_completion(
         }
         Wire::Anthropic => {
             let key = spec.api_key()?;
-            let body = json!({
+            let mut body = json!({
                 "model": req.model,
                 "max_tokens": req.max_tokens,
                 "messages": [{"role": "user", "content": req.prompt}],
                 "stream": true,
             });
+            if req.tools {
+                body["tools"] = crate::tools::weather_tool(Wire::Anthropic);
+            }
             let resp = client
                 .post(spec.endpoint.as_ref())
                 .header("x-api-key", key.as_deref().unwrap_or_default())
@@ -415,12 +425,15 @@ pub async fn stream_completion(
         }
         Wire::Cohere => {
             let key = spec.api_key()?;
-            let body = json!({
+            let mut body = json!({
                 "model": req.model,
                 "messages": [{"role": "user", "content": req.prompt}],
                 "max_tokens": req.max_tokens,
                 "stream": true,
             });
+            if req.tools {
+                body["tools"] = crate::tools::weather_tool(Wire::Cohere);
+            }
             let resp = client
                 .post(spec.endpoint.as_ref())
                 .bearer_auth(key.as_deref().unwrap_or_default())
@@ -434,10 +447,13 @@ pub async fn stream_completion(
         Wire::Gemini => {
             let key = spec.api_key()?;
             let endpoint = spec.endpoint.replace("{model}", req.model);
-            let body = json!({
+            let mut body = json!({
                 "contents": [{"parts": [{"text": req.prompt}]}],
                 "generationConfig": {"maxOutputTokens": req.max_tokens},
             });
+            if req.tools {
+                body["tools"] = crate::tools::weather_tool(Wire::Gemini);
+            }
             let resp = client
                 .post(endpoint)
                 .header("x-goog-api-key", key.as_deref().unwrap_or_default())
@@ -487,7 +503,10 @@ impl SseStream {
     fn enqueue_block(&mut self, block: &str) {
         for payload in parse_data_events(block) {
             if let Some(event) = decode_payload(payload, self.wire) {
-                if event.token.is_some() || event.completion_tokens.is_some() {
+                let carries_output = event.token.is_some()
+                    || event.completion_tokens.is_some()
+                    || event.tool_args.is_some();
+                if carries_output {
                     self.pending.push_back(event);
                 }
             }
@@ -549,26 +568,42 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 .and_then(|c| c.as_str())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
+            let tool_args = v
+                .pointer("/choices/0/delta/tool_calls/0/function/arguments")
+                .and_then(|c| c.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             let usage = v
                 .pointer("/usage/completion_tokens")
                 .and_then(|c| c.as_u64());
             Some(StreamEvent {
                 token,
+                tool_args,
                 completion_tokens: usage,
             })
         }
         Wire::Anthropic => {
             let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
             match kind {
-                "content_block_delta" => Some(StreamEvent {
-                    token: v
+                "content_block_delta" => {
+                    let token = v
                         .pointer("/delta/text")
                         .and_then(|c| c.as_str())
                         .filter(|s| !s.is_empty())
-                        .map(str::to_string),
-                    completion_tokens: None,
-                }),
+                        .map(str::to_string);
+                    let tool_args = v
+                        .pointer("/delta/partial_json")
+                        .and_then(|c| c.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    Some(StreamEvent {
+                        token,
+                        tool_args,
+                        completion_tokens: None,
+                    })
+                }
                 "message_delta" => Some(StreamEvent {
+                    tool_args: None,
                     token: None,
                     completion_tokens: v.pointer("/usage/output_tokens").and_then(|c| c.as_u64()),
                 }),
@@ -581,14 +616,19 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 .and_then(|c| c.as_str())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
+            let tool_args = v
+                .pointer("/candidates/0/content/parts/0/functionCall/args")
+                .filter(|a| a.is_object())
+                .map(|a| a.to_string());
             let usage = v
                 .pointer("/usageMetadata/candidatesTokenCount")
                 .and_then(|c| c.as_u64());
-            if token.is_none() && usage.is_none() {
+            if token.is_none() && usage.is_none() && tool_args.is_none() {
                 return None;
             }
             Some(StreamEvent {
                 token,
+                tool_args,
                 completion_tokens: usage,
             })
         }
@@ -616,6 +656,7 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 return None;
             }
             Some(StreamEvent {
+                tool_args: None,
                 token,
                 completion_tokens: usage,
             })
@@ -658,6 +699,7 @@ impl futures_util::Stream for MockStream {
             }
             self.usage_sent = true;
             return Poll::Ready(Some(Ok(StreamEvent {
+                tool_args: None,
                 token: None,
                 completion_tokens: Some(self.n_tokens as u64),
             })));
@@ -675,6 +717,7 @@ impl futures_util::Stream for MockStream {
         }
         self.emitted += 1;
         Poll::Ready(Some(Ok(StreamEvent {
+            tool_args: None,
             token: Some("token ".to_string()),
             completion_tokens: None,
         })))
