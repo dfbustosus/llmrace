@@ -21,6 +21,16 @@ pub enum Wire {
     Mock,
 }
 
+/// How the API key is presented to the endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuthKind {
+    /// `Authorization: Bearer <key>` (OpenAI-compatible default).
+    #[default]
+    Bearer,
+    /// `api-key: <key>` (Azure OpenAI).
+    ApiKeyHeader,
+}
+
 /// A fully-resolved provider description.
 #[derive(Debug, Clone)]
 pub struct ProviderSpec {
@@ -36,6 +46,8 @@ pub struct ProviderSpec {
     pub default_model: Arc<str>,
     /// Wire protocol of the endpoint.
     pub wire: Wire,
+    /// Authentication style for the API key.
+    pub auth: AuthKind,
 }
 
 impl ProviderSpec {
@@ -193,6 +205,25 @@ impl ProviderSpec {
         spec(name, endpoint, key_env, model, Wire::OpenAiCompat)
     }
 
+    /// Builds an Azure OpenAI provider for a resource + deployment.
+    ///
+    /// Reads the key from `AZURE_OPENAI_API_KEY` and authenticates with the
+    /// `api-key` header instead of a bearer token.
+    pub fn azure_openai(resource: &str, deployment: &str) -> Self {
+        let endpoint = format!(
+            "https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview"
+        );
+        let mut p = spec(
+            "azure",
+            &endpoint,
+            Some("AZURE_OPENAI_API_KEY"),
+            deployment,
+            Wire::OpenAiCompat,
+        );
+        p.auth = AuthKind::ApiKeyHeader;
+        p
+    }
+
     /// All built-in providers.
     pub fn registry() -> Vec<ProviderSpec> {
         vec![
@@ -247,6 +278,7 @@ fn spec(id: &str, endpoint: &str, key_env: Option<&str>, model: &str, wire: Wire
         api_key_env: key_env.map(Arc::from),
         default_model: Arc::from(model),
         wire,
+        auth: AuthKind::default(),
     }
 }
 
@@ -336,7 +368,10 @@ pub async fn stream_completion(
             }
             let mut request = client.post(spec.endpoint.as_ref()).json(&body);
             if let Some(k) = &key {
-                request = request.bearer_auth(k);
+                request = match spec.auth {
+                    AuthKind::Bearer => request.bearer_auth(k),
+                    AuthKind::ApiKeyHeader => request.header("api-key", k),
+                };
             }
             let resp = request
                 .send()
