@@ -66,6 +66,12 @@ cargo binstall llmrace
 
 Or grab a binary for your platform from the [releases page](https://github.com/dfbustosus/llmrace/releases) — Linux (x86_64), macOS (Apple Silicon & Intel), Windows (x86_64), each with SHA-256 checksums.
 
+**Shell completions:**
+
+```bash
+llmrace --completions zsh > ~/.zfunc/_llmrace   # or bash/fish/powershell/elvish
+```
+
 **From crates.io:**
 
 ```bash
