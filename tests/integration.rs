@@ -538,3 +538,31 @@ fn cohere_wire_decodes_v2_and_v1_shapes() {
         Some((2.50, 10.00))
     );
 }
+
+#[tokio::test]
+async fn duration_bound_runs_real_time() {
+    let started = std::time::Instant::now();
+    let config = BenchConfig {
+        prompt: "demo".into(),
+        runs: 100_000,
+        warmup: 0,
+        duration_secs: Some(1),
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(
+        reqwest::Client::new(),
+        ProviderSpec::mock(),
+        "mock-1".into(),
+        config,
+    );
+    drop(progress);
+    let summary = handle.await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(summary.successful());
+    assert!(
+        summary.runs.len() >= 2 && summary.runs.len() <= 8,
+        "rounds: {}",
+        summary.runs.len()
+    );
+    assert!(elapsed.as_secs() <= 3, "elapsed {elapsed:?}");
+}
