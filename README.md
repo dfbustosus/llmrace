@@ -140,6 +140,21 @@ llmrace openai groq --out race.md --json --csv
 - `race.json` — full per-run data, confidence intervals and outliers for CI pipelines
 - `race.csv` — per-run rows for spreadsheets and dashboards
 
+## Tracking providers over time
+
+Record every race to a local history file (JSONL under `~/.local/share/llmrace/`):
+
+```bash
+llmrace openai groq --record
+```
+
+Then analyze drift — TTFB/throughput changes versus the rolling median, with model-swap annotations:
+
+```bash
+llmrace --trend              # last 30 days, all providers
+llmrace --trend --days 7 groq
+```
+
 ## Using llmrace as a CI quality gate
 
 Record a baseline once, then fail your pipeline when a provider regresses:
