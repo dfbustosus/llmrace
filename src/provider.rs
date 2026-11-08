@@ -17,6 +17,8 @@ pub enum Wire {
     Anthropic,
     /// Google Gemini `streamGenerateContent` streaming.
     Gemini,
+    /// Cohere `/v2/chat` streaming.
+    Cohere,
     /// Built-in deterministic provider for tests and demos.
     Mock,
 }
@@ -128,6 +130,17 @@ impl ProviderSpec {
         )
     }
 
+    /// Cohere official API (v2 chat streaming).
+    pub fn cohere() -> Self {
+        spec(
+            "cohere",
+            "https://api.cohere.com/v2/chat",
+            Some("CO_API_KEY"),
+            "command-a-03-2025",
+            Wire::Cohere,
+        )
+    }
+
     /// DeepSeek official API.
     pub fn deepseek() -> Self {
         spec(
@@ -233,6 +246,7 @@ impl ProviderSpec {
             ProviderSpec::groq(),
             ProviderSpec::xai(),
             ProviderSpec::perplexity(),
+            ProviderSpec::cohere(),
             ProviderSpec::deepseek(),
             ProviderSpec::mistral(),
             ProviderSpec::together(),
@@ -399,6 +413,24 @@ pub async fn stream_completion(
             let resp = check_status(spec, resp).await?;
             Ok(EventStream::Http(SseStream::new(resp, Wire::Anthropic)))
         }
+        Wire::Cohere => {
+            let key = spec.api_key()?;
+            let body = json!({
+                "model": req.model,
+                "messages": [{"role": "user", "content": req.prompt}],
+                "max_tokens": req.max_tokens,
+                "stream": true,
+            });
+            let resp = client
+                .post(spec.endpoint.as_ref())
+                .bearer_auth(key.as_deref().unwrap_or_default())
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| Error::Stream(e.to_string()))?;
+            let resp = check_status(spec, resp).await?;
+            Ok(EventStream::Http(SseStream::new(resp, Wire::Cohere)))
+        }
         Wire::Gemini => {
             let key = spec.api_key()?;
             let endpoint = spec.endpoint.replace("{model}", req.model);
@@ -552,6 +584,34 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
             let usage = v
                 .pointer("/usageMetadata/candidatesTokenCount")
                 .and_then(|c| c.as_u64());
+            if token.is_none() && usage.is_none() {
+                return None;
+            }
+            Some(StreamEvent {
+                token,
+                completion_tokens: usage,
+            })
+        }
+        Wire::Cohere => {
+            let token = v
+                .pointer("/delta/message/content/text")
+                .and_then(|c| c.as_str())
+                .or_else(|| {
+                    if v.get("event_type").and_then(|e| e.as_str()) == Some("text-generation") {
+                        v.get("text").and_then(|c| c.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let usage = v
+                .pointer("/response/meta/billed_units/output_tokens")
+                .and_then(|c| c.as_u64())
+                .or_else(|| {
+                    v.pointer("/usage/tokens/output_tokens")
+                        .and_then(|c| c.as_u64())
+                });
             if token.is_none() && usage.is_none() {
                 return None;
             }

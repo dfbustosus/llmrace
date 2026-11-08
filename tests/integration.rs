@@ -493,3 +493,44 @@ async fn percentile_ladder_and_histogram_render() {
     };
     assert!(report::histogram_section(std::slice::from_ref(&sparse)).is_empty());
 }
+
+#[test]
+fn cohere_wire_decodes_v2_and_v1_shapes() {
+    let v2 = decode_payload(
+        r#"{"type":"content_delta","delta":{"message":{"content":{"type":"text","text":"Hi"}}}}"#,
+        Wire::Cohere,
+    )
+    .unwrap();
+    assert_eq!(v2.token.as_deref(), Some("Hi"));
+
+    let v1 = decode_payload(
+        r#"{"event_type":"text-generation","text":"legacy"}"#,
+        Wire::Cohere,
+    )
+    .unwrap();
+    assert_eq!(v1.token.as_deref(), Some("legacy"));
+
+    let usage_v1 = decode_payload(
+        r#"{"event_type":"stream-end","response":{"meta":{"billed_units":{"output_tokens":42}}}}"#,
+        Wire::Cohere,
+    )
+    .unwrap();
+    assert_eq!(usage_v1.completion_tokens, Some(42));
+
+    let usage_v2 = decode_payload(
+        r#"{"type":"usage","usage":{"tokens":{"output_tokens":7}}}"#,
+        Wire::Cohere,
+    )
+    .unwrap();
+    assert_eq!(usage_v2.completion_tokens, Some(7));
+
+    assert!(decode_payload(r#"{"type":"frame-start"}"#, Wire::Cohere).is_none());
+
+    let spec = llmrace::provider::ProviderSpec::find("cohere").unwrap();
+    assert_eq!(spec.wire, Wire::Cohere);
+    assert_eq!(*spec.default_model, *"command-a-03-2025");
+    assert_eq!(
+        llmrace::cost::pricing("cohere", "command-a-03-2025"),
+        Some((2.50, 10.00))
+    );
+}
