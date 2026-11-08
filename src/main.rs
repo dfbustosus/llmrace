@@ -88,6 +88,10 @@ struct Cli {
     #[arg(short, long, default_value = "llmrace-report.md")]
     out: String,
 
+    /// Run the race once per comma-separated prompt variant (short,long,code,json,reasoning).
+    #[arg(long)]
+    sweep: Option<String>,
+
     /// Load a named profile from llmrace.toml (explicit flags win).
     #[arg(long)]
     profile: Option<String>,
@@ -149,6 +153,13 @@ async fn main() -> Result<()> {
     );
     println!("   prompt: \"{}\"\n", cli.prompt.replace('\n', " "));
 
+    let variants: Vec<Option<llmrace::variants::Variant>> = match &cli.sweep {
+        Some(spec) => llmrace::variants::parse(spec)
+            .map(|vs| vs.into_iter().map(Some).collect())
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => vec![None],
+    };
+
     let lanes: Vec<(Arc<str>, String)> = selected
         .iter()
         .map(|p| {
@@ -163,19 +174,32 @@ async fn main() -> Result<()> {
 
     let mut handles = Vec::new();
     let mut receivers = Vec::new();
-    for p in &selected {
-        let model = cli
-            .model
-            .clone()
-            .unwrap_or_else(|| p.default_model.to_string());
-        let (handle, rx) = spawn_lane(
-            client.clone(),
-            p.clone(),
-            model,
-            BenchConfig { ..config.clone() },
-        );
-        handles.push(handle);
-        receivers.push(rx);
+    for variant in &variants {
+        let prompt = match variant {
+            Some(v) => v.prompt.to_string(),
+            None => config.prompt.clone(),
+        };
+        for p in &selected {
+            let model = cli
+                .model
+                .clone()
+                .unwrap_or_else(|| p.default_model.to_string());
+            let (handle, rx) = spawn_lane(
+                client.clone(),
+                p.clone(),
+                model,
+                BenchConfig {
+                    prompt: prompt.clone(),
+                    ..config.clone()
+                },
+            );
+            handles.push(async move {
+                let mut summary = handle.await.map_err(anyhow::Error::from)?;
+                summary.variant = variant.as_ref().map(|v| v.name.to_string());
+                Ok::<LaneSummary, anyhow::Error>(summary)
+            });
+            receivers.push(rx);
+        }
     }
 
     let summaries: Vec<LaneSummary> = if cli.no_tui {
@@ -187,7 +211,7 @@ async fn main() -> Result<()> {
                     print_lane_progress(&s);
                     all.push(s);
                 }
-                Err(e) => eprintln!("lane task failed: {e}"),
+                Err(e) => eprintln!("lane failed: {e}"),
             }
         }
         all
@@ -215,7 +239,7 @@ async fn main() -> Result<()> {
         for h in handles {
             match h.await {
                 Ok(s) => all.push(s),
-                Err(e) => eprintln!("lane task failed: {e}"),
+                Err(e) => eprintln!("lane failed: {e}"),
             }
         }
         match tui_handle.await {
