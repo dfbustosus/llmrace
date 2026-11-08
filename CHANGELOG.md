@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- README: real-world benchmark section (local Ollama llama3.2:1b: 60.2 tok/s, sub-ms TTFB, 3/3 valid tool calls)
 - Optional SQLite history backend: build with `--features sqlite` and run with `--storage sqlite` (transactional writes, `(provider, timestamp)` index); JSONL remains the default
 - Static HTML dashboard: `llmrace --dashboard [--out file.html]` renders recorded history into a self-contained dark-theme page with per-provider SVG time series, median guides, model-swap annotations and last-run tables — no server, no JavaScript
 - Prometheus pushgateway export: `--push-gateway URL` PUTs gauges (TTFB, latency mean/median/p95, tokens/s, cost, tool validity) in text exposition format after each race
