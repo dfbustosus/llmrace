@@ -23,7 +23,7 @@ fn bench_sse_feed_7byte_chunks(c: &mut Criterion) {
             let mut parser = SseParser::new();
             let mut blocks = 0usize;
             for chunk in stream.chunks(7) {
-                blocks += black_box(parser.feed(black_box(chunk))).len();
+                blocks += black_box(parser.feed(black_box(chunk)).unwrap()).len();
             }
             blocks += parser.finish().len();
             black_box(blocks)
