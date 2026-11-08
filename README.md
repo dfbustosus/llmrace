@@ -140,6 +140,22 @@ llmrace openai groq --out race.md --json --csv
 - `race.json` — full per-run data, confidence intervals and outliers for CI pipelines
 - `race.csv` — per-run rows for spreadsheets and dashboards
 
+## Distributed probes
+
+Run region-distributed probes from any workflow with the reusable [probe workflow](.github/workflows/probe.yml):
+
+```yaml
+jobs:
+  probe:
+    uses: dfbustosus/llmrace/.github/workflows/probe.yml@main
+    with:
+      providers: groq openai
+      runs: 5
+    secrets: inherit
+```
+
+Each run uploads a region-tagged JSON report artifact for merging into a shared history.
+
 ## Tracking providers over time
 
 Record every race to a local history file (JSONL under `~/.local/share/llmrace/`):
