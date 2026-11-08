@@ -139,6 +139,10 @@ struct Cli {
     /// List built-in providers.
     #[arg(long)]
     list: bool,
+
+    /// Print shell completions for the given shell and exit.
+    #[arg(long)]
+    completions: Option<String>,
 }
 
 #[tokio::main]
@@ -146,6 +150,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let (cli, _profile) = apply_profile(cli)?;
+
+    if let Some(shell) = &cli.completions {
+        let shell: clap_complete::Shell = shell
+            .parse()
+            .map_err(|e| anyhow::anyhow!("unknown shell '{shell}': {e}"))?;
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        let name = cmd.get_name().to_string();
+        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
 
     if cli.list {
         let header = format!("{:<14} {:<30} {}\n", "PROVIDER", "DEFAULT MODEL", "NEEDS");
