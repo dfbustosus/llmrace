@@ -40,6 +40,7 @@ impl Drop for TerminalGuard {
 #[derive(Clone)]
 struct Lane {
     name: Arc<str>,
+    variant: Option<Arc<str>>,
     model: String,
     tokens: u64,
     elapsed_ms: f64,
@@ -53,9 +54,10 @@ struct Lane {
 }
 
 impl Lane {
-    fn new(name: Arc<str>, model: String) -> Self {
+    fn new(name: Arc<str>, variant: Option<Arc<str>>, model: String) -> Self {
         Lane {
             name,
+            variant,
             model,
             tokens: 0,
             elapsed_ms: 0.0,
@@ -86,12 +88,16 @@ pub struct Tui {
 
 impl Tui {
     /// Creates a TUI for the given lanes.
-    pub fn new(lanes: Vec<(Arc<str>, String)>, prompt: String, runs: usize) -> Self {
+    pub fn new(
+        lanes: Vec<(Arc<str>, Option<Arc<str>>, String)>,
+        prompt: String,
+        runs: usize,
+    ) -> Self {
         Tui {
             state: RaceState {
                 lanes: lanes
                     .into_iter()
-                    .map(|(name, model)| Lane::new(name, model))
+                    .map(|(name, variant, model)| Lane::new(name, variant, model))
                     .collect(),
                 prompt,
                 runs,
@@ -101,9 +107,23 @@ impl Tui {
         }
     }
 
+    /// Progress snapshot for one lane key: `(tokens, finished)`.
+    pub fn lane_progress(&self, provider: &str, variant: Option<&str>) -> Option<(u64, bool)> {
+        self.state
+            .lanes
+            .iter()
+            .find(|l| *l.name == *provider && l.variant.as_deref() == variant)
+            .map(|l| (l.tokens, l.finished))
+    }
+
     /// Applies one progress update.
     pub fn update(&mut self, u: LaneUpdate) {
-        if let Some(lane) = self.state.lanes.iter_mut().find(|l| *l.name == *u.provider) {
+        if let Some(lane) = self
+            .state
+            .lanes
+            .iter_mut()
+            .find(|l| *l.name == *u.provider && l.variant.as_deref() == u.variant.as_deref())
+        {
             if u.finished {
                 lane.finished = true;
                 if let Some(e) = u.error {
@@ -242,7 +262,10 @@ impl Tui {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(accent))
                 .title(Span::styled(
-                    format!(" {} ", lane.name.to_uppercase()),
+                    match lane.variant.as_deref() {
+                        Some(v) => format!(" {} [{v}] ", lane.name.to_uppercase()),
+                        None => format!(" {} ", lane.name.to_uppercase()),
+                    },
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ));
             let rows = Layout::vertical([
