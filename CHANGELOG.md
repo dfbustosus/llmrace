@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
 ### Added
 
 - Persistent history and trends: `--record` appends every race to `~/.local/share/llmrace/history.jsonl`; `--trend [--days N] [providers…]` renders per-provider TTFB/throughput drift versus the rolling median with model-swap annotations
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - MSRV raised from 1.82 to **1.88**: the 2026 dependency graph (clap 4.6 / darling, ICU4X, ratatui) requires edition-2024-capable toolchains (#22)
+- **Breaking (pre-1.0)**: `SseParser::feed` returns `Result` and enforces a 1 MiB buffer cap, erroring on separatorless floods (#48)
 
 ### Fixed
 
@@ -46,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dfbustosus/llmrace/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dfbustosus/llmrace/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dfbustosus/llmrace/releases/tag/v0.1.0
