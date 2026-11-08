@@ -24,6 +24,12 @@ Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tai
 
 ## Demo
 
+![llmrace demo](docs/demo.gif)
+
+*A real race against a local Ollama model, a prompt sweep, and trend analysis of recorded history — 100% reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs)).*
+
+## Why
+
 ```text
  🏁 llmrace   run 1/3 ·  4.2s · "Write one vivid paragraph about a lighthouse at dawn."
 ┌─ GROQ ────────────────────────────────────────────────────────────────┐
