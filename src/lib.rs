@@ -57,6 +57,7 @@ pub mod regression;
 pub mod report;
 pub mod sse;
 pub mod stats;
+pub mod tools;
 pub mod tui;
 pub mod variants;
 pub mod watch;
