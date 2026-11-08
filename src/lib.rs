@@ -52,6 +52,7 @@ pub mod config;
 pub mod cost;
 pub mod error;
 pub mod history;
+pub mod prom;
 pub mod provider;
 pub mod regression;
 pub mod report;
