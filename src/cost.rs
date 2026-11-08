@@ -53,6 +53,8 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
         ("xai/grok-4", 3.00, 15.00),
         ("perplexity/sonar", 1.00, 1.00),
         ("perplexity/sonar-pro", 3.00, 15.00),
+        ("cohere/command-a-03-2025", 2.50, 10.00),
+        ("cohere/command-r-plus-08-2024", 2.50, 10.00),
         ("openrouter/openai/gpt-4o-mini", 0.15, 0.60),
     ];
     table
