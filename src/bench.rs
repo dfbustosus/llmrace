@@ -21,6 +21,16 @@ pub struct RunMetrics {
     pub chars: u64,
     /// Estimated prompt tokens (0 when unknown).
     pub prompt_tokens: u64,
+    /// Accumulated tool-call argument JSON (empty when the run had none).
+    pub tool_args: String,
+}
+
+impl RunMetrics {
+    /// Whether the accumulated tool-call arguments parsed as valid JSON
+    /// containing the expected field.
+    pub fn tool_args_valid(&self) -> bool {
+        crate::tools::validate_args(&self.tool_args)
+    }
 }
 
 impl RunMetrics {
@@ -58,6 +68,8 @@ pub struct BenchConfig {
     pub concurrency: usize,
     /// Per-request timeout in seconds.
     pub timeout_secs: u64,
+    /// Enable the tool-calling task (attaches tool schemas to requests).
+    pub tools: bool,
 }
 
 impl Default for BenchConfig {
@@ -69,6 +81,7 @@ impl Default for BenchConfig {
             warmup: 1,
             concurrency: 1,
             timeout_secs: 120,
+            tools: false,
         }
     }
 }
@@ -195,6 +208,21 @@ impl LaneSummary {
         Some((self.mean_tokens() * pout + prompt_tokens * pin) / 1_000_000.0)
     }
 
+    /// `(valid, total)` tool-argument validity across rounds that produced
+    /// arguments; `None` when no round produced tool arguments.
+    pub fn tool_validity(&self) -> Option<(usize, usize)> {
+        let with_args: Vec<&RunMetrics> = self
+            .runs
+            .iter()
+            .filter(|r| !r.tool_args.is_empty())
+            .collect();
+        if with_args.is_empty() {
+            return None;
+        }
+        let valid = with_args.iter().filter(|r| r.tool_args_valid()).count();
+        Some((valid, with_args.len()))
+    }
+
     /// `true` when at least one measured round succeeded.
     pub fn successful(&self) -> bool {
         self.error.is_none() && !self.runs.is_empty()
@@ -286,9 +314,10 @@ async fn run_round(
         let max_tokens = config.max_tokens;
         let timeout = Duration::from_secs(config.timeout_secs);
         let progress = progress.clone();
+        let tools = config.tools;
         tasks.spawn(async move {
             single_request(
-                &client, &spec, &model, &prompt, max_tokens, timeout, &progress,
+                &client, &spec, &model, &prompt, max_tokens, timeout, tools, &progress,
             )
             .await
         });
@@ -317,10 +346,17 @@ async fn run_round(
             tokens: all.iter().map(|m| m.tokens).sum(),
             chars: all.iter().map(|m| m.chars).sum(),
             prompt_tokens: all.iter().map(|m| m.prompt_tokens).sum(),
+            tool_args: all
+                .iter()
+                .map(|m| m.tool_args.as_str())
+                .max_by_key(|s| s.len())
+                .unwrap_or("")
+                .to_string(),
         }])
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn single_request(
     client: &reqwest::Client,
     spec: &ProviderSpec,
@@ -328,12 +364,14 @@ async fn single_request(
     prompt: &str,
     max_tokens: u64,
     timeout: Duration,
+    tools: bool,
     progress: &mpsc::Sender<LaneUpdate>,
 ) -> crate::error::Result<RunMetrics> {
     let req = CompletionRequest {
         model,
         prompt,
         max_tokens,
+        tools,
     };
     let mut stream = stream_completion(client, spec, &req).await?;
     let start = Instant::now();
@@ -342,6 +380,7 @@ async fn single_request(
     let mut tokens = 0u64;
     let mut chars = 0u64;
     let mut usage: Option<u64> = None;
+    let mut tool_args = String::new();
 
     loop {
         let next = tokio::select! {
@@ -354,8 +393,13 @@ async fn single_request(
         let Some(event) = next else { break };
         let event: StreamEvent = event?;
         let now = Instant::now();
-        if ttfb.is_none() && (event.token.is_some() || event.completion_tokens.is_some()) {
+        let first_output =
+            event.token.is_some() || event.completion_tokens.is_some() || event.tool_args.is_some();
+        if ttfb.is_none() && first_output {
             ttfb = Some(now - start);
+        }
+        if let Some(fragment) = &event.tool_args {
+            tool_args.push_str(fragment);
         }
         if let Some(t) = &event.token {
             tokens += 1;
@@ -386,5 +430,6 @@ async fn single_request(
         tokens,
         chars,
         prompt_tokens: 0,
+        tool_args,
     })
 }
