@@ -96,6 +96,10 @@ struct Cli {
     #[arg(long)]
     trend: bool,
 
+    /// Render the recorded history into a static HTML dashboard and exit.
+    #[arg(long)]
+    dashboard: bool,
+
     /// Days of history to analyze with --trend.
     #[arg(long, default_value_t = 30)]
     days: u64,
@@ -151,6 +155,23 @@ async fn main() -> Result<()> {
             );
             print!("{row}");
         }
+        return Ok(());
+    }
+
+    if cli.dashboard {
+        let records = llmrace::history::load(&llmrace::history::history_path());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let html = llmrace::dashboard::render_html(&records, cli.days, now);
+        let path = if cli.out == "llmrace-report.md" {
+            std::path::PathBuf::from("llmrace-dashboard.html")
+        } else {
+            std::path::PathBuf::from(&cli.out)
+        };
+        std::fs::write(&path, html).with_context(|| format!("writing {}", path.display()))?;
+        println!("🖥 dashboard written to {}", path.display());
         return Ok(());
     }
 
