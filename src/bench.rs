@@ -72,6 +72,9 @@ pub struct BenchConfig {
     pub tools: bool,
     /// Prompt variant label when running a sweep.
     pub variant: Option<Arc<str>>,
+    /// When set, measured rounds continue until this many seconds have
+    /// elapsed (overrides `runs` as the stopping condition).
+    pub duration_secs: Option<u64>,
 }
 
 impl Default for BenchConfig {
@@ -85,6 +88,7 @@ impl Default for BenchConfig {
             timeout_secs: 120,
             tools: false,
             variant: None,
+            duration_secs: None,
         }
     }
 }
@@ -262,8 +266,16 @@ pub fn spawn_lane(
             variant: config.variant.as_ref().map(|v| v.to_string()),
         };
         let total_rounds = config.warmup + config.runs;
+        let deadline = config
+            .duration_secs
+            .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
         for round in 0..total_rounds {
             let counted = round >= config.warmup;
+            if let Some(dl) = deadline {
+                if counted && round > config.warmup && std::time::Instant::now() >= dl {
+                    break;
+                }
+            }
             let outcome = run_round(&client, &spec, &model, &config, &tx).await;
             match outcome {
                 Ok(metrics) => {
