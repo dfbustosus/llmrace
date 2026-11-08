@@ -169,6 +169,22 @@ llmrace openai groq --baseline llmrace-report.json --max-regression 15
 
 The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table, and flags providers that are new or missing from the baseline.
 
+## How it compares
+
+| | llmrace | provider CLIs | load testers (k6/vegeta) | router dashboards |
+|---|---|---|---|---|
+| Multi-provider streaming race | ✅ 12 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
+| TTFB / tokens/s / p95 / t-CI | ✅ built-in | varies | ✝ you build it | ✅ but only routed traffic |
+| Live terminal race view | ✅ | ❌ | ❌ | ❌ |
+| CI regression gate (`--baseline`) | ✅ | ❌ | ✝ heavy scripting | ❌ |
+| Longitudinal trends + model-swap detection | ✅ | ❌ | ❌ | partial |
+| Cost per run from real token usage | ✅ | ❌ | ❌ | partial |
+| Single static binary, no config file | ✅ | ❌ | ❌ | ❌ |
+| Fuzzed, bounded parser + typed errors | ✅ | — | — | — |
+
+✝ possible with effort — llmrace exists so you don't spend that effort.
+Missing a capability you need? [Open an issue](https://github.com/dfbustosus/llmrace/issues/new/choose).
+
 ## Engineering
 
 - `#![deny(missing_docs)]` and `#![deny(clippy::unwrap_used)]` on the library
