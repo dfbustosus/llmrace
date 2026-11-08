@@ -94,6 +94,28 @@ impl ProviderSpec {
         )
     }
 
+    /// xAI Grok official API.
+    pub fn xai() -> Self {
+        spec(
+            "xai",
+            "https://api.x.ai/v1/chat/completions",
+            Some("XAI_API_KEY"),
+            "grok-3-mini",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Perplexity Sonar API.
+    pub fn perplexity() -> Self {
+        spec(
+            "perplexity",
+            "https://api.perplexity.ai/chat/completions",
+            Some("PERPLEXITY_API_KEY"),
+            "sonar",
+            Wire::OpenAiCompat,
+        )
+    }
+
     /// DeepSeek official API.
     pub fn deepseek() -> Self {
         spec(
@@ -178,6 +200,8 @@ impl ProviderSpec {
             ProviderSpec::anthropic(),
             ProviderSpec::gemini(),
             ProviderSpec::groq(),
+            ProviderSpec::xai(),
+            ProviderSpec::perplexity(),
             ProviderSpec::deepseek(),
             ProviderSpec::mistral(),
             ProviderSpec::together(),
