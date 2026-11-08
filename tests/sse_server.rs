@@ -197,3 +197,75 @@ fn wire_of_custom_provider_is_openai_compat() {
     let spec = ProviderSpec::custom("x", "http://localhost:9/v1/chat/completions", None, "m");
     assert_eq!(spec.wire, Wire::OpenAiCompat);
 }
+
+#[tokio::test]
+async fn azure_style_auth_sends_api_key_header_not_bearer() {
+    use std::sync::Arc;
+    let spec_arc = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(String::new()));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let cap_clone = Arc::clone(&captured);
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept");
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 2048];
+        let head_end = loop {
+            let n = socket.read(&mut tmp).await.expect("read");
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos;
+            }
+        };
+        *cap_clone.lock().unwrap() = String::from_utf8_lossy(&buf[..head_end]).to_string();
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+                  data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+            )
+            .await
+            .unwrap();
+        socket.shutdown().await.ok();
+    });
+    let _ = spec_arc;
+
+    std::env::set_var("LLMRACE_TEST_AZURE_KEY", "super-secret");
+    let mut spec = llmrace::provider::ProviderSpec::custom(
+        "azure-test",
+        &format!("http://{addr}/openai/deployments/d/chat/completions"),
+        Some("LLMRACE_TEST_AZURE_KEY"),
+        "d",
+    );
+    spec.auth = llmrace::provider::AuthKind::ApiKeyHeader;
+
+    let mut stream = stream_completion(
+        &reqwest::Client::new(),
+        &spec,
+        &CompletionRequest {
+            model: "d",
+            prompt: "hi",
+            max_tokens: 8,
+        },
+    )
+    .await
+    .expect("stream");
+    use futures_util::StreamExt;
+    while stream.next().await.is_some() {}
+    server.await.unwrap();
+    std::env::remove_var("LLMRACE_TEST_AZURE_KEY");
+
+    let headers = captured.lock().unwrap().clone();
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("api-key: super-secret"),
+        "api-key header missing: {headers}"
+    );
+    assert!(
+        !headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer"),
+        "bearer header should not be sent: {headers}"
+    );
+}
