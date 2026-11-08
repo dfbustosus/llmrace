@@ -92,6 +92,10 @@ struct Cli {
     #[arg(long)]
     record: bool,
 
+    /// History storage backend for --record/--trend/--dashboard.
+    #[arg(long, default_value = "jsonl")]
+    storage: String,
+
     /// Print provider trends from recorded history and exit (with --days).
     #[arg(long)]
     trend: bool,
@@ -159,7 +163,7 @@ async fn main() -> Result<()> {
     }
 
     if cli.dashboard {
-        let records = llmrace::history::load(&llmrace::history::history_path());
+        let records = load_history(&cli)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -176,7 +180,7 @@ async fn main() -> Result<()> {
     }
 
     if cli.trend {
-        let records = llmrace::history::load(&llmrace::history::history_path());
+        let records = load_history(&cli)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -370,10 +374,23 @@ async fn main() -> Result<()> {
             .iter()
             .map(|s| llmrace::history::record_from_summary(s, now))
             .collect();
-        let path = llmrace::history::history_path();
-        llmrace::history::append(&path, &records)
-            .with_context(|| format!("recording history to {}", path.display()))?;
-        println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
+        match cli.storage.as_str() {
+            "jsonl" => {
+                let path = llmrace::history::history_path();
+                llmrace::history::append(&path, &records)
+                    .with_context(|| format!("recording history to {}", path.display()))?;
+                println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
+            }
+            #[cfg(feature = "sqlite")]
+            "sqlite" => {
+                let path = sqlite_path();
+                let conn =
+                    llmrace::sqlite::open(&path).with_context(|| "opening sqlite history")?;
+                llmrace::sqlite::save(&conn, &records).with_context(|| "writing sqlite history")?;
+                println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
+            }
+            other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
+        }
     }
 
     if let Some(baseline_path) = &cli.baseline {
@@ -476,6 +493,24 @@ async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Clie
         println!("📄 report saved to {}", cli.out);
     }
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_path() -> std::path::PathBuf {
+    llmrace::history::history_path().with_extension("sqlite3")
+}
+
+fn load_history(cli: &Cli) -> Result<Vec<llmrace::history::HistoryRecord>> {
+    match cli.storage.as_str() {
+        "jsonl" => Ok(llmrace::history::load(&llmrace::history::history_path())),
+        #[cfg(feature = "sqlite")]
+        "sqlite" => {
+            let conn =
+                llmrace::sqlite::open(&sqlite_path()).with_context(|| "opening sqlite history")?;
+            Ok(llmrace::sqlite::load(&conn).with_context(|| "reading sqlite history")?)
+        }
+        other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
+    }
 }
 
 fn report_sibling(out: &str, ext: &str) -> String {
