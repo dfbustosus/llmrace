@@ -419,11 +419,14 @@ impl futures_util::Stream for SseStream {
                 return Poll::Ready(None);
             }
             match futures_util::StreamExt::poll_next_unpin(&mut self.stream, cx) {
-                Poll::Ready(Some(Ok(bytes))) => {
-                    for block in self.parser.feed(&bytes) {
-                        self.enqueue_block(&block);
+                Poll::Ready(Some(Ok(bytes))) => match self.parser.feed(&bytes) {
+                    Ok(blocks) => {
+                        for block in blocks {
+                            self.enqueue_block(&block);
+                        }
                     }
-                }
+                    Err(e) => return Poll::Ready(Some(Err(e))),
+                },
                 Poll::Ready(Some(Err(e))) => {
                     return Poll::Ready(Some(Err(Error::Stream(e.to_string()))));
                 }
