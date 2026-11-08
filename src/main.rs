@@ -88,6 +88,18 @@ struct Cli {
     #[arg(short, long, default_value = "llmrace-report.md")]
     out: String,
 
+    /// Append this run to the persistent history (~/.local/share/llmrace/history.jsonl).
+    #[arg(long)]
+    record: bool,
+
+    /// Print provider trends from recorded history and exit (with --days).
+    #[arg(long)]
+    trend: bool,
+
+    /// Days of history to analyze with --trend.
+    #[arg(long, default_value_t = 30)]
+    days: u64,
+
     /// Continuous monitoring: re-run the race every N seconds and alert on degradation.
     #[arg(long)]
     watch: bool,
@@ -127,6 +139,21 @@ async fn main() -> Result<()> {
             );
             print!("{row}");
         }
+        return Ok(());
+    }
+
+    if cli.trend {
+        let records = llmrace::history::load(&llmrace::history::history_path());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let filter: Vec<String> = cli.providers.clone();
+        let trends = llmrace::history::build_trends(&records, cli.days, now, &filter);
+        print!(
+            "{}",
+            llmrace::history::render_trend_table(&trends, cli.days)
+        );
         return Ok(());
     }
 
@@ -280,6 +307,21 @@ async fn main() -> Result<()> {
         let path = report_sibling(&cli.out, "csv");
         std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
         println!("📈 csv report saved to {path}");
+    }
+
+    if cli.record {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let records: Vec<llmrace::history::HistoryRecord> = summaries
+            .iter()
+            .map(|s| llmrace::history::record_from_summary(s, now))
+            .collect();
+        let path = llmrace::history::history_path();
+        llmrace::history::append(&path, &records)
+            .with_context(|| format!("recording history to {}", path.display()))?;
+        println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
     }
 
     if let Some(baseline_path) = &cli.baseline {
