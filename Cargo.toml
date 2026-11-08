@@ -15,7 +15,13 @@ categories = ["command-line-utilities", "development-tools"]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
 bin-dir = "{ bin }{ binary-ext }"
 
+[features]
+default = []
+## SQLite storage backend for history (`--storage sqlite`)
+sqlite = ["dep:rusqlite"]
+
 [dependencies]
+rusqlite = { version = "0.32", optional = true, features = ["bundled"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
