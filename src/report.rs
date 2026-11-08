@@ -22,7 +22,7 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
         if let Some(name) = &variant {
             let desc = crate::variants::builtins()
                 .into_iter()
-                .find(|v| &v.name == name)
+                .find(|v| v.name == *name)
                 .map(|v| v.description)
                 .unwrap_or("");
             out.push_str(&format!("\n## variant: `{name}` — {desc}\n"));
