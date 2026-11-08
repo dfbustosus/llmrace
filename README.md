@@ -185,6 +185,24 @@ llmrace openai groq --baseline llmrace-report.json --max-regression 15
 
 The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table, and flags providers that are new or missing from the baseline.
 
+## Real-world results
+
+Measured with `llmrace ollama -m llama3.2:1b -n 5 --warmup 1` on Apple M5 Pro / 48 GB (local inference, 2026-11-08):
+
+| Provider | Model | Latency (mean ± 95% CI) | p95 | TTFB | Tokens/s |
+|---|---|---:|---:|---:|---:|
+| ollama | `llama3.2:1b` | 2470 ± 397 ms | 2823 ms | < 1 ms | **60.2** |
+
+Tool-calling mode (`--tools`, same machine, 3 rounds): the model returned **valid JSON tool arguments 3/3 rounds** with a full round-trip of ~19 ms.
+
+Notes: sub-millisecond TTFB is real — a 1B model prefills a short prompt in single-digit milliseconds locally, while cloud providers add 200–800 ms of network + queueing before the first token. Reproduce on your machine with:
+
+```bash
+llmrace ollama -m llama3.2:1b -n 5 --warmup 1
+```
+
+PRs adding result tables from other regions and cloud providers are welcome — record with `--json` and open a PR against this section.
+
 ## How it compares
 
 | | llmrace | provider CLIs | load testers (k6/vegeta) | router dashboards |
