@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-08
+
 ### Added
 
 - README: real-world benchmark section (local Ollama llama3.2:1b: 60.2 tok/s, sub-ms TTFB, 3/3 valid tool calls)
@@ -62,7 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/dfbustosus/llmrace/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/dfbustosus/llmrace/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/dfbustosus/llmrace/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dfbustosus/llmrace/releases/tag/v0.1.0
