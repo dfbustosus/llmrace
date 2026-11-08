@@ -271,3 +271,66 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
+
+/// Renders the latency distribution section: percentile ladder plus a
+/// block-bar histogram per successful provider.
+///
+/// Providers need at least three measured rounds to be rendered.
+pub fn histogram_section(summaries: &[LaneSummary]) -> String {
+    const BUCKETS: usize = 12;
+    const MAX_BAR: usize = 30;
+
+    let lanes: Vec<&LaneSummary> = summaries
+        .iter()
+        .filter(|s| s.successful() && s.runs.len() >= 3)
+        .collect();
+    if lanes.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from("\n## Latency distribution\n\n");
+    out.push_str("| Provider | p10 | p25 | p50 | p75 | p90 | p95 | p99 |\n");
+    out.push_str("|--|--:|--:|--:|--:|--:|--:|--:|\n");
+    for s in &lanes {
+        let cells: Vec<String> = s
+            .latency_percentiles()
+            .iter()
+            .map(|(_, v)| format!("{v:.0} ms"))
+            .collect();
+        out.push_str(&format!("| {} | {} |\n", s.name, cells.join(" | ")));
+    }
+
+    out.push_str("\n```\n");
+    for s in &lanes {
+        let values: Vec<f64> = s.runs.iter().map(|r| r.total_ms).collect();
+        let upper = s
+            .latency_percentiles()
+            .iter()
+            .find(|(l, _)| *l == "p99")
+            .map(|(_, v)| *v)
+            .unwrap_or(0.0);
+        let scale = if upper > 0.0 { upper } else { 1.0 };
+        let width = scale / BUCKETS as f64;
+        let mut histogram = vec![0usize; BUCKETS];
+        for v in &values {
+            let idx = ((v / scale) * (BUCKETS - 1) as f64).round() as usize;
+            histogram[idx.min(BUCKETS - 1)] += 1;
+        }
+        let peak = histogram.iter().copied().max().unwrap_or(1).max(1);
+        out.push_str(&format!("{}\n", s.name));
+        for (i, count) in histogram.iter().enumerate() {
+            let bar_len = (count * MAX_BAR / peak).min(MAX_BAR);
+            let bar: String = "▇".repeat(bar_len);
+            out.push_str(&format!(
+                "  {:>6.0}–{:<6.0} ms │{:<width$} {}\n",
+                i as f64 * width,
+                (i + 1) as f64 * width,
+                bar,
+                count,
+                width = MAX_BAR
+            ));
+        }
+    }
+    out.push_str("```\n");
+    out
+}
