@@ -140,6 +140,10 @@ struct Cli {
     #[arg(long)]
     list: bool,
 
+    /// Run environment diagnostics (keys, endpoints, Ollama, config, history).
+    #[arg(long)]
+    doctor: bool,
+
     /// Print shell completions for the given shell and exit.
     #[arg(long)]
     completions: Option<String>,
@@ -150,6 +154,21 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let (cli, _profile) = apply_profile(cli)?;
+
+    if cli.doctor {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .context("failed to build http client")?;
+        let mut checks = vec![
+            llmrace::doctor::check_config(),
+            llmrace::doctor::check_history(),
+        ];
+        checks.push(llmrace::doctor::check_ollama(&client).await);
+        checks.extend(llmrace::doctor::check_providers(&client, &ProviderSpec::registry()).await);
+        print!("{}", llmrace::doctor::render(&checks));
+        return Ok(());
+    }
 
     if let Some(shell) = &cli.completions {
         let shell: clap_complete::Shell = shell
