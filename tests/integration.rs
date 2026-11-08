@@ -452,3 +452,44 @@ fn xai_and_perplexity_specs() {
         Some((1.00, 1.00))
     );
 }
+
+#[tokio::test]
+async fn percentile_ladder_and_histogram_render() {
+    let runs: Vec<RunMetrics> = (0..10)
+        .map(|i| RunMetrics {
+            total_ms: 100.0 + i as f64 * 50.0,
+            ttfb_ms: 10.0,
+            tokens: 10,
+            chars: 40,
+            prompt_tokens: 0,
+        })
+        .collect();
+    let summary = llmrace::bench::LaneSummary {
+        name: "mock".into(),
+        model: "m".into(),
+        runs,
+        error: None,
+        prompt: "p".into(),
+        concurrency: 1,
+        variant: None,
+    };
+
+    let ladder = summary.latency_percentiles();
+    assert_eq!(ladder.len(), 7);
+    assert_eq!(ladder[0].0, "p10");
+    assert!((ladder[0].1 - 145.0).abs() < 1e-9);
+    assert!((ladder[2].1 - 325.0).abs() < 1e-9);
+    assert!((ladder[6].1 - 545.5).abs() < 1e-9);
+
+    let section = report::histogram_section(std::slice::from_ref(&summary));
+    assert!(section.contains("## Latency distribution"));
+    assert!(section.contains("| mock | 145 ms |"));
+    assert!(section.contains("▇"));
+    assert!(section.contains(" ms │"));
+
+    let sparse = llmrace::bench::LaneSummary {
+        runs: Vec::new(),
+        ..summary.clone()
+    };
+    assert!(report::histogram_section(std::slice::from_ref(&sparse)).is_empty());
+}
