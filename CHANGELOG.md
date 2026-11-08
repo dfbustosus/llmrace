@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Shell completions: `llmrace --completions <bash|zsh|fish|powershell|elvish>`
 
+### Changed
+
+- `--duration N` now runs measured rounds until N seconds have actually elapsed (previously a round-count estimate)
+
+### Fixed
+
+- TUI: lanes in `--sweep` runs are now keyed by provider **and** variant; before, all variants of one provider streamed into a single lane and token counts collided
+
 ## [0.4.0] - 2026-11-08
 
 ### Added
