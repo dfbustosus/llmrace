@@ -87,3 +87,32 @@ async fn markdown_without_variants_is_unchanged_shape() {
     assert!(!md.contains("variant: `"));
     assert!(md.contains("| 1 | mock |"));
 }
+
+#[tokio::test]
+async fn tui_lanes_distinguish_variants() {
+    use std::sync::Arc;
+    let lanes = vec![
+        (Arc::from("mock"), Some(Arc::from("short")), "mock-1".into()),
+        (Arc::from("mock"), Some(Arc::from("json")), "mock-1".into()),
+        (Arc::from("mock"), None, "mock-1".into()),
+    ];
+    let mut tui = llmrace::tui::Tui::new(lanes, "p".into(), 1);
+
+    let upd = |variant: Option<&str>, tokens: u64| llmrace::bench::LaneUpdate {
+        provider: Arc::from("mock"),
+        variant: variant.map(Arc::from),
+        tokens,
+        elapsed_ms: 10.0,
+        ttfb_ms: Some(1.0),
+        finished: false,
+        error: None,
+    };
+
+    tui.update(upd(Some("short"), 5));
+    tui.update(upd(Some("json"), 9));
+    tui.update(upd(None, 3));
+
+    assert_eq!(tui.lane_progress("mock", Some("short")), Some((5, false)));
+    assert_eq!(tui.lane_progress("mock", Some("json")), Some((9, false)));
+    assert_eq!(tui.lane_progress("mock", None), Some((3, false)));
+}

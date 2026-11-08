@@ -236,6 +236,7 @@ async fn main() -> Result<()> {
         concurrency: cli.concurrency.max(1),
         timeout_secs: cli.timeout,
         tools: cli.tools,
+        variant: None,
     };
 
     println!(
@@ -259,21 +260,19 @@ async fn main() -> Result<()> {
         None => vec![None],
     };
 
-    let lanes: Vec<(Arc<str>, String)> = selected
-        .iter()
-        .map(|p| {
-            (
-                Arc::clone(&p.id),
-                cli.model
-                    .clone()
-                    .unwrap_or_else(|| p.default_model.to_string()),
-            )
-        })
-        .collect();
-
+    let mut lanes: Vec<(Arc<str>, Option<Arc<str>>, String)> = Vec::new();
     let mut handles = Vec::new();
     let mut receivers = Vec::new();
     for variant in &variants {
+        for p in &selected {
+            lanes.push((
+                Arc::clone(&p.id),
+                variant.as_ref().map(|v| Arc::from(v.name)),
+                cli.model
+                    .clone()
+                    .unwrap_or_else(|| p.default_model.to_string()),
+            ));
+        }
         let prompt = match variant {
             Some(v) => v.prompt.to_string(),
             None => config.prompt.clone(),
@@ -289,14 +288,11 @@ async fn main() -> Result<()> {
                 model,
                 BenchConfig {
                     prompt: prompt.clone(),
+                    variant: variant.as_ref().map(|v| Arc::from(v.name)),
                     ..config.clone()
                 },
             );
-            handles.push(async move {
-                let mut summary = handle.await.map_err(anyhow::Error::from)?;
-                summary.variant = variant.as_ref().map(|v| v.name.to_string());
-                Ok::<LaneSummary, anyhow::Error>(summary)
-            });
+            handles.push(async move { handle.await.map_err(anyhow::Error::from) });
             receivers.push(rx);
         }
     }
@@ -439,6 +435,7 @@ async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Clie
         concurrency: cli.concurrency.max(1),
         timeout_secs: cli.timeout,
         tools: cli.tools,
+        variant: None,
     };
     let watch_config = llmrace::watch::WatchConfig {
         every_secs: cli.every,
