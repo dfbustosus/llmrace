@@ -70,6 +70,8 @@ pub struct BenchConfig {
     pub timeout_secs: u64,
     /// Enable the tool-calling task (attaches tool schemas to requests).
     pub tools: bool,
+    /// Prompt variant label when running a sweep.
+    pub variant: Option<Arc<str>>,
 }
 
 impl Default for BenchConfig {
@@ -82,6 +84,7 @@ impl Default for BenchConfig {
             concurrency: 1,
             timeout_secs: 120,
             tools: false,
+            variant: None,
         }
     }
 }
@@ -91,6 +94,8 @@ impl Default for BenchConfig {
 pub struct LaneUpdate {
     /// Provider id (shared, cheap to clone).
     pub provider: Arc<str>,
+    /// Variant label when running a sweep (shared, cheap to clone).
+    pub variant: Option<Arc<str>>,
     /// Tokens received so far in the current request.
     pub tokens: u64,
     /// Elapsed milliseconds of the current request.
@@ -254,7 +259,7 @@ pub fn spawn_lane(
             error: None,
             prompt: config.prompt.clone(),
             concurrency: config.concurrency,
-            variant: None,
+            variant: config.variant.as_ref().map(|v| v.to_string()),
         };
         let total_rounds = config.warmup + config.runs;
         for round in 0..total_rounds {
@@ -269,6 +274,7 @@ pub fn spawn_lane(
                 Err(e) => {
                     let _ = tx.send(LaneUpdate {
                         provider: Arc::clone(&spec.id),
+                        variant: config.variant.clone(),
                         tokens: 0,
                         elapsed_ms: 0.0,
                         ttfb_ms: None,
@@ -287,6 +293,7 @@ pub fn spawn_lane(
         }
         let _ = tx.send(LaneUpdate {
             provider: Arc::from(summary.name.as_str()),
+            variant: config.variant.clone(),
             tokens: summary.mean_tokens() as u64,
             elapsed_ms: summary.mean_total_ms(),
             ttfb_ms: Some(summary.mean_ttfb_ms()),
@@ -315,9 +322,18 @@ async fn run_round(
         let timeout = Duration::from_secs(config.timeout_secs);
         let progress = progress.clone();
         let tools = config.tools;
+        let variant_label = config.variant.clone();
         tasks.spawn(async move {
             single_request(
-                &client, &spec, &model, &prompt, max_tokens, timeout, tools, &progress,
+                &client,
+                &spec,
+                &model,
+                &prompt,
+                max_tokens,
+                timeout,
+                tools,
+                variant_label,
+                &progress,
             )
             .await
         });
@@ -365,6 +381,7 @@ async fn single_request(
     max_tokens: u64,
     timeout: Duration,
     tools: bool,
+    variant_label: Option<Arc<str>>,
     progress: &mpsc::Sender<LaneUpdate>,
 ) -> crate::error::Result<RunMetrics> {
     let req = CompletionRequest {
@@ -406,6 +423,7 @@ async fn single_request(
             chars += t.len() as u64;
             let _ = progress.send(LaneUpdate {
                 provider: Arc::clone(&spec.id),
+                variant: variant_label.clone(),
                 tokens,
                 elapsed_ms: (now - start).as_secs_f64() * 1000.0,
                 ttfb_ms: ttfb.map(|d| d.as_secs_f64() * 1000.0),
