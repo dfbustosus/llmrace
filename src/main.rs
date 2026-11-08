@@ -219,9 +219,10 @@ async fn main() -> Result<()> {
         return watch_main(cli, selected, client).await;
     }
 
-    let runs = match cli.duration {
-        Some(secs) => duration_rounds(&selected, &cli, &client, secs).await,
-        None => cli.runs,
+    let runs = if cli.duration.is_some() {
+        100_000
+    } else {
+        cli.runs
     };
 
     let config = BenchConfig {
@@ -237,6 +238,7 @@ async fn main() -> Result<()> {
         timeout_secs: cli.timeout,
         tools: cli.tools,
         variant: None,
+        duration_secs: cli.duration,
     };
 
     println!(
@@ -436,6 +438,7 @@ async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Clie
         timeout_secs: cli.timeout,
         tools: cli.tools,
         variant: None,
+        duration_secs: None,
     };
     let watch_config = llmrace::watch::WatchConfig {
         every_secs: cli.every,
@@ -586,17 +589,6 @@ fn arg_not_passed(flags: &[&str]) -> bool {
             .iter()
             .any(|f| a == *f || a.starts_with(&format!("{f}=")) || a.starts_with(&format!("{f} ")))
     })
-}
-
-async fn duration_rounds(
-    _selected: &[ProviderSpec],
-    cli: &Cli,
-    _client: &reqwest::Client,
-    secs: u64,
-) -> usize {
-    let estimated_round_ms = 2000.0 * f64::from(cli.concurrency.max(1) as u32);
-    let by_estimate = ((secs as f64 * 1000.0) / estimated_round_ms).round() as usize;
-    by_estimate.max(1)
 }
 
 fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
