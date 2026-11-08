@@ -164,6 +164,25 @@ impl LaneSummary {
         }
     }
 
+    /// Standard percentile ladder of round total latencies:
+    /// p10, p25, p50, p75, p90, p95, p99 (linear interpolation).
+    pub fn latency_percentiles(&self) -> Vec<(&'static str, f64)> {
+        let sample =
+            crate::stats::Sample::from_values(self.runs.iter().map(|r| r.total_ms).collect());
+        [
+            ("p10", 10.0),
+            ("p25", 25.0),
+            ("p50", 50.0),
+            ("p75", 75.0),
+            ("p90", 90.0),
+            ("p95", 95.0),
+            ("p99", 99.0),
+        ]
+        .into_iter()
+        .map(|(label, p)| (label, sample.percentile(p)))
+        .collect()
+    }
+
     /// Indices of rounds whose total latency is a 3-sigma outlier.
     pub fn outlier_runs(&self) -> Vec<usize> {
         self.total_sample().outliers_3sigma()
