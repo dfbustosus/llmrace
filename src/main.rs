@@ -151,6 +151,10 @@ struct Cli {
     /// Print shell completions for the given shell and exit.
     #[arg(long)]
     completions: Option<String>,
+
+    /// Print the man page (roff) and exit.
+    #[arg(long)]
+    man: bool,
 }
 
 #[tokio::main]
@@ -181,6 +185,16 @@ async fn main() -> Result<()> {
         let mut cmd = <Cli as clap::CommandFactory>::command();
         let name = cmd.get_name().to_string();
         clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+        return Ok(());
+    }
+
+    if cli.man {
+        let cmd = <Cli as clap::CommandFactory>::command();
+        let man = clap_mangen::Man::new(cmd);
+        let mut buffer: Vec<u8> = Default::default();
+        man.render(&mut buffer)?;
+        use std::io::Write;
+        std::io::stdout().write_all(&buffer)?;
         return Ok(());
     }
 
