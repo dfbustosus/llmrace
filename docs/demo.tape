@@ -1,16 +1,17 @@
 Output docs/demo.gif
-Set FontSize 15
-Set Width 1200
-Set Height 700
+Set FontSize 16
+Set Width 1000
+Set Height 460
 Set Theme "Dark+"
-Set Padding 14
-Set TypingSpeed 60ms
+Set Padding 16
+Set TypingSpeed 50ms
+Set CursorBlink true
 
-Type@50ms "llmrace ollama mock -n 1 --warmup 0"
+Type@40ms "llmrace ollama mock --sweep short,json -n 1 --warmup 0"
 Enter
-Sleep 8s
+Sleep 5s
 Type "q"
-Sleep 800ms
-Type "llmrace --trend"
+Sleep 600ms
+Type "llmrace --doctor"
 Enter
-Sleep 2s
+Sleep 3s
