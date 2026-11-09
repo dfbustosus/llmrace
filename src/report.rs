@@ -2,6 +2,7 @@
 
 use crate::bench::LaneSummary;
 use crate::cost;
+use crate::stats::fmt_ms;
 
 /// Renders a shareable markdown report ranked by aggregate tokens/s.
 ///
@@ -104,7 +105,7 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
             mean,
             s.median_total_ms(),
             s.p95_total_ms(),
-            s.mean_ttfb_ms(),
+            fmt_ms(s.mean_ttfb_ms()),
             s.mean_tokens_per_sec(),
             cost
         ));
@@ -217,7 +218,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
             mean,
             s.median_total_ms(),
             s.p95_total_ms(),
-            s.mean_ttfb_ms(),
+            fmt_ms(s.mean_ttfb_ms()),
             s.mean_tokens_per_sec(),
             mark
         ));

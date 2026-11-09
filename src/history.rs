@@ -220,12 +220,16 @@ pub fn render_trend_table(trends: &[ProviderTrend], days: u64) -> String {
         } else {
             String::new()
         };
+        let ttfb = format!(
+            "{}→{}",
+            crate::stats::fmt_ms(t.ttfb_median),
+            crate::stats::fmt_ms(t.ttfb_latest)
+        );
         out.push_str(&format!(
-            "{:<14} {:<24} {:>5.0}→{:<6.0} {:>+9.1} {:>10.1} {:>+9.1} {}\n",
+            "{:<14} {:<24} {:>9} {:>+9.1} {:>10.1} {:>+9.1} {}\n",
             t.name,
             truncate(&t.current_model, 24),
-            t.ttfb_median,
-            t.ttfb_latest,
+            ttfb,
             t.ttfb_delta_pct(),
             t.tps_latest,
             pct_delta(
