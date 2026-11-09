@@ -22,6 +22,14 @@ Latency · Time-to-first-byte · Tokens/s · p95 · Cost — live, in one comman
 
 Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tail latency tell a different story** depending on your region, your model and your prompt length. `llmrace` measures it for real: it fires the *same streaming request* at every provider **simultaneously**, watches the tokens arrive live, and ranks them.
 
+## Contents
+
+- [Why](#why) · [Demo](#demo) · [Install](#install) · [Quick start](#quick-start)
+- [Tool calls](#using-llmrace-as-a-ci-quality-gate) · [Distributed probes](#distributed-probes)
+- [Tracking over time](#tracking-providers-over-time) · [Diagnosing](#diagnosing-your-setup) · [Pricing](#pricing)
+- [What it measures](#what-it-measures) · [Reports](#reports) · [Comparison](#how-it-compares)
+- [Engineering](#engineering) · [Contributing](#contributing) · [License](#license)
+
 ## Demo
 
 ![llmrace demo](docs/demo.gif)
