@@ -57,3 +57,19 @@ fn doctor_render_summarizes_statuses() {
     assert!(out.contains("summary: 1 fail, 1 warn, 1 pass"));
     assert!(out.contains("attach this output"));
 }
+
+#[test]
+fn price_overrides_parse_and_apply() {
+    let ok = llmrace::cost::parse_override("openai/gpt-4o-mini=1.25:5").unwrap();
+    assert_eq!(ok, ("openai/gpt-4o-mini".into(), 1.25, 5.0));
+
+    for bad in ["nope", "a=b", "a=1:x", "a=-1:2", "a=1:-2"] {
+        assert!(llmrace::cost::parse_override(bad).is_err(), "{bad}");
+    }
+
+    llmrace::cost::set_overrides(vec![("custom/unlisted".into(), 3.0, 9.0)]);
+    assert_eq!(
+        llmrace::cost::pricing("custom", "unlisted"),
+        Some((3.0, 9.0))
+    );
+}

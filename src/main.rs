@@ -144,6 +144,10 @@ struct Cli {
     #[arg(long)]
     doctor: bool,
 
+    /// Override pricing for a model: provider/model=input:output (USD per million tokens). Repeatable.
+    #[arg(long = "price")]
+    prices: Vec<String>,
+
     /// Print shell completions for the given shell and exit.
     #[arg(long)]
     completions: Option<String>,
@@ -225,6 +229,14 @@ async fn main() -> Result<()> {
             llmrace::history::render_trend_table(&trends, cli.days)
         );
         return Ok(());
+    }
+
+    if !cli.prices.is_empty() {
+        let mut parsed = Vec::new();
+        for raw in &cli.prices {
+            parsed.push(llmrace::cost::parse_override(raw)?);
+        }
+        llmrace::cost::set_overrides(parsed);
     }
 
     let selected = resolve_providers(&cli)?;
