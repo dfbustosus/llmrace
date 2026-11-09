@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Demo GIF: now a real mixed race — cloud OpenAI lane vs local Ollama vs mock with per-provider models
 - **gpt-5 / o-series support**: these models reject `max_tokens`; llmrace now sends `max_completion_tokens` for them (verified live against gpt-5-nano — previously HTTP 400, now races)
 - Pricing table: removed models deprecated by OpenAI (gpt-4.1-nano, o3-mini), verified against the live API
 - **TTFB measurement**: the clock now starts immediately before the request is sent, including connection, TLS and queueing — previously it started when response headers arrived, which reported impossible sub-millisecond cloud TTFB
