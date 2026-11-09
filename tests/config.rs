@@ -57,3 +57,17 @@ fn empty_config_has_no_profiles() {
     let config = Config::default();
     assert_eq!(config.available(), "");
 }
+
+#[test]
+fn profile_typos_are_rejected_loudly() {
+    let typo = Config::from_toml_str("[profiles.fast]\nrun = 3\n");
+    let err = typo.expect_err("typo 'run' must be rejected");
+    assert!(err.to_string().contains("run"), "{err}");
+    assert!(
+        err.to_string().contains("runs"),
+        "error should suggest the right key: {err}"
+    );
+
+    let valid = Config::from_toml_str("[profiles.fast]\nruns = 3\n");
+    assert!(valid.is_ok());
+}
