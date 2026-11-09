@@ -472,6 +472,18 @@ pub async fn stream_completion(
     }
 }
 
+/// Splits a `--model` entry into a provider-specific override when written
+/// as `provider=model`; plain entries (no `=`) are global and yield `None`.
+pub fn split_model_override(entry: &str) -> Option<(String, String)> {
+    let (provider, model) = entry.split_once('=')?;
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some((provider.to_string(), model.to_string()))
+}
+
 /// OpenAI models that reject `max_tokens` and require
 /// `max_completion_tokens` (gpt-5 family and the o-series reasoning models).
 fn requires_completion_tokens(model: &str) -> bool {
