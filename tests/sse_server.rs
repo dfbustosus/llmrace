@@ -271,3 +271,29 @@ async fn azure_style_auth_sends_api_key_header_not_bearer() {
         "bearer header should not be sent: {headers}"
     );
 }
+
+#[tokio::test]
+async fn ollama_model_not_found_gets_actionable_hint() {
+    let body =
+        r#"{"error":{"message":"model 'llama3.2' not found, try pulling it first"}}"#.to_string();
+    let (endpoint, server) = spawn_server(Script::Error { status: 404, body }).await;
+    let spec = llmrace::provider::ProviderSpec::custom("ollama", &endpoint, None, "llama3.2");
+
+    let (handle, _progress) = spawn_lane(
+        reqwest::Client::new(),
+        spec,
+        "llama3.2".into(),
+        BenchConfig {
+            prompt: "hi".into(),
+            runs: 1,
+            warmup: 0,
+            ..BenchConfig::default()
+        },
+    );
+    let summary = handle.await.expect("lane task");
+    server.await.expect("server task");
+    let err = summary.error.expect("expected lane error");
+    assert!(err.contains("HTTP 404"), "{err}");
+    assert!(err.contains("ollama pull"), "hint missing: {err}");
+    assert!(err.contains("-m <model>"), "{err}");
+}
