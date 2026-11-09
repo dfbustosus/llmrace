@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Demo GIF: lanes now race with an explicitly pulled model (`-m llama3.2:1b`) — the previous recording failed both Ollama lanes with red 404 model-not-found errors
 - Demo GIF tightened: four-lane sweep race (Ollama vs mock, short/json variants) and doctor closing scene; smaller canvas, no dead air, no table wrapping
 - Demo GIF re-recorded against the live TUI (real Ollama lane streaming against the instant mock lane, finish flags, post-race table, trend output)
 - TUI: lanes in `--sweep` runs are now keyed by provider **and** variant; before, all variants of one provider streamed into a single lane and token counts collided
