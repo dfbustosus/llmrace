@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Man page: `llmrace --man` emits roff for packaging (`llmrace --man > llmrace.1`)
 - `--price provider/model=input:output` (repeatable): override stale per-model pricing from the CLI; takes precedence over the built-in table
 - `llmrace --doctor`: environment diagnostics — API keys, endpoint egress (any HTTP status counts), local Ollama, config discovery and history validity, with a bug-report-ready summary
 - `--price provider/model=input:output` (repeatable): override stale per-model pricing from the CLI; takes precedence over the built-in table
