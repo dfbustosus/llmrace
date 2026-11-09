@@ -1,6 +1,6 @@
 [package]
 name = "llmrace"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 rust-version = "1.88"
 description = "Race LLM providers head-to-head in your terminal: latency, TTFB, tokens/s, p95 and cost — live."
