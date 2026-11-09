@@ -10,7 +10,11 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 /// One named profile inside the config file's `[profiles.<name>]` table.
+///
+/// Unknown keys are rejected so typos (`run` instead of `runs`) fail loudly
+/// instead of silently falling back to defaults.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Profile {
     /// Providers to race (CLI ids).
     #[serde(default)]
