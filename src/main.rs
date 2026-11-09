@@ -666,12 +666,12 @@ fn print_lane_progress(s: &LaneSummary) {
             None => "—".to_string(),
         };
         println!(
-            "  ✓ {:<14} {:>6.1} tok/s   {:>6.0} ms {}   TTFB {:>5.0} ms",
+            "  ✓ {:<14} {:>6.1} tok/s   {:>6.0} ms {}   TTFB {:>4} ms",
             s.name,
             s.mean_tokens_per_sec(),
             s.mean_total_ms(),
             ci,
-            s.mean_ttfb_ms()
+            llmrace::stats::fmt_ms(s.mean_ttfb_ms())
         );
     }
 }
