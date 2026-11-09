@@ -60,7 +60,8 @@ builder branch.
 
 ## Measurement methodology
 
-- **TTFB**: request start → first streamed event.
+- **TTFB**: from immediately before the request is sent to the first
+  streamed event — includes connect, TLS, upload and server queueing.
 - **Generation window**: total − TTFB; tokens/s divides provider-reported
   completion tokens by this window.
 - **Saturation mode** (`--concurrency N`): a round aggregates all N requests —

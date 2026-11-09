@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TTFB measurement**: the clock now starts immediately before the request is sent, including connection, TLS and queueing — previously it started when response headers arrived, which reported impossible sub-millisecond cloud TTFB
 - Security: rusqlite 0.32 → 0.41 — bundled SQLite updated past RUSTSEC-2026-0459 / CVE-2026-119375 (caught by the supply-chain workflow)
 - README real-world results refreshed with honest cloud-vs-local data (OpenAI gpt-4o-mini vs local Ollama), including tool-call validity rates
 - `llmrace.toml` profiles reject unknown keys — typos like `run` instead of `runs` now fail with the expected key named instead of silently using defaults
