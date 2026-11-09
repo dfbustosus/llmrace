@@ -114,3 +114,16 @@ fn list_json_and_doctor_json_are_valid_json() {
     assert!(names.contains(&"config"));
     assert!(names.contains(&"history"));
 }
+
+#[test]
+fn man_page_is_roff() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--man")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let man = String::from_utf8_lossy(&out.stdout);
+    assert!(man.contains(".TH llmrace 1"));
+    assert!(man.contains(".SH NAME"));
+    assert!(man.contains("baseline"));
+}
