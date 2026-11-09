@@ -7,7 +7,7 @@ Set Padding 16
 Set TypingSpeed 50ms
 Set CursorBlink true
 
-Type@40ms "llmrace ollama mock --sweep short,json -n 1 --warmup 0"
+Type@40ms "llmrace ollama mock -m llama3.2:1b --sweep short,json -n 1 --warmup 0"
 Enter
 Sleep 5s
 Type "q"
