@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use llmrace::bench::{spawn_lane, BenchConfig};
 use llmrace::provider::{stream_completion, CompletionRequest, ProviderSpec, Wire};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -201,7 +202,6 @@ fn wire_of_custom_provider_is_openai_compat() {
 
 #[tokio::test]
 async fn azure_style_auth_sends_api_key_header_not_bearer() {
-    use std::sync::Arc;
     let spec_arc = Arc::new(std::sync::atomic::AtomicI64::new(0));
     let captured = Arc::new(std::sync::Mutex::new(String::new()));
 
@@ -296,4 +296,88 @@ async fn ollama_model_not_found_gets_actionable_hint() {
     assert!(err.contains("HTTP 404"), "{err}");
     assert!(err.contains("ollama pull"), "hint missing: {err}");
     assert!(err.contains("-m <model>"), "{err}");
+}
+
+#[tokio::test]
+async fn gpt5_models_send_max_completion_tokens() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(std::sync::Mutex::new(String::new()));
+    let cap = Arc::clone(&captured);
+    let server = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut tmp).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&buf[..pos]).to_ascii_lowercase();
+                    if let Some(cl) = headers
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                    {
+                        if buf.len() >= pos + 4 + cl {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            *cap.lock().unwrap() = String::from_utf8_lossy(&buf).to_string();
+            socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+                  data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+            )
+            .await
+            .unwrap();
+            socket.shutdown().await.ok();
+        }
+    });
+
+    for (model, expect_key, reject_key) in [
+        ("gpt-5-nano", "max_completion_tokens", "max_tokens"),
+        ("openai/gpt-5", "max_completion_tokens", "max_tokens"),
+        ("gpt-4o-mini", "max_tokens", "max_completion_tokens"),
+    ] {
+        let spec = ProviderSpec::custom(
+            "t",
+            &format!("http://{addr}/v1/chat/completions"),
+            None,
+            model,
+        );
+        let mut stream = stream_completion(
+            &reqwest::Client::new(),
+            &spec,
+            &CompletionRequest {
+                model,
+                prompt: "hi",
+                max_tokens: 8,
+                tools: false,
+            },
+        )
+        .await
+        .unwrap();
+        use futures_util::StreamExt;
+        while stream.next().await.is_some() {}
+        let body = captured.lock().unwrap().clone();
+        assert!(
+            body.contains(&format!("\"{expect_key}\"")),
+            "{model}: {body}"
+        );
+        assert!(
+            !body.contains(&format!("\"{reject_key}\"")),
+            "{model}: {body}"
+        );
+        *captured.lock().unwrap() = String::new();
+        let _ = tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    server.abort();
 }
