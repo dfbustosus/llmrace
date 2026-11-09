@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Live-API smoke tests (opt-in): `cargo test --test live_openai -- --ignored` validates the full HTTP+SSE path and honest cloud TTFB against real OpenAI
 - TUI: finished lanes show an estimated blended price per million tokens when the model has known pricing
 - Man page: `llmrace --man` emits roff for packaging (`llmrace --man > llmrace.1`)
 - Machine-readable outputs: `--list --json` (full registry with availability) and `--doctor --json` (structured check results)
