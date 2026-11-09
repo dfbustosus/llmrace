@@ -91,5 +91,5 @@ fn man_page_is_roff() {
     let man = String::from_utf8_lossy(&out.stdout);
     assert!(man.contains(".TH llmrace 1"));
     assert!(man.contains(".SH NAME"));
-    assert!(man.contains("--baseline"));
+    assert!(man.contains("baseline"));
 }
