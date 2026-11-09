@@ -375,12 +375,17 @@ pub async fn stream_completion(
         ))),
         Wire::OpenAiCompat => {
             let key = spec.api_key()?;
+            let cap_key = if requires_completion_tokens(req.model) {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
             let mut body = json!({
                 "model": req.model,
                 "messages": [{"role": "user", "content": req.prompt}],
-                "max_tokens": req.max_tokens,
                 "stream": true,
             });
+            body[cap_key] = json!(req.max_tokens);
             if *spec.id != *"ollama" {
                 body["stream_options"] = json!({"include_usage": true});
             }
@@ -465,6 +470,13 @@ pub async fn stream_completion(
             Ok(EventStream::Http(SseStream::new(resp, Wire::Gemini)))
         }
     }
+}
+
+/// OpenAI models that reject `max_tokens` and require
+/// `max_completion_tokens` (gpt-5 family and the o-series reasoning models).
+fn requires_completion_tokens(model: &str) -> bool {
+    let m = model.rsplit('/').next().unwrap_or(model);
+    m.starts_with("gpt-5") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4")
 }
 
 async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<reqwest::Response> {
