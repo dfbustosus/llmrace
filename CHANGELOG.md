@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Markdown report TTFB column rendered empty (format specifier truncated the formatted string to zero characters)
+- Trend deltas now capped at ±9999% and display as integer percentages (previously raw `+86088.6%` from comparing across the TTFB measurement fix boundary)
+- Trend analysis excludes records with zero throughput or zero TTFB (failed runs no longer pollute trend windows)
 - Demo GIF: now a real mixed race — cloud OpenAI lane vs local Ollama vs mock with per-provider models
 - **gpt-5 / o-series support**: these models reject `max_tokens`; llmrace now sends `max_completion_tokens` for them (verified live against gpt-5-nano — previously HTTP 400, now races)
 - Pricing table: removed models deprecated by OpenAI (gpt-4.1-nano, o3-mini), verified against the live API

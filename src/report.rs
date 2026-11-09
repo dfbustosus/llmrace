@@ -96,7 +96,7 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
             "†"
         };
         out.push_str(&format!(
-            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {:.0} ms | **{:.1}** | {} |\n",
+            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} ms | **{:.1}** | {} |\n",
             i + 1,
             s.name,
             outlier_mark,

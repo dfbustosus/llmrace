@@ -140,7 +140,8 @@ fn pct_delta(base: f64, current: f64) -> f64 {
     if base.abs() < f64::EPSILON {
         return 0.0;
     }
-    (current - base) / base * 100.0
+    let pct = (current - base) / base * 100.0;
+    pct.clamp(-9999.0, 9999.0)
 }
 
 /// Builds per-provider trends from history within the last `days` days.
@@ -168,7 +169,12 @@ pub fn build_trends(
     for name in names {
         let window: Vec<HistoryRecord> = records
             .iter()
-            .filter(|r| r.provider == name && r.timestamp_unix >= cutoff)
+            .filter(|r| {
+                r.provider == name
+                    && r.timestamp_unix >= cutoff
+                    && r.mean_tokens_per_sec > 0.0
+                    && r.mean_ttfb_ms > 0.0
+            })
             .cloned()
             .collect();
         if window.len() < 2 {
