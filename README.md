@@ -235,21 +235,23 @@ The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) 
 
 ## Real-world results
 
-Measured with `llmrace ollama -m llama3.2:1b -n 5 --warmup 1` on Apple M5 Pro / 48 GB (local inference, 2026-11-08):
+Measured 2026-11-09 from South America — cloud (OpenAI) vs local inference (Ollama on Apple M5 Pro / 48 GB), 5 rounds each, warmup excluded:
 
-| Provider | Model | Latency (mean ± 95% CI) | p95 | TTFB | Tokens/s |
-|---|---|---:|---:|---:|---:|
-| ollama | `llama3.2:1b` | 2470 ± 397 ms | 2823 ms | < 1 ms | **60.2** |
+| Provider | Model | TTFB | Latency (mean ± 95% CI) | Tokens/s |
+|---|---|---:|---:|---:|
+| openai | `gpt-4o-mini` | 579 ms | 1443 ± 94 ms | **186.5** |
+| ollama | `llama3.2:1b` | 91 ms | 2494 ± 295 ms | 69.2 |
 
-Tool-calling mode (`--tools`, same machine, 3 rounds): the model returned **valid JSON tool arguments 3/3 rounds** with a full round-trip of ~19 ms.
+Tool-calling mode (`--tools`, 3 rounds): **gpt-4o-mini returned valid JSON tool arguments 3/3 rounds** at ~604 ms full round trip; local `llama3.2:1b` answers the same task in ~20 ms when it complies — but only emits tool calls about 80% of the time. Validity rate is a real metric, not noise.
 
-Notes: sub-millisecond TTFB is real — a 1B model prefills a short prompt in single-digit milliseconds locally, while cloud providers add 200–800 ms of network + queueing before the first token. Reproduce on your machine with:
+The honest TTFB story: the cloud lane spends ~0.6 s on network + queueing before the first token, while the local lane prefills in ~90 ms — and once streaming, cloud sustains 2.7× the throughput of a 1B local model. Reproduce:
 
 ```bash
+llmrace openai -m gpt-4o-mini -n 5 --warmup 1
 llmrace ollama -m llama3.2:1b -n 5 --warmup 1
 ```
 
-PRs adding result tables from other regions and cloud providers are welcome — record with `--json` and open a PR against this section.
+PRs with results from other regions are welcome — record with `--json` and extend this table.
 
 ## How it compares
 
