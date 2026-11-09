@@ -80,3 +80,37 @@ fn subms_ttfb_renders_as_less_than_one() {
     assert_eq!(llmrace::stats::fmt_ms(0.0), "0");
     assert_eq!(llmrace::stats::fmt_ms(14.2), "14");
 }
+
+#[test]
+fn list_json_and_doctor_json_are_valid_json() {
+    let list = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args(["--list", "--json"])
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    let ids: Vec<&str> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"openai"));
+    assert!(ids.contains(&"ollama"));
+    assert!(ids.len() >= 14);
+
+    let doctor = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args(["--doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(doctor.status.success());
+    let parsed: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    let names: Vec<&str> = parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"config"));
+    assert!(names.contains(&"history"));
+}
