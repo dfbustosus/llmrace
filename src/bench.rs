@@ -402,8 +402,8 @@ async fn single_request(
         max_tokens,
         tools,
     };
-    let mut stream = stream_completion(client, spec, &req).await?;
     let start = Instant::now();
+    let mut stream = stream_completion(client, spec, &req).await?;
     let deadline = tokio::time::Instant::now() + timeout;
     let mut ttfb: Option<Duration> = None;
     let mut tokens = 0u64;
