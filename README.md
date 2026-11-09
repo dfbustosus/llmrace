@@ -25,7 +25,7 @@ Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tai
 ## Contents
 
 - [Why](#why) · [Demo](#demo) · [Install](#install) · [Quick start](#quick-start)
-- [Tool calls](#using-llmrace-as-a-ci-quality-gate) · [Distributed probes](#distributed-probes)
+- [CI quality gate](#using-llmrace-as-a-ci-quality-gate) · [Distributed probes](#distributed-probes) · [Results](#real-world-results)
 - [Tracking over time](#tracking-providers-over-time) · [Diagnosing](#diagnosing-your-setup) · [Pricing](#pricing)
 - [What it measures](#what-it-measures) · [Reports](#reports) · [Comparison](#how-it-compares)
 - [Engineering](#engineering) · [Contributing](#contributing) · [License](#license)
