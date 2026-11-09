@@ -43,6 +43,7 @@ struct Lane {
     variant: Option<Arc<str>>,
     model: String,
     tokens: u64,
+    cost: Option<f64>,
     elapsed_ms: f64,
     ttfb_ms: Option<f64>,
     finished: bool,
@@ -55,11 +56,14 @@ struct Lane {
 
 impl Lane {
     fn new(name: Arc<str>, variant: Option<Arc<str>>, model: String) -> Self {
+        let cost =
+            crate::cost::pricing(name.as_ref(), &model).map(|(pin, pout)| (pin + pout) / 2.0);
         Lane {
             name,
             variant,
             model,
             tokens: 0,
+            cost,
             elapsed_ms: 0.0,
             ttfb_ms: None,
             finished: false,
@@ -286,6 +290,10 @@ impl Tui {
                 " ▶ streaming…".to_string()
             };
 
+            let cost_note = lane
+                .cost
+                .filter(|c| lane.finished && *c > 0.0)
+                .map(|c| format!("  ~${c:.2}/M tok"));
             let meta = Line::from(vec![
                 Span::styled(
                     status,
@@ -298,6 +306,10 @@ impl Tui {
                 Span::styled(
                     format!("  {} tok", lane.tokens),
                     Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    cost_note.unwrap_or_default(),
+                    Style::default().fg(Color::Yellow),
                 ),
                 Span::styled(
                     format!(
