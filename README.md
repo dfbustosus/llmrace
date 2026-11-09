@@ -178,6 +178,24 @@ jobs:
 
 Each run uploads a region-tagged JSON report artifact for merging into a shared history.
 
+## Diagnosing your setup
+
+```bash
+llmrace --doctor            # keys, endpoint egress, Ollama, config, history
+llmrace --doctor --json     # structured output for CI
+llmrace --list --json       # full provider registry with availability
+```
+
+Any HTTP response counts as endpoint reachability — even a 401 proves DNS, TLS and routing work, so `--doctor` distinguishes "missing key" from "network blocked".
+
+## Pricing
+
+Cost columns use a built-in table that can drift as providers change prices. Override per model (repeatable, USD per million tokens):
+
+```bash
+llmrace openai --price openai/gpt-4o-mini=1.25:5
+```
+
 ## Tracking providers over time
 
 Record every race to a local history file (JSONL under `~/.local/share/llmrace/`):
