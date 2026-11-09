@@ -40,9 +40,10 @@ struct Cli {
     #[arg(short = 'c', long, default_value_t = 1)]
     concurrency: usize,
 
-    /// Model for every provider (overrides defaults).
+    /// Model override: plain (`gpt-4o-mini`) applies to every provider,
+    /// `provider=model` (e.g. `ollama=llama3.2:1b`) targets one. Repeatable.
     #[arg(short, long)]
-    model: Option<String>,
+    model: Vec<String>,
 
     /// Sampling cap passed as max_tokens.
     #[arg(long, default_value_t = 256)]
@@ -349,9 +350,7 @@ async fn main() -> Result<()> {
             lanes.push((
                 Arc::clone(&p.id),
                 variant.as_ref().map(|v| Arc::from(v.name)),
-                cli.model
-                    .clone()
-                    .unwrap_or_else(|| p.default_model.to_string()),
+                resolve_model(&cli.model, &p.id, &p.default_model),
             ));
         }
         let prompt = match variant {
@@ -359,10 +358,7 @@ async fn main() -> Result<()> {
             None => config.prompt.clone(),
         };
         for p in &selected {
-            let model = cli
-                .model
-                .clone()
-                .unwrap_or_else(|| p.default_model.to_string());
+            let model = resolve_model(&cli.model, &p.id, &p.default_model);
             let (handle, rx) = spawn_lane(
                 client.clone(),
                 p.clone(),
@@ -500,10 +496,7 @@ async fn main() -> Result<()> {
 }
 
 async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Client) -> Result<()> {
-    let model = cli
-        .model
-        .clone()
-        .unwrap_or_else(|| selected[0].default_model.to_string());
+    let model = resolve_model(&cli.model, &selected[0].id, &selected[0].default_model);
     let bench = BenchConfig {
         prompt: if cli.tools {
             llmrace::tools::tool_task_prompt().to_string()
@@ -606,6 +599,22 @@ fn load_history(cli: &Cli) -> Result<Vec<llmrace::history::HistoryRecord>> {
     }
 }
 
+fn resolve_model(cli_models: &[String], provider_id: &str, default_model: &str) -> String {
+    let mut global: Option<&str> = None;
+    for entry in cli_models {
+        if let Some((for_provider, model)) = llmrace::provider::split_model_override(entry) {
+            if for_provider == provider_id {
+                return model;
+            }
+        } else if global.is_none() {
+            global = Some(entry.as_str());
+        }
+    }
+    global
+        .map(str::to_string)
+        .unwrap_or_else(|| default_model.to_string())
+}
+
 fn report_sibling(out: &str, ext: &str) -> String {
     let stem = out.strip_suffix(".md").unwrap_or(out.trim_end_matches('.'));
     format!("{stem}.{ext}")
@@ -624,8 +633,10 @@ fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)
     if cli.providers.is_empty() && !profile.providers.is_empty() {
         cli.providers = profile.providers.clone();
     }
-    if cli.model.is_none() {
-        cli.model = profile.model.clone();
+    if cli.model.is_empty() {
+        if let Some(model) = &profile.model {
+            cli.model = vec![model.clone()];
+        }
     }
     if arg_not_passed(&["-p", "--prompt"]) {
         if let Some(prompt) = &profile.prompt {
@@ -673,7 +684,7 @@ fn arg_not_passed(flags: &[&str]) -> bool {
 fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
     let mut out: Vec<ProviderSpec> = Vec::new();
     if let (Some(endpoint), Some(name)) = (&cli.endpoint, &cli.provider_name) {
-        let model = cli.model.clone().unwrap_or_else(|| "default".to_string());
+        let model = resolve_model(&cli.model, "custom", "default");
         out.push(ProviderSpec::custom(
             name,
             endpoint,

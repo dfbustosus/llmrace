@@ -105,6 +105,9 @@ llmrace openai anthropic groq
 # Include your local Ollama models
 llmrace ollama groq -m llama-3.3-70b-versatile
 
+# Mixed race: different models per provider (cloud + local)
+llmrace openai ollama -m gpt-4o-mini -m ollama=llama3.2:1b
+
 # Saturation throughput: 8 parallel requests per provider
 llmrace openai groq -c 8 -n 5
 

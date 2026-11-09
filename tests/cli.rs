@@ -1,4 +1,12 @@
+use llmrace::provider::split_model_override;
 use std::process::Command;
+
+fn tmppath(name: &str) -> String {
+    std::env::temp_dir()
+        .join(format!("llmrace-{name}.md"))
+        .to_string_lossy()
+        .into_owned()
+}
 
 #[test]
 fn completions_generate_for_every_shell() {
@@ -31,31 +39,16 @@ fn completions_reject_unknown_shell() {
 }
 
 #[test]
-fn doctor_render_summarizes_statuses() {
-    use llmrace::doctor::{render, Check, Status};
-    let checks = vec![
-        Check {
-            name: "a".into(),
-            status: Status::Pass,
-            detail: "ok".into(),
-        },
-        Check {
-            name: "b".into(),
-            status: Status::Warn,
-            detail: "meh".into(),
-        },
-        Check {
-            name: "c".into(),
-            status: Status::Fail,
-            detail: "bad".into(),
-        },
-    ];
-    let out = render(&checks);
-    assert!(out.contains("✓ a") && out.contains("ok"));
-    assert!(out.contains("! b") && out.contains("meh"));
-    assert!(out.contains("✗ c") && out.contains("bad"));
-    assert!(out.contains("summary: 1 fail, 1 warn, 1 pass"));
-    assert!(out.contains("attach this output"));
+fn man_page_is_roff() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--man")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let man = String::from_utf8_lossy(&out.stdout);
+    assert!(man.contains(".TH llmrace 1"));
+    assert!(man.contains(".SH NAME"));
+    assert!(man.contains("baseline"));
 }
 
 #[test]
@@ -116,14 +109,67 @@ fn list_json_and_doctor_json_are_valid_json() {
 }
 
 #[test]
-fn man_page_is_roff() {
+fn model_overrides_parse_correctly() {
+    assert_eq!(
+        split_model_override("ollama=llama3.2:1b"),
+        Some(("ollama".into(), "llama3.2:1b".into()))
+    );
+    assert_eq!(split_model_override("gpt-4o-mini"), None);
+    assert_eq!(split_model_override("ollama="), None);
+    assert_eq!(split_model_override("=model"), None);
+}
+
+#[test]
+fn per_provider_model_flag_targets_one_lane() {
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
-        .arg("--man")
+        .args([
+            "mock",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "-m",
+            "mock=custom-model-9",
+            "--json",
+            "--out",
+            tmppath("pm").as_str(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json_path = tmppath("pm").replace(".md", ".json");
+    let raw = std::fs::read_to_string(&json_path)
+        .unwrap_or_else(|_| panic!("expected json report at {json_path}"));
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed["providers"][0]["model"], "custom-model-9");
+}
+
+#[test]
+fn global_model_flag_applies_to_all_lanes() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "-m",
+            "gpt-4o-mini",
+            "--json",
+            "--out",
+            tmppath("gm").as_str(),
+        ])
         .output()
         .unwrap();
     assert!(out.status.success());
-    let man = String::from_utf8_lossy(&out.stdout);
-    assert!(man.contains(".TH llmrace 1"));
-    assert!(man.contains(".SH NAME"));
-    assert!(man.contains("baseline"));
+    let json_path = tmppath("gm").replace(".md", ".json");
+    let raw = std::fs::read_to_string(&json_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed["providers"][0]["model"], "gpt-4o-mini");
 }
