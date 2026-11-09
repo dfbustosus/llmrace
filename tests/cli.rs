@@ -73,3 +73,10 @@ fn price_overrides_parse_and_apply() {
         Some((3.0, 9.0))
     );
 }
+
+#[test]
+fn subms_ttfb_renders_as_less_than_one() {
+    assert_eq!(llmrace::stats::fmt_ms(0.4), "<1");
+    assert_eq!(llmrace::stats::fmt_ms(0.0), "0");
+    assert_eq!(llmrace::stats::fmt_ms(14.2), "14");
+}
