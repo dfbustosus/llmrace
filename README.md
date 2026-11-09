@@ -145,7 +145,7 @@ Every provider with a matching env var races automatically — no config file:
 
 | Metric | Definition |
 |--------|------------|
-| **TTFB** | Time from request to first streamed token |
+| **TTFB** | Time from just before the request is sent to the first streamed token (includes connection, TLS and queueing) |
 | **Tokens/s** | Completion tokens divided by the *generation window* (total − TTFB); with `--concurrency N`, total tokens of all N parallel requests over the round window — i.e. saturation throughput |
 | **Latency p50 / p95** | Distribution of round time-to-last-token (linear-interpolation percentiles) |
 | **Mean ± 95% CI** | Student-t confidence interval on the mean latency |
