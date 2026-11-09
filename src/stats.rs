@@ -152,6 +152,16 @@ impl Sample {
     }
 }
 
+/// Formats a millisecond value for display, collapsing sub-millisecond
+/// values to `<1` so local-inference TTFB does not render as a broken `0`.
+pub fn fmt_ms(v: f64) -> String {
+    if v > 0.0 && v < 1.0 {
+        "<1".to_string()
+    } else {
+        format!("{v:.0}")
+    }
+}
+
 /// Two-sided 95% critical values of the Student t distribution by degrees of freedom.
 const T_TABLE_95: &[(usize, f64)] = &[
     (1, 12.706),
