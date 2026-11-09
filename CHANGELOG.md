@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TUI: finished lanes show an estimated blended price per million tokens when the model has known pricing
 - Man page: `llmrace --man` emits roff for packaging (`llmrace --man > llmrace.1`)
 - Machine-readable outputs: `--list --json` (full registry with availability) and `--doctor --json` (structured check results)
 - `--price provider/model=input:output` (repeatable): override stale per-model pricing from the CLI; takes precedence over the built-in table
