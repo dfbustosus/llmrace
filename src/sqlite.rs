@@ -42,7 +42,7 @@ pub fn save(conn: &Connection, records: &[HistoryRecord]) -> rusqlite::Result<()
         )?;
         for r in records {
             stmt.execute(rusqlite::params![
-                r.timestamp_unix,
+                r.timestamp_unix as i64,
                 r.provider,
                 r.model,
                 r.variant,
@@ -73,7 +73,7 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<HistoryRecord>> {
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(HistoryRecord {
-            timestamp_unix: row.get(0)?,
+            timestamp_unix: row.get::<_, i64>(0)? as u64,
             provider: row.get(1)?,
             model: row.get(2)?,
             variant: row.get(3)?,
