@@ -127,3 +127,75 @@ fn man_page_is_roff() {
     assert!(man.contains(".SH NAME"));
     assert!(man.contains("baseline"));
 }
+
+#[test]
+fn model_overrides_parse_correctly() {
+    use llmrace::provider::split_model_override;
+    assert_eq!(
+        split_model_override("ollama=llama3.2:1b"),
+        Some(("ollama".into(), "llama3.2:1b".into()))
+    );
+    assert_eq!(split_model_override("gpt-4o-mini"), None);
+    assert_eq!(split_model_override("ollama="), None);
+    assert_eq!(split_model_override("=model"), None);
+}
+
+#[test]
+fn per_provider_model_flag_targets_one_lane() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "mock",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "-m",
+            "mock=custom-model-9",
+            "--json",
+            "--out",
+            "/tmp/pm.md",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("/tmp/pm.json")
+            .unwrap()
+            .replace('\n', ""),
+    )
+    .ok()
+    .or_else(|| serde_json::from_slice(&out.stdout).ok())
+    .expect("json report");
+    let first = &parsed["providers"][0];
+    assert_eq!(first["model"], "custom-model-9");
+}
+
+#[test]
+fn global_model_flag_applies_to_all_lanes() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "-m",
+            "gpt-4o-mini",
+            "--json",
+            "--out",
+            "/tmp/gm.md",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let raw = std::fs::read_to_string("/tmp/gm.json").unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(parsed["providers"][0]["model"], "gpt-4o-mini");
+}
