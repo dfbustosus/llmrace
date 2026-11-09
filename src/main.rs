@@ -170,6 +170,24 @@ async fn main() -> Result<()> {
         ];
         checks.push(llmrace::doctor::check_ollama(&client).await);
         checks.extend(llmrace::doctor::check_providers(&client, &ProviderSpec::registry()).await);
+        if cli.json {
+            let payload: Vec<serde_json::Value> = checks
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "status": match c.status {
+                            llmrace::doctor::Status::Pass => "pass",
+                            llmrace::doctor::Status::Warn => "warn",
+                            llmrace::doctor::Status::Fail => "fail",
+                        },
+                        "detail": c.detail,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+            return Ok(());
+        }
         print!("{}", llmrace::doctor::render(&checks));
         return Ok(());
     }
@@ -185,6 +203,22 @@ async fn main() -> Result<()> {
     }
 
     if cli.list {
+        if cli.json {
+            let providers: Vec<serde_json::Value> = ProviderSpec::registry()
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id.as_ref(),
+                        "endpoint": p.endpoint.as_ref(),
+                        "api_key_env": p.api_key_env.as_deref(),
+                        "default_model": p.default_model.as_ref(),
+                        "available": p.is_available(),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&providers)?);
+            return Ok(());
+        }
         let header = format!("{:<14} {:<30} {}\n", "PROVIDER", "DEFAULT MODEL", "NEEDS");
         print!("{header}");
         for p in ProviderSpec::registry() {
