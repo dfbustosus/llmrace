@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Demo GIF re-recorded against the live TUI (real Ollama lane streaming against the instant mock lane, finish flags, post-race table, trend output)
 - TUI: lanes in `--sweep` runs are now keyed by provider **and** variant; before, all variants of one provider streamed into a single lane and token counts collided
 
 ## [0.4.0] - 2026-11-08
