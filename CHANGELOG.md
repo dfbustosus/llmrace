@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Security: rusqlite 0.32 → 0.41 — bundled SQLite updated past RUSTSEC-2026-0459 / CVE-2026-119375 (caught by the supply-chain workflow)
+- README real-world results refreshed with honest cloud-vs-local data (OpenAI gpt-4o-mini vs local Ollama), including tool-call validity rates
 - `llmrace.toml` profiles reject unknown keys — typos like `run` instead of `runs` now fail with the expected key named instead of silently using defaults
 - Ollama 404 model-not-found errors now append an actionable hint (`ollama pull <model>` or pass `-m <model>`)
 - Demo GIF: lanes now race with an explicitly pulled model (`-m llama3.2:1b`) — the previous recording failed both Ollama lanes with red 404 model-not-found errors
