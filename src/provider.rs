@@ -320,6 +320,17 @@ pub struct CompletionRequest<'a> {
     pub tools: bool,
 }
 
+/// Provider-reported timing and identity metadata from response headers.
+#[derive(Debug, Clone, Default)]
+pub struct ServerTiming {
+    /// Server-side processing time in ms (OpenAI: `openai-processing-ms`).
+    pub processing_ms: Option<f64>,
+    /// Provider request ID (`x-request-id`).
+    pub request_id: Option<String>,
+    /// Remaining rate-limit requests (`x-ratelimit-remaining-requests`).
+    pub ratelimit_remaining: Option<String>,
+}
+
 /// The stream returned by [`stream_completion`].
 ///
 /// A named enum instead of a boxed trait object so that common cases avoid
@@ -329,6 +340,17 @@ pub enum EventStream {
     Mock(MockStream),
     /// HTTP SSE stream.
     Http(SseStream),
+}
+
+impl EventStream {
+    /// Returns provider-reported timing and identity metadata captured
+    /// from the HTTP response headers, when available.
+    pub fn server_timing(&self) -> ServerTiming {
+        match self {
+            EventStream::Http(s) => s.server_timing(),
+            EventStream::Mock(_) => ServerTiming::default(),
+        }
+    }
 }
 
 impl futures_util::Stream for EventStream {
@@ -517,17 +539,38 @@ pub struct SseStream {
     wire: Wire,
     pending: std::collections::VecDeque<StreamEvent>,
     upstream_done: bool,
+    timing: ServerTiming,
 }
 
 impl SseStream {
     fn new(resp: reqwest::Response, wire: Wire) -> Self {
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let processing_ms = header("openai-processing-ms")
+            .or_else(|| header("x-processing-time-ms"))
+            .and_then(|v| v.trim().parse::<f64>().ok());
+        let timing = ServerTiming {
+            processing_ms,
+            request_id: header("x-request-id"),
+            ratelimit_remaining: header("x-ratelimit-remaining-requests"),
+        };
         SseStream {
             stream: Box::pin(resp.bytes_stream()),
             parser: crate::sse::SseParser::new(),
             wire,
             pending: std::collections::VecDeque::new(),
             upstream_done: false,
+            timing,
         }
+    }
+
+    /// Returns captured response-header timing metadata.
+    pub fn server_timing(&self) -> ServerTiming {
+        self.timing.clone()
     }
 
     fn enqueue_block(&mut self, block: &str) {

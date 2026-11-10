@@ -23,6 +23,13 @@ pub struct RunMetrics {
     pub prompt_tokens: u64,
     /// Accumulated tool-call argument JSON (empty when the run had none).
     pub tool_args: String,
+    /// Provider-reported server-side processing time in milliseconds,
+    /// from response headers (e.g. OpenAI's `openai-processing-ms`).
+    pub server_ms: Option<f64>,
+    /// Provider request ID for correlation with provider dashboards.
+    pub request_id: Option<String>,
+    /// Remaining rate-limit requests after this call.
+    pub ratelimit_remaining: Option<String>,
 }
 
 impl RunMetrics {
@@ -232,6 +239,26 @@ impl LaneSummary {
         Some((valid, with_args.len()))
     }
 
+    /// Median of provider-reported server-side processing time in ms.
+    pub fn median_server_ms(&self) -> Option<f64> {
+        let values: Vec<f64> = self.runs.iter().filter_map(|r| r.server_ms).collect();
+        if values.is_empty() {
+            return None;
+        }
+        Some(Sample::from_values(values).median())
+    }
+
+    /// Last provider request ID.
+    pub fn last_request_id(&self) -> Option<&str> {
+        self.runs.iter().rev().find_map(|r| r.request_id.as_deref())
+    }
+
+    /// Estimated network overhead: measured TTFB minus provider-reported server time.
+    pub fn network_overhead_ms(&self) -> Option<f64> {
+        let server = self.median_server_ms()?;
+        Some(self.mean_ttfb_ms() - server)
+    }
+
     /// `true` when at least one measured round succeeded.
     pub fn successful(&self) -> bool {
         self.error.is_none() && !self.runs.is_empty()
@@ -380,6 +407,15 @@ async fn run_round(
                 .max_by_key(|s| s.len())
                 .unwrap_or("")
                 .to_string(),
+            server_ms: all
+                .iter()
+                .filter_map(|m| m.server_ms)
+                .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a: f64| a.min(v)))),
+            request_id: all.iter().filter_map(|m| m.request_id.clone()).next(),
+            ratelimit_remaining: all
+                .iter()
+                .filter_map(|m| m.ratelimit_remaining.clone())
+                .next(),
         }])
     }
 }
@@ -404,6 +440,7 @@ async fn single_request(
     };
     let start = Instant::now();
     let mut stream = stream_completion(client, spec, &req).await?;
+    let server_timing = stream.server_timing();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut ttfb: Option<Duration> = None;
     let mut tokens = 0u64;
@@ -461,5 +498,8 @@ async fn single_request(
         chars,
         prompt_tokens: 0,
         tool_args,
+        server_ms: server_timing.processing_ms,
+        request_id: server_timing.request_id,
+        ratelimit_remaining: server_timing.ratelimit_remaining,
     })
 }
