@@ -80,7 +80,7 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
     let ranked = rank_lanes(lanes);
     let mut out = String::new();
     out.push_str("\n| # | Provider | Model | Concurrency | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Tokens/s | Cost/run |\n");
-    out.push_str("|--|----------|-------|------------:|------------------------:|----:|----:|-----:|---------:|---------:|\n");
+    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-----:|---------:|---------:|\n");
     for (i, s) in ranked.iter().enumerate() {
         let mean = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("{:.0} ± {:.0} ms", s.mean_total_ms(), (hi - lo) / 2.0),
@@ -96,16 +96,21 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
             "†"
         };
         out.push_str(&format!(
-            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} ms | **{:.1}** | {} |\n",
+            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {} ms | {} | {} | **{:.1}** | {} |\n",
             i + 1,
             s.name,
             outlier_mark,
             s.model,
             s.concurrency,
             mean,
-            s.median_total_ms(),
             s.p95_total_ms(),
             fmt_ms(s.mean_ttfb_ms()),
+            s.median_server_ms()
+                .map(|v| format!("{v:.0} ms"))
+                .unwrap_or_else(|| "—".into()),
+            s.network_overhead_ms()
+                .map(|v| format!("{v:+.0} ms"))
+                .unwrap_or_else(|| "—".into()),
             s.mean_tokens_per_sec(),
             cost
         ));
@@ -155,6 +160,9 @@ pub fn json_report(
                 "mean_tokens_per_sec": s.mean_tokens_per_sec(),
                 "outlier_runs": s.outlier_runs(),
                 "cost_per_run_usd": s.cost_per_run_usd(),
+                "server_ms": s.median_server_ms(),
+                "network_overhead_ms": s.network_overhead_ms(),
+                "request_id": s.last_request_id(),
                 "tool_validity": s.tool_validity(),
             })
         })
@@ -194,8 +202,8 @@ pub fn csv(summaries: &[LaneSummary]) -> String {
 pub fn terminal_table(summaries: &[LaneSummary]) -> String {
     let ranked = rank(summaries);
     let mut out = format!(
-        "{:<4} {:<14} {:<26} {:>7} {:>18} {:>8} {:>8} {:>8} {:>8}\n",
-        "#", "Provider", "Model", "C", "Lat (mean±CI)", "p50", "p95", "TTFB", "Tok/s"
+        "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>9}\n",
+        "#", "Provider", "Model", "C", "Lat (mean±CI)", "p95", "TTFB", "Server", "Network", "Tok/s"
     );
     out.push_str(&"-".repeat(out.len()));
     out.push('\n');
@@ -210,15 +218,20 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
             "†"
         };
         out.push_str(&format!(
-            "{:<4} {:<14} {:<26} {:>7} {:>18} {:>7.0}ms {:>7.0}ms {:>6.0}ms {:>8.1}{}\n",
+            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8.1}{}\n",
             i + 1,
             s.name,
             truncate(&s.model, 26),
             s.concurrency,
             mean,
-            s.median_total_ms(),
             s.p95_total_ms(),
             fmt_ms(s.mean_ttfb_ms()),
+            s.median_server_ms()
+                .map(crate::stats::fmt_ms)
+                .unwrap_or_else(|| "—".into()),
+            s.network_overhead_ms()
+                .map(|v| format!("{v:+.0}"))
+                .unwrap_or_else(|| "—".into()),
             s.mean_tokens_per_sec(),
             mark
         ));
