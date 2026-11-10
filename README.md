@@ -96,6 +96,10 @@ cd llmrace && cargo install --path .
 ## Quick start
 
 ```bash
+llmrace --init    # create a starter llmrace.toml with example profiles
+```
+
+```bash
 # Race every provider you have configured (auto-detected from env vars)
 llmrace
 
