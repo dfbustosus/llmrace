@@ -239,9 +239,6 @@ fn run_metrics_generation_math() {
         server_ms: None,
         request_id: None,
         ratelimit_remaining: None,
-        server_ms: None,
-        request_id: None,
-        ratelimit_remaining: None,
         tool_args: String::new(),
         total_ms: 1000.0,
         ttfb_ms: 200.0,
@@ -275,9 +272,6 @@ fn regression_summary(
 ) -> llmrace::bench::LaneSummary {
     let gen_s = (mean_ms - ttfb_ms).max(0.0) / 1000.0;
     let run = RunMetrics {
-        server_ms: None,
-        request_id: None,
-        ratelimit_remaining: None,
         server_ms: None,
         request_id: None,
         ratelimit_remaining: None,
