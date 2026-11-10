@@ -236,6 +236,12 @@ async fn concurrency_two_measures_saturation_throughput() {
 #[test]
 fn run_metrics_generation_math() {
     let m = RunMetrics {
+        server_ms: None,
+        request_id: None,
+        ratelimit_remaining: None,
+        server_ms: None,
+        request_id: None,
+        ratelimit_remaining: None,
         tool_args: String::new(),
         total_ms: 1000.0,
         ttfb_ms: 200.0,
@@ -269,6 +275,12 @@ fn regression_summary(
 ) -> llmrace::bench::LaneSummary {
     let gen_s = (mean_ms - ttfb_ms).max(0.0) / 1000.0;
     let run = RunMetrics {
+        server_ms: None,
+        request_id: None,
+        ratelimit_remaining: None,
+        server_ms: None,
+        request_id: None,
+        ratelimit_remaining: None,
         tool_args: String::new(),
         total_ms: mean_ms,
         ttfb_ms,
@@ -460,6 +472,12 @@ fn xai_and_perplexity_specs() {
 async fn percentile_ladder_and_histogram_render() {
     let runs: Vec<RunMetrics> = (0..10)
         .map(|i| RunMetrics {
+            server_ms: None,
+            request_id: None,
+            ratelimit_remaining: None,
+            server_ms: None,
+            request_id: None,
+            ratelimit_remaining: None,
             tool_args: String::new(),
             total_ms: 100.0 + i as f64 * 50.0,
             ttfb_ms: 10.0,
