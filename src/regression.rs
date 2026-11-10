@@ -142,6 +142,7 @@ impl BaselineReport {
 ///     runs: vec![llmrace::bench::RunMetrics {
 ///         total_ms: 105.0, ttfb_ms: 21.0, tokens: 6, chars: 24,
 ///         prompt_tokens: 0, tool_args: String::new(),
+///         server_ms: None, request_id: None, ratelimit_remaining: None,
 ///     }],
 ///     error: None,
 ///     prompt: "p".into(),

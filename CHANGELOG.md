@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Server vs network latency breakdown**: llmrace now captures provider-reported server-side processing time from response headers (OpenAI's `openai-processing-ms`), plus request IDs and rate-limit status. Reports show `Server` (provider-side) and `Network` (measured TTFB minus server time) columns, letting users distinguish "slow model" from "far away server"
 - Per-provider model overrides: `-m ollama=llama3.2:1b -m gpt-4o-mini` — plain entries stay global, `provider=model` entries target one lane, enabling mixed cloud/local races
 - Live-API smoke tests (opt-in): `cargo test --test live_openai -- --ignored` validates the full HTTP+SSE path and honest cloud TTFB against real OpenAI
 - TUI: finished lanes show an estimated blended price per million tokens when the model has known pricing
