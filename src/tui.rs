@@ -49,6 +49,7 @@ struct Lane {
     finished: bool,
     error: Option<String>,
     best_ms: Option<f64>,
+    server_ms: Option<f64>,
     rate_history: Vec<f64>,
     last_tokens: u64,
     last_sample: Instant,
@@ -69,6 +70,7 @@ impl Lane {
             finished: false,
             error: None,
             best_ms: None,
+            server_ms: None,
             rate_history: Vec::new(),
             last_tokens: 0,
             last_sample: Instant::now(),
@@ -130,6 +132,7 @@ impl Tui {
         {
             if u.finished {
                 lane.finished = true;
+                lane.server_ms = u.server_ms.or(lane.server_ms);
                 if let Some(e) = u.error {
                     lane.error = Some(e);
                 } else if u.elapsed_ms > 0.0 {

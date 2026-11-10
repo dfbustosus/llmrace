@@ -106,6 +106,7 @@ async fn tui_lanes_distinguish_variants() {
         ttfb_ms: Some(1.0),
         finished: false,
         error: None,
+        server_ms: None,
     };
 
     tui.update(upd(Some("short"), 5));

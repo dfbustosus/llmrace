@@ -173,3 +173,63 @@ fn global_model_flag_applies_to_all_lanes() {
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["providers"][0]["model"], "gpt-4o-mini");
 }
+
+#[test]
+fn init_creates_config_and_fails_on_existing() {
+    let dir = std::env::temp_dir().join(format!("llmrace-init-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--init")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.join("llmrace.toml").exists());
+    let config = std::fs::read_to_string(dir.join("llmrace.toml")).unwrap();
+    assert!(config.contains("[profiles.fast]"));
+    assert!(config.contains("[profiles.ci]"));
+
+    let dup = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--init")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(!dup.status.success());
+    assert!(String::from_utf8_lossy(&dup.stderr).contains("already exists"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn quiet_mode_suppresses_output() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "--quiet",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "--out",
+            tmppath("quiet").as_str(),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("🏁"),
+        "quiet must suppress banner: {stdout}"
+    );
+    assert!(
+        !stdout.contains("✓ mock"),
+        "quiet must suppress progress: {stdout}"
+    );
+}

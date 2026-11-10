@@ -145,6 +145,14 @@ struct Cli {
     #[arg(long)]
     doctor: bool,
 
+    /// Suppress terminal output except for errors (for scripts and CI).
+    #[arg(long)]
+    quiet: bool,
+
+    /// Create a starter llmrace.toml with example profiles and exit.
+    #[arg(long)]
+    init: bool,
+
     /// Override pricing for a model: provider/model=input:output (USD per million tokens). Repeatable.
     #[arg(long = "price")]
     prices: Vec<String>,
@@ -163,6 +171,18 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let (cli, _profile) = apply_profile(cli)?;
+
+    if cli.init {
+        let path = std::path::Path::new("llmrace.toml");
+        if path.exists() {
+            anyhow::bail!("llmrace.toml already exists — edit it or remove it first");
+        }
+        std::fs::write(path, include_str!("../examples/llmrace.toml"))
+            .with_context(|| "writing llmrace.toml")?;
+        println!("Created llmrace.toml with example profiles (fast, overnight, saturation, ci)");
+        println!("Edit it, then run: llmrace --profile fast");
+        return Ok(());
+    }
 
     if cli.doctor {
         let client = reqwest::Client::builder()
@@ -321,15 +341,17 @@ async fn main() -> Result<()> {
         duration_secs: cli.duration,
     };
 
-    println!(
-        "🏁 llmrace v{} — {} providers × {} rounds ({} warmup, c={})",
-        env!("CARGO_PKG_VERSION"),
-        selected.len(),
-        config.runs,
-        config.warmup,
-        config.concurrency
-    );
-    println!("   prompt: \"{}\"\n", cli.prompt.replace('\n', " "));
+    if !cli.quiet {
+        println!(
+            "🏁 llmrace v{} — {} providers × {} rounds ({} warmup, c={})",
+            env!("CARGO_PKG_VERSION"),
+            selected.len(),
+            config.runs,
+            config.warmup,
+            config.concurrency
+        );
+        println!("   prompt: \"{}\"\n", cli.prompt.replace('\n', " "));
+    }
 
     if cli.tools {
         println!("🛠 tool-calling mode: weather task, argument validity tracked");
@@ -380,7 +402,9 @@ async fn main() -> Result<()> {
         for h in handles {
             match h.await {
                 Ok(s) => {
-                    print_lane_progress(&s);
+                    if !cli.quiet {
+                        print_lane_progress(&s);
+                    }
                     all.push(s);
                 }
                 Err(e) => eprintln!("lane failed: {e}"),
@@ -422,8 +446,10 @@ async fn main() -> Result<()> {
         all
     };
 
-    let table = report::terminal_table(&summaries);
-    println!("\n{table}");
+    if !cli.quiet {
+        let table = report::terminal_table(&summaries);
+        println!("\n{table}");
+    }
 
     let mut md = report::markdown(&summaries, &cli.prompt, config.runs, cli.max_tokens);
     if cli.histogram {

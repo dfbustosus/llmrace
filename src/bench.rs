@@ -117,6 +117,8 @@ pub struct LaneUpdate {
     pub finished: bool,
     /// Round or lane error message.
     pub error: Option<String>,
+    /// Provider-reported server-side processing time for the current round.
+    pub server_ms: Option<f64>,
 }
 
 /// Aggregated results for one provider lane.
@@ -319,6 +321,7 @@ pub fn spawn_lane(
                         ttfb_ms: None,
                         finished: true,
                         error: Some(e.to_string()),
+                        server_ms: None,
                     });
                     if summary.runs.is_empty() && round + 1 == total_rounds {
                         summary.error = Some(e.to_string());
@@ -338,6 +341,7 @@ pub fn spawn_lane(
             ttfb_ms: Some(summary.mean_ttfb_ms()),
             finished: true,
             error: None,
+            server_ms: summary.median_server_ms(),
         });
         summary
     });
@@ -478,6 +482,7 @@ async fn single_request(
                 ttfb_ms: ttfb.map(|d| d.as_secs_f64() * 1000.0),
                 finished: false,
                 error: None,
+                server_ms: None,
             });
         }
         if let Some(n) = event.completion_tokens {
