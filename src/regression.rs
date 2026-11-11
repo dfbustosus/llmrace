@@ -48,6 +48,7 @@ pub struct RegressionReport {
 
 impl RegressionReport {
     /// `true` when at least one metric regressed beyond the threshold.
+    #[must_use]
     pub fn any_regressed(&self) -> bool {
         self.comparisons
             .iter()

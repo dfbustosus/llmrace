@@ -35,6 +35,7 @@ pub struct RunMetrics {
 impl RunMetrics {
     /// Whether the accumulated tool-call arguments parsed as valid JSON
     /// containing the expected field.
+    #[must_use]
     pub fn tool_args_valid(&self) -> bool {
         crate::tools::validate_args(&self.tool_args)
     }
@@ -42,11 +43,13 @@ impl RunMetrics {
 
 impl RunMetrics {
     /// Generation window: total time minus time-to-first-byte.
+    #[must_use]
     pub fn gen_ms(&self) -> f64 {
         (self.total_ms - self.ttfb_ms).max(0.0)
     }
 
     /// Single-run throughput over the generation window.
+    #[must_use]
     pub fn tokens_per_sec(&self) -> f64 {
         if self.tokens == 0 || self.gen_ms() <= 0.0 {
             0.0
@@ -146,26 +149,31 @@ impl LaneSummary {
     }
 
     /// Mean of round total latencies.
+    #[must_use]
     pub fn mean_total_ms(&self) -> f64 {
         self.total_sample().mean()
     }
 
     /// Median of round total latencies.
+    #[must_use]
     pub fn median_total_ms(&self) -> f64 {
         self.total_sample().median()
     }
 
     /// p95 of round total latencies (linear interpolation).
+    #[must_use]
     pub fn p95_total_ms(&self) -> f64 {
         self.total_sample().percentile(95.0)
     }
 
     /// 95% confidence interval of the mean total latency.
+    #[must_use]
     pub fn ci95_total_ms(&self) -> Option<(f64, f64)> {
         self.total_sample().t_ci95()
     }
 
     /// Mean time-to-first-byte.
+    #[must_use]
     pub fn mean_ttfb_ms(&self) -> f64 {
         if self.runs.is_empty() {
             return 0.0;
@@ -174,6 +182,7 @@ impl LaneSummary {
     }
 
     /// Mean completion tokens per round.
+    #[must_use]
     pub fn mean_tokens(&self) -> f64 {
         if self.runs.is_empty() {
             return 0.0;
@@ -182,6 +191,7 @@ impl LaneSummary {
     }
 
     /// Aggregate throughput: total tokens over the summed generation window.
+    #[must_use]
     pub fn mean_tokens_per_sec(&self) -> f64 {
         if self.runs.is_empty() {
             return 0.0;
@@ -197,6 +207,7 @@ impl LaneSummary {
 
     /// Standard percentile ladder of round total latencies:
     /// p10, p25, p50, p75, p90, p95, p99 (linear interpolation).
+    #[must_use]
     pub fn latency_percentiles(&self) -> Vec<(&'static str, f64)> {
         let sample =
             crate::stats::Sample::from_values(self.runs.iter().map(|r| r.total_ms).collect());
@@ -215,11 +226,13 @@ impl LaneSummary {
     }
 
     /// Indices of rounds whose total latency is a 3-sigma outlier.
+    #[must_use]
     pub fn outlier_runs(&self) -> Vec<usize> {
         self.total_sample().outliers_3sigma()
     }
 
     /// Estimated cost per round in USD, when the model has known pricing.
+    #[must_use]
     pub fn cost_per_run_usd(&self) -> Option<f64> {
         let (pin, pout) = crate::cost::pricing(&self.name, &self.model)?;
         let prompt_tokens = crate::cost::estimate_prompt_tokens(&self.prompt);
@@ -228,6 +241,7 @@ impl LaneSummary {
 
     /// `(valid, total)` tool-argument validity across rounds that produced
     /// arguments; `None` when no round produced tool arguments.
+    #[must_use]
     pub fn tool_validity(&self) -> Option<(usize, usize)> {
         let with_args: Vec<&RunMetrics> = self
             .runs
@@ -242,6 +256,7 @@ impl LaneSummary {
     }
 
     /// Median of provider-reported server-side processing time in ms.
+    #[must_use]
     pub fn median_server_ms(&self) -> Option<f64> {
         let values: Vec<f64> = self.runs.iter().filter_map(|r| r.server_ms).collect();
         if values.is_empty() {
@@ -251,17 +266,20 @@ impl LaneSummary {
     }
 
     /// Last provider request ID.
+    #[must_use]
     pub fn last_request_id(&self) -> Option<&str> {
         self.runs.iter().rev().find_map(|r| r.request_id.as_deref())
     }
 
     /// Estimated network overhead: measured TTFB minus provider-reported server time.
+    #[must_use]
     pub fn network_overhead_ms(&self) -> Option<f64> {
         let server = self.median_server_ms()?;
         Some(self.mean_ttfb_ms() - server)
     }
 
     /// `true` when at least one measured round succeeded.
+    #[must_use]
     pub fn successful(&self) -> bool {
         self.error.is_none() && !self.runs.is_empty()
     }

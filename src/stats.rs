@@ -42,6 +42,7 @@ impl Sample {
     }
 
     /// Arithmetic mean. Returns `0.0` for an empty sample.
+    #[must_use]
     pub fn mean(&self) -> f64 {
         if self.values.is_empty() {
             return 0.0;
@@ -66,11 +67,13 @@ impl Sample {
     }
 
     /// Median (50th percentile). Returns `0.0` for an empty sample.
+    #[must_use]
     pub fn median(&self) -> f64 {
         self.percentile(50.0)
     }
 
     /// Unbiased sample variance (denominator `n - 1`). Returns `0.0` for fewer than two observations.
+    #[must_use]
     pub fn variance(&self) -> f64 {
         if self.values.len() < 2 {
             return 0.0;
@@ -81,6 +84,7 @@ impl Sample {
     }
 
     /// Sample standard deviation. Returns `0.0` for fewer than two observations.
+    #[must_use]
     pub fn stddev(&self) -> f64 {
         self.variance().sqrt()
     }
@@ -95,6 +99,7 @@ impl Sample {
     /// let s = Sample::from_values(vec![10.0, 20.0, 30.0, 40.0, 100.0]);
     /// assert!((s.percentile(50.0) - 30.0).abs() < 1e-12);
     /// ```
+    #[must_use]
     pub fn percentile(&self, p: f64) -> f64 {
         if self.values.is_empty() {
             return 0.0;
@@ -121,6 +126,7 @@ impl Sample {
     /// Uses the Student t distribution with interpolation over a hardcoded
     /// critical-value table for `df <= 30` and the normal approximation
     /// (`z = 1.96`) beyond. Returns `None` for fewer than two observations.
+    #[must_use]
     pub fn t_ci95(&self) -> Option<(f64, f64)> {
         let n = self.values.len();
         if n < 2 {
@@ -134,6 +140,7 @@ impl Sample {
     }
 
     /// Indices of observations more than three standard deviations from the mean.
+    #[must_use]
     pub fn outliers_3sigma(&self) -> Vec<usize> {
         if self.values.len() < 2 {
             return Vec::new();
@@ -154,6 +161,7 @@ impl Sample {
 
 /// Formats a millisecond value for display, collapsing sub-millisecond
 /// values to `<1` so local-inference TTFB does not render as a broken `0`.
+#[must_use]
 pub fn fmt_ms(v: f64) -> String {
     if v > 0.0 && v < 1.0 {
         "<1".to_string()

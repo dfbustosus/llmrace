@@ -519,7 +519,7 @@ async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<re
         return Ok(resp);
     }
     let body = resp.text().await.unwrap_or_default();
-    let mut body = truncate(&body, 300);
+    let mut body = crate::util::truncate(&body, 300);
     if *spec.id == *"ollama" && status.as_u16() == 404 && body.contains("not found") {
         body.push_str(
             " — the model is not pulled; run `ollama pull <model>` or pass `-m <model>` with an already-pulled tag",
@@ -794,13 +794,5 @@ impl futures_util::Stream for MockStream {
             token: Some("token ".to_string()),
             completion_tokens: None,
         })))
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
     }
 }
