@@ -85,6 +85,10 @@ struct Cli {
     #[arg(long, default_value_t = 15.0)]
     max_regression: f64,
 
+    /// Exit 1 if any provider's mean TTFB exceeds this many milliseconds.
+    #[arg(long)]
+    max_ttfb: Option<f64>,
+
     /// Output report path (markdown).
     #[arg(short, long, default_value = "llmrace-report.md")]
     out: String,
@@ -503,6 +507,27 @@ async fn main() -> Result<()> {
                 println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
             }
             other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
+        }
+    }
+
+    if let Some(max_ttfb) = cli.max_ttfb {
+        let offenders: Vec<&LaneSummary> = summaries
+            .iter()
+            .filter(|s| s.successful() && s.mean_ttfb_ms() > max_ttfb)
+            .collect();
+        if !offenders.is_empty() {
+            eprintln!("\n✗ TTFB GATE FAILED (threshold {max_ttfb:.0} ms):");
+            for s in &offenders {
+                eprintln!(
+                    "  {} — TTFB {:.0} ms exceeds threshold",
+                    s.name,
+                    s.mean_ttfb_ms()
+                );
+            }
+            std::process::exit(1);
+        }
+        if !cli.quiet {
+            println!("✓ TTFB gate passed (all providers under {max_ttfb:.0} ms)");
         }
     }
 

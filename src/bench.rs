@@ -122,6 +122,10 @@ pub struct LaneUpdate {
     pub error: Option<String>,
     /// Provider-reported server-side processing time for the current round.
     pub server_ms: Option<f64>,
+    /// The most recent streaming token text (for live preview in the TUI).
+    pub last_token: Option<String>,
+    /// Remaining rate-limit requests reported by the provider.
+    pub ratelimit: Option<String>,
 }
 
 /// Aggregated results for one provider lane.
@@ -340,6 +344,8 @@ pub fn spawn_lane(
                         finished: true,
                         error: Some(e.to_string()),
                         server_ms: None,
+                        last_token: None,
+                        ratelimit: None,
                     });
                     if summary.runs.is_empty() && round + 1 == total_rounds {
                         summary.error = Some(e.to_string());
@@ -360,6 +366,12 @@ pub fn spawn_lane(
             finished: true,
             error: None,
             server_ms: summary.median_server_ms(),
+            last_token: None,
+            ratelimit: summary
+                .runs
+                .iter()
+                .rev()
+                .find_map(|r| r.ratelimit_remaining.clone()),
         });
         summary
     });
@@ -501,6 +513,8 @@ async fn single_request(
                 finished: false,
                 error: None,
                 server_ms: None,
+                last_token: Some(t.clone()),
+                ratelimit: None,
             });
         }
         if let Some(n) = event.completion_tokens {
