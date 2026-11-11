@@ -234,7 +234,7 @@ pub fn render_trend_table(trends: &[ProviderTrend], days: u64) -> String {
         out.push_str(&format!(
             "{:<14} {:<24} {:>9} {:>+9.1} {:>10.1} {:>+9.1} {}\n",
             t.name,
-            truncate(&t.current_model, 24),
+            crate::util::truncate(&t.current_model, 24),
             ttfb,
             t.ttfb_delta_pct(),
             t.tps_latest,
@@ -246,15 +246,6 @@ pub fn render_trend_table(trends: &[ProviderTrend], days: u64) -> String {
         ));
     }
     out
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{cut}…")
-    }
 }
 
 /// Converts a lane summary into a history record.

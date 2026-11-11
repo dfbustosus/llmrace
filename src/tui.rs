@@ -236,7 +236,7 @@ impl Tui {
                     "{} rounds · {:>4.1}s · {}",
                     self.state.runs,
                     self.state.started.elapsed().as_secs_f32(),
-                    truncate_str(self.state.prompt.trim(), 48)
+                    crate::util::truncate(self.state.prompt.trim(), 48)
                 ),
                 Style::default().fg(Color::DarkGray),
             ),
@@ -283,7 +283,7 @@ impl Tui {
             .split(block.inner(inner[i]));
 
             let status = if let Some(e) = &lane.error {
-                format!(" ✗ {}", truncate_str(e, 42))
+                format!(" ✗ {}", crate::util::truncate(e, 42))
             } else if lane.finished {
                 match lane.best_ms {
                     Some(ms) => format!(" 🏁 {:.0} ms", ms),
@@ -349,14 +349,5 @@ impl Tui {
             ),
         ]));
         f.render_widget(footer, chunks[2]);
-    }
-}
-
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max).collect();
-        format!("{truncated}…")
     }
 }

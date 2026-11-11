@@ -55,6 +55,7 @@ pub fn parse_override(raw: &str) -> Result<(String, f64, f64)> {
 /// assert_eq!((input, output), (0.15, 0.60));
 /// assert!(pricing("ollama", "llama3.2").is_none());
 /// ```
+#[must_use]
 pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
     let m = model.to_ascii_lowercase();
     let key = format!("{}/{}", provider, m);
@@ -122,6 +123,7 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
 /// let tokens = estimate_prompt_tokens("Explain zero-knowledge proofs briefly.");
 /// assert!(tokens > 3.0 && tokens < 20.0, "got {tokens}");
 /// ```
+#[must_use]
 pub fn estimate_prompt_tokens(prompt: &str) -> f64 {
     let words = prompt.split_whitespace().count() as f64;
     let chars = prompt.chars().count() as f64;
@@ -139,6 +141,7 @@ pub fn estimate_prompt_tokens(prompt: &str) -> f64 {
 /// assert_eq!(format_usd(0.000234), "$0.000234");
 /// assert_eq!(format_usd(1.5), "$1.500");
 /// ```
+#[must_use]
 pub fn format_usd(v: f64) -> String {
     if v == 0.0 {
         "0".to_string()

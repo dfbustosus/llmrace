@@ -74,7 +74,7 @@ async fn probe(client: &reqwest::Client, endpoint: &str) -> Result<(), String> {
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await
-        .map_err(|e| truncate(&e.to_string(), 90))?;
+        .map_err(|e| crate::util::truncate(&e.to_string(), 90))?;
     let _ = resp.status();
     Ok(())
 }
@@ -87,15 +87,6 @@ fn host(endpoint: &str) -> String {
         .next()
         .unwrap_or(endpoint)
         .to_string()
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max).collect();
-        format!("{cut}…")
-    }
 }
 
 /// Checks the local Ollama daemon via `/api/tags`.
@@ -123,7 +114,10 @@ pub async fn check_ollama(client: &reqwest::Client) -> Check {
         Err(e) => Check {
             name: "ollama".into(),
             status: Status::Warn,
-            detail: format!("not running ({})", truncate(&e.to_string(), 60)),
+            detail: format!(
+                "not running ({})",
+                crate::util::truncate(&e.to_string(), 60)
+            ),
         },
     }
 }
