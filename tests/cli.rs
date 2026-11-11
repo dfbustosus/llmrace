@@ -233,3 +233,41 @@ fn quiet_mode_suppresses_output() {
         "quiet must suppress progress: {stdout}"
     );
 }
+
+#[test]
+fn max_ttfb_gate_fails_and_passes() {
+    let fail = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "--quiet",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "--max-ttfb",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert!(!fail.status.success(), "TTFB ~14ms must fail a 1ms gate");
+    let stderr = String::from_utf8_lossy(&fail.stderr);
+    assert!(stderr.contains("TTFB GATE FAILED"), "{stderr}");
+    assert!(stderr.contains("mock"), "{stderr}");
+
+    let pass = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "--quiet",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "--max-ttfb",
+            "1000",
+        ])
+        .output()
+        .unwrap();
+    assert!(pass.status.success());
+}

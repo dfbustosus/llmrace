@@ -50,6 +50,8 @@ struct Lane {
     error: Option<String>,
     best_ms: Option<f64>,
     server_ms: Option<f64>,
+    ratelimit: Option<String>,
+    preview: String,
     rate_history: Vec<f64>,
     last_tokens: u64,
     last_sample: Instant,
@@ -71,6 +73,8 @@ impl Lane {
             error: None,
             best_ms: None,
             server_ms: None,
+            ratelimit: None,
+            preview: String::new(),
             rate_history: Vec::new(),
             last_tokens: 0,
             last_sample: Instant::now(),
@@ -133,6 +137,7 @@ impl Tui {
             if u.finished {
                 lane.finished = true;
                 lane.server_ms = u.server_ms.or(lane.server_ms);
+                lane.ratelimit = u.ratelimit.clone().or_else(|| lane.ratelimit.clone());
                 if let Some(e) = u.error {
                     lane.error = Some(e);
                 } else if u.elapsed_ms > 0.0 {
@@ -142,6 +147,13 @@ impl Tui {
                 lane.tokens = u.tokens;
                 lane.elapsed_ms = u.elapsed_ms;
                 lane.ttfb_ms = u.ttfb_ms.or(lane.ttfb_ms);
+                if let Some(tok) = &u.last_token {
+                    lane.preview.push_str(tok);
+                    let chars: Vec<char> = lane.preview.chars().collect();
+                    if chars.len() > 40 {
+                        lane.preview = chars[chars.len() - 40..].iter().collect();
+                    }
+                }
             }
         }
         self.state.all_done = self.state.lanes.iter().all(|l| l.finished);
@@ -325,11 +337,18 @@ impl Tui {
                 ),
             ]);
             f.render_widget(Paragraph::new(meta), rows[0]);
+            let line2 = if lane.finished {
+                match &lane.ratelimit {
+                    Some(rl) => format!("`{}`  ·  ratelimit: {} left", lane.model, rl),
+                    None => format!("`{}`", lane.model),
+                }
+            } else if !lane.preview.is_empty() {
+                format!("▊ {}", lane.preview)
+            } else {
+                format!("`{}`", lane.model)
+            };
             f.render_widget(
-                Paragraph::new(Span::styled(
-                    format!("`{}`", lane.model),
-                    Style::default().fg(Color::DarkGray),
-                )),
+                Paragraph::new(Span::styled(line2, Style::default().fg(Color::DarkGray))),
                 rows[1],
             );
 

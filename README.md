@@ -115,6 +115,9 @@ llmrace openai ollama -m gpt-4o-mini -m ollama=llama3.2:1b
 # Saturation throughput: 8 parallel requests per provider
 llmrace openai groq -c 8 -n 5
 
+# CI gate: fail if any provider exceeds 500ms TTFB
+llmrace openai groq --max-ttfb 500 --quiet
+
 # Prompt-variant sweep: same race across prompt shapes
 llmrace openai groq --sweep short,long,code,json,reasoning
 

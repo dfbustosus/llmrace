@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- TUI: live streaming token preview — lanes show the actual generated text (`▊ The lighthouse stands...`) while streaming, and the provider rate limit (`ratelimit: 29999 left`) when finished
+- `--max-ttfb <ms>`: CI gate that exits 1 when any provider's mean TTFB exceeds the threshold — simpler than a full baseline for basic latency alerting
 - `llmrace --init`: creates a starter `llmrace.toml` with annotated profiles (fast, overnight, saturation, ci)
 - `--quiet`: suppresses banner, progress lines and result table — for scripts and CI pipelines
 - TUI: finished lanes display provider-reported server time (`⚡327ms sv`)
