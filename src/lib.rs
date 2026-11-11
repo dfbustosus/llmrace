@@ -15,6 +15,7 @@
 //! - [`regression`]: baseline comparison for CI quality gates
 //! - [`variants`]: built-in prompt variants for multi-shape sweeps
 //! - [`tui`]: the live terminal race view
+//! - [`util`]: shared helpers for truncation, dates, ranking
 //!
 //! ## Example
 //!
@@ -65,5 +66,6 @@ pub mod sse;
 pub mod stats;
 pub mod tools;
 pub mod tui;
+pub mod util;
 pub mod variants;
 pub mod watch;
