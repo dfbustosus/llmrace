@@ -107,18 +107,39 @@ impl Sample {
         if self.values.len() == 1 {
             return self.values[0];
         }
-        let p = p.clamp(0.0, 100.0);
+        let sorted = self.sorted();
+        interpolate(&sorted, p.clamp(0.0, 100.0))
+    }
+
+    /// Several percentiles from one sort — cheaper than repeated
+    /// [`Sample::percentile`] calls, which sort per invocation.
+    ///
+    /// ```
+    /// use llmrace::stats::Sample;
+    ///
+    /// let s = Sample::from_values(vec![10.0, 20.0, 30.0, 40.0, 100.0]);
+    /// let got = s.percentiles(&[50.0, 95.0]);
+    /// assert!((got[0] - 30.0).abs() < 1e-12);
+    /// assert!(got[1] > 80.0);
+    /// ```
+    #[must_use]
+    pub fn percentiles(&self, ps: &[f64]) -> Vec<f64> {
+        if self.values.is_empty() {
+            return vec![0.0; ps.len()];
+        }
+        if self.values.len() == 1 {
+            return vec![self.values[0]; ps.len()];
+        }
+        let sorted = self.sorted();
+        ps.iter()
+            .map(|p| interpolate(&sorted, p.clamp(0.0, 100.0)))
+            .collect()
+    }
+
+    fn sorted(&self) -> Vec<f64> {
         let mut sorted = self.values.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let idx = p / 100.0 * (sorted.len() - 1) as f64;
-        let lo = idx.floor() as usize;
-        let hi = idx.ceil() as usize;
-        if lo == hi {
-            sorted[lo]
-        } else {
-            let frac = idx - lo as f64;
-            sorted[lo] + frac * (sorted[hi] - sorted[lo])
-        }
+        sorted
     }
 
     /// 95% confidence interval for the mean, `(low, high)`.
@@ -156,6 +177,22 @@ impl Sample {
             .filter(|(_, v)| ((**v - m).abs() / sd) > 3.0)
             .map(|(i, _)| i)
             .collect()
+    }
+}
+
+/// Linear interpolation between closest ranks on a pre-sorted slice.
+fn interpolate(sorted: &[f64], p: f64) -> f64 {
+    if sorted.len() == 1 {
+        return sorted[0];
+    }
+    let idx = p / 100.0 * (sorted.len() - 1) as f64;
+    let lo = idx.floor() as usize;
+    let hi = idx.ceil() as usize;
+    if lo == hi {
+        sorted[lo]
+    } else {
+        let frac = idx - lo as f64;
+        sorted[lo] + frac * (sorted[hi] - sorted[lo])
     }
 }
 

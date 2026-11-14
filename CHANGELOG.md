@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Reasoning-token visibility**: reports now split `visible_tokens` from hidden `reasoning_tokens` (provider usage minus the streamed estimate); reasoning lanes are annotated `🧠n` in terminal and markdown tables. Live-verified against gpt-5-nano (255 hidden reasoning tokens on a 256-token budget)
+- **Cross-region merge**: `llmrace --merge a.json,b.json,…` renders a per-provider region table with ⚡ (best TTFB) and 🚀 (best throughput) markers, completing the distributed-probes story; `--region <tag>` stamps reports (also used by the probe workflow), and `--merge --json` writes a machine-readable merged report
+- Providers: **LM Studio** (`lmstudio`, port 1234) and **llama.cpp llama-server** (`llamacpp`, port 8080) — opt-in locals excluded from auto-detect, with `--doctor` reachability checks
+- `--watch --record`: watch sessions now append every round to the persistent history
+
+### Changed
+
+- SSE parser buffers are O(n) per block (rolling consumption window with compaction instead of an O(n) drain per event) — bench: −3% on the 200-event chunked feed, structurally linear for pathological chunking
+- Percentile ladders sort once instead of per percentile — bench: 968µs → 138µs (7×) for the p10–p99 ladder on 10k samples
+- `Sample::percentiles(&[f64])` added; single-percentile `percentile()` is unchanged
+
+### Fixed
+
+- `--json --out name.json` wrote `name.json.json` — the sibling-extension logic now replaces the extension instead of appending (also fixes double-suffixed probe artifacts)
+
 ## [1.0.0] - 2026-11-14
 
 First stable release. The surface is frozen: CLI flags are a contract, library changes follow semver, report schemas only change additively, and `--baseline`/`--compare` keep parsing reports written since 0.3. No functional changes since 0.8.0 — this tag is the freeze.

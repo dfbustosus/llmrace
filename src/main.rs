@@ -71,6 +71,15 @@ struct Cli {
     #[arg(long, value_delimiter = ',')]
     compare: Vec<String>,
 
+    /// Merge region-tagged probe reports (comma-separated) into a
+    /// cross-region comparison table and exit.
+    #[arg(long, value_delimiter = ',')]
+    merge: Vec<String>,
+
+    /// Region tag stamped into the JSON report (used by distributed probes).
+    #[arg(long)]
+    region: Option<String>,
+
     /// Register a custom OpenAI-compatible endpoint (e.g. vLLM, LiteLLM).
     #[arg(long, requires = "provider_name")]
     endpoint: Option<String>,
@@ -220,6 +229,8 @@ async fn main() -> Result<()> {
             llmrace::doctor::check_history(),
         ];
         checks.push(llmrace::doctor::check_ollama(&client).await);
+        checks.push(llmrace::doctor::check_local_daemon(&client, "lmstudio", 1234).await);
+        checks.push(llmrace::doctor::check_local_daemon(&client, "llamacpp", 8080).await);
         checks.extend(llmrace::doctor::check_providers(&client, &ProviderSpec::registry()).await);
         if cli.json {
             let payload: Vec<serde_json::Value> = checks
@@ -283,12 +294,12 @@ async fn main() -> Result<()> {
         let header = format!("{:<14} {:<30} {}\n", "PROVIDER", "DEFAULT MODEL", "NEEDS");
         print!("{header}");
         for p in ProviderSpec::registry() {
-            let row = format!(
-                "{:<14} {:<30} {}\n",
-                p.id,
-                p.default_model,
-                p.api_key_env.as_deref().unwrap_or("nothing (local)")
-            );
+            let needs = match (p.api_key_env.as_deref(), p.opt_in) {
+                (Some(env), _) => env.to_string(),
+                (None, true) => "nothing (opt-in local)".to_string(),
+                (None, false) => "nothing (local)".to_string(),
+            };
+            let row = format!("{:<14} {:<30} {}\n", p.id, p.default_model, needs);
             print!("{row}");
         }
         return Ok(());
@@ -309,6 +320,27 @@ async fn main() -> Result<()> {
         std::fs::write(&path, html).with_context(|| format!("writing {}", path.display()))?;
         println!("🖥 dashboard written to {}", path.display());
         return Ok(());
+    }
+
+    if cli.merge.len() >= 2 {
+        let paths: Vec<std::path::PathBuf> = cli.merge.iter().map(Into::into).collect();
+        let lanes = llmrace::merge::load_files(&paths)?;
+        println!("{}", llmrace::merge::render_table(&lanes));
+        if cli.json {
+            let merged = serde_json::json!({
+                "tool": "llmrace",
+                "version": env!("CARGO_PKG_VERSION"),
+                "merged": lanes,
+            });
+            let path = report_sibling(&cli.out, "json");
+            std::fs::write(&path, serde_json::to_string_pretty(&merged)?)
+                .with_context(|| format!("writing {path}"))?;
+            println!("🌍 merged report saved to {path}");
+        }
+        return Ok(());
+    }
+    if cli.merge.len() == 1 {
+        anyhow::bail!("--merge expects two or more comma-separated report paths");
     }
 
     if cli.compare.len() == 2 {
@@ -528,7 +560,13 @@ async fn main() -> Result<()> {
     println!("📄 markdown report saved to {}", cli.out);
 
     if cli.json {
-        let j = report::json_report(&summaries, &cli.prompt, config.runs, cli.max_tokens);
+        let j = report::json_report_with_region(
+            &summaries,
+            &cli.prompt,
+            config.runs,
+            cli.max_tokens,
+            cli.region.as_deref(),
+        );
         let path = report_sibling(&cli.out, "json");
         std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
         println!("📊 json report saved to {path}");
@@ -704,6 +742,24 @@ async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Clie
         report.rounds.len(),
         report.alerts.len()
     );
+
+    if cli.record {
+        let mut records = Vec::new();
+        for summaries in &report.rounds {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            for s in summaries.iter().filter(|s| s.successful()) {
+                records.push(llmrace::history::record_from_summary(s, now));
+            }
+        }
+        let path = llmrace::history::history_path();
+        llmrace::history::append(&path, &records)
+            .with_context(|| format!("recording history to {}", path.display()))?;
+        println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
+    }
+
     let last = report.last_round();
     if !last.is_empty() {
         let table = report::terminal_table(last);
@@ -750,8 +806,13 @@ fn resolve_model(cli_models: &[String], provider_id: &str, default_model: &str) 
 }
 
 fn report_sibling(out: &str, ext: &str) -> String {
-    let stem = out.strip_suffix(".md").unwrap_or(out.trim_end_matches('.'));
-    format!("{stem}.{ext}")
+    let path = std::path::Path::new(out);
+    if path.extension().is_some() {
+        // `--out race.md` → race.json; `--out probe-eu.json` stays probe-eu.json
+        path.with_extension(ext).to_string_lossy().into_owned()
+    } else {
+        format!("{out}.{ext}")
+    }
 }
 
 fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)> {
@@ -851,7 +912,7 @@ fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
     if out.is_empty() {
         let available: Vec<ProviderSpec> = ProviderSpec::registry()
             .into_iter()
-            .filter(|p| *p.id != *"mock" && p.is_available())
+            .filter(|p| *p.id != *"mock" && !p.opt_in && p.is_available())
             .collect();
         if available.is_empty() {
             anyhow::bail!(

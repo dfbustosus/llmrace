@@ -50,6 +50,10 @@ pub struct ProviderSpec {
     pub wire: Wire,
     /// Authentication style for the API key.
     pub auth: AuthKind,
+    /// Opt-in local daemons are excluded from env-var auto-detect: they
+    /// would otherwise join every bare `llmrace` run with an error lane
+    /// whenever the daemon is not running.
+    pub opt_in: bool,
 }
 
 impl ProviderSpec {
@@ -207,6 +211,32 @@ impl ProviderSpec {
         )
     }
 
+    /// Local LM Studio server (default port 1234).
+    pub fn lmstudio() -> Self {
+        let mut p = spec(
+            "lmstudio",
+            "http://localhost:1234/v1/chat/completions",
+            None,
+            "openai/gpt-4o-mini",
+            Wire::OpenAiCompat,
+        );
+        p.opt_in = true;
+        p
+    }
+
+    /// Local llama.cpp `llama-server` (default port 8080).
+    pub fn llamacpp() -> Self {
+        let mut p = spec(
+            "llamacpp",
+            "http://localhost:8080/v1/chat/completions",
+            None,
+            "local-model",
+            Wire::OpenAiCompat,
+        );
+        p.opt_in = true;
+        p
+    }
+
     /// Deterministic in-process provider for tests and demos.
     pub fn mock() -> Self {
         spec("mock", "", None, "mock-1", Wire::Mock)
@@ -254,6 +284,8 @@ impl ProviderSpec {
             ProviderSpec::cerebras(),
             ProviderSpec::openrouter(),
             ProviderSpec::ollama(),
+            ProviderSpec::lmstudio(),
+            ProviderSpec::llamacpp(),
             ProviderSpec::mock(),
         ]
     }
@@ -293,6 +325,7 @@ fn spec(id: &str, endpoint: &str, key_env: Option<&str>, model: &str, wire: Wire
         default_model: Arc::from(model),
         wire,
         auth: AuthKind::default(),
+        opt_in: false,
     }
 }
 

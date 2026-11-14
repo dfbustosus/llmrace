@@ -39,5 +39,19 @@ fn bench_percentile_10k(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_sse_feed_7byte_chunks, bench_percentile_10k);
+criterion_group!(
+    benches,
+    bench_sse_feed_7byte_chunks,
+    bench_percentile_10k,
+    bench_percentiles_ladder_10k
+);
 criterion_main!(benches);
+
+fn bench_percentiles_ladder_10k(c: &mut Criterion) {
+    let values: Vec<f64> = (0..10_000).map(|i| (i as f64 * 0.37) % 512.0).collect();
+    let sample = Sample::from_values(values);
+    let ps = [10.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.0];
+    c.bench_function("percentile_ladder_p10_to_p99_10k", |b| {
+        b.iter(|| black_box(sample.percentiles(black_box(&ps))))
+    });
+}

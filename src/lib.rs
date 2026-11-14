@@ -14,6 +14,7 @@
 //! - [`report`]: markdown / JSON / CSV exports
 //! - [`regression`]: baseline comparison for CI quality gates
 //! - [`score`]: composite winner scoring and the podium
+//! - [`merge`]: cross-region merging of distributed probe reports
 //! - [`variants`]: built-in prompt variants for multi-shape sweeps
 //! - [`tui`]: the live terminal race view
 //! - [`util`]: shared helpers for truncation, dates, ranking
@@ -57,6 +58,7 @@ pub mod dashboard;
 pub mod doctor;
 pub mod error;
 pub mod history;
+pub mod merge;
 pub mod prom;
 pub mod provider;
 pub mod regression;

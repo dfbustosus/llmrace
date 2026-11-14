@@ -122,6 +122,34 @@ pub async fn check_ollama(client: &reqwest::Client) -> Check {
     }
 }
 
+/// Checks an opt-in local OpenAI-compatible daemon (LM Studio on 1234,
+/// llama.cpp llama-server on 8080): a `Warn` when it is not running is
+/// expected — these providers only race when named explicitly.
+pub async fn check_local_daemon(client: &reqwest::Client, name: &str, port: u16) -> Check {
+    let resp = client
+        .get(format!("http://localhost:{port}/v1/models"))
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => Check {
+            name: name.into(),
+            status: Status::Pass,
+            detail: format!("daemon reachable on :{port}"),
+        },
+        Ok(r) => Check {
+            name: name.into(),
+            status: Status::Warn,
+            detail: format!("answered HTTP {} on :{port}", r.status()),
+        },
+        Err(_) => Check {
+            name: name.into(),
+            status: Status::Warn,
+            detail: format!("not running on :{port} (fine — opt-in provider)"),
+        },
+    }
+}
+
 /// Checks config discovery: which file wins and how many profiles it holds.
 pub fn check_config() -> Check {
     match Config::discover() {

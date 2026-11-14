@@ -72,6 +72,7 @@ jobs:
         run: |
           llmrace ${{ inputs.providers || 'groq openai' }} \
             -n "${{ inputs.runs || 3 }}" --warmup 1 \
+            --region "${{ steps.meta.outputs.region }}" \
             --json --out "probe-${{ steps.meta.outputs.region }}.json"
 
       - name: Upload probe report

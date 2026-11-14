@@ -161,8 +161,12 @@ Every provider with a matching env var races automatically — no config file:
 | `cohere` | `CO_API_KEY` | `command-a-03-2025` |
 | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
 | `ollama` | — (local) | `llama3.2` |
+| `lmstudio` | — (opt-in local, port 1234) | loaded model |
+| `llamacpp` | — (opt-in local, port 8080) | loaded model |
 | azure | `AZURE_OPENAI_API_KEY` (library: `ProviderSpec::azure_openai`) | per deployment |
 | custom | `--endpoint` + `--api-key-env` | any OpenAI-compatible server |
+
+Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, so they never pollute auto-detected runs with error lanes.
 
 ## What it measures
 
@@ -211,7 +215,13 @@ jobs:
     secrets: inherit
 ```
 
-Each run uploads a region-tagged JSON report artifact for merging into a shared history.
+Each run stamps its region into the report (`--region`) and uploads a region-tagged JSON artifact. Download the artifacts and compare regions — the fastest region per model is marked ⚡ (TTFB) and 🚀 (throughput):
+
+```bash
+llmrace --merge probe-São\ Paulo.json,probe-Virginia.json,probe-Frankfurt.json
+```
+
+Add `--json` to also write a machine-readable merged report.
 
 ## Diagnosing your setup
 

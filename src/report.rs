@@ -122,7 +122,11 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
             } else {
                 "0".to_string()
             },
-            s.mean_tokens_per_sec(),
+            if s.reasoning_tokens() > 0 {
+                format!("**{:.1}** 🧠{}", s.mean_tokens_per_sec(), s.reasoning_tokens())
+            } else {
+                format!("**{:.1}**", s.mean_tokens_per_sec())
+            },
             cost
         ));
     }
@@ -145,6 +149,18 @@ pub fn json_report(
     prompt: &str,
     runs: usize,
     max_tokens: u64,
+) -> String {
+    json_report_with_region(summaries, prompt, runs, max_tokens, None)
+}
+
+/// Renders the JSON report with an optional region tag (`--region`), used
+/// by distributed probes so merged reports stay attributable.
+pub fn json_report_with_region(
+    summaries: &[LaneSummary],
+    prompt: &str,
+    runs: usize,
+    max_tokens: u64,
+    region: Option<&str>,
 ) -> String {
     let providers: Vec<serde_json::Value> = summaries
         .iter()
@@ -176,6 +192,8 @@ pub fn json_report(
                 "itl_p50_ms": s.itl_p50_ms(),
                 "itl_p95_ms": s.itl_p95_ms(),
                 "stutters": s.stutters(),
+                "visible_tokens": s.visible_tokens(),
+                "reasoning_tokens": s.reasoning_tokens(),
                 "request_id": s.last_request_id(),
                 "tool_validity": s.tool_validity(),
             })
@@ -184,6 +202,7 @@ pub fn json_report(
     serde_json::to_string_pretty(&serde_json::json!({
         "tool": "llmrace",
         "version": env!("CARGO_PKG_VERSION"),
+        "region": region,
         "prompt": prompt,
         "runs": runs,
         "max_tokens": max_tokens,
@@ -252,8 +271,13 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
                 format!("{v:.0}{st}")
             })
             .unwrap_or_else(|| "—".into());
+        let reasoning = if s.reasoning_tokens() > 0 {
+            format!(" 🧠{}", s.reasoning_tokens())
+        } else {
+            String::new()
+        };
         out.push_str(&format!(
-            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>8.1}{}\n",
+            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>8.1}{}{}\n",
             i + 1,
             s.name,
             crate::util::truncate(&s.model, 26),
@@ -269,6 +293,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
                 .unwrap_or_else(|| "—".into()),
             itl,
             s.mean_tokens_per_sec(),
+            reasoning,
             mark
         ));
     }

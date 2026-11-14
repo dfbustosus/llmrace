@@ -35,6 +35,10 @@ pub struct RunMetrics {
     pub itl_gaps_ms: Vec<f64>,
     /// Count of inter-token gaps exceeding [`STUTTER_MS`].
     pub stutters: u64,
+    /// Estimated tokens actually streamed as visible content (each SSE
+    /// delta may carry several tokens). `tokens` minus this (when the
+    /// provider reports usage) is the hidden reasoning token count.
+    pub visible_tokens: u64,
 }
 
 /// A gap between consecutive tokens longer than this (ms) counts as a
@@ -245,23 +249,15 @@ impl LaneSummary {
     }
 
     /// Standard percentile ladder of round total latencies:
-    /// p10, p25, p50, p75, p90, p95, p99 (linear interpolation).
+    /// p10, p25, p50, p75, p90, p95, p99 (linear interpolation, one sort).
     #[must_use]
     pub fn latency_percentiles(&self) -> Vec<(&'static str, f64)> {
         let sample =
             crate::stats::Sample::from_values(self.runs.iter().map(|r| r.total_ms).collect());
-        [
-            ("p10", 10.0),
-            ("p25", 25.0),
-            ("p50", 50.0),
-            ("p75", 75.0),
-            ("p90", 90.0),
-            ("p95", 95.0),
-            ("p99", 99.0),
-        ]
-        .into_iter()
-        .map(|(label, p)| (label, sample.percentile(p)))
-        .collect()
+        let ps = [10.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.0];
+        let values = sample.percentiles(&ps);
+        let labels = ["p10", "p25", "p50", "p75", "p90", "p95", "p99"];
+        labels.into_iter().zip(values).collect()
     }
 
     /// Indices of rounds whose total latency is a 3-sigma outlier.
@@ -322,6 +318,26 @@ impl LaneSummary {
     #[must_use]
     pub fn stutters(&self) -> u64 {
         self.runs.iter().map(|r| r.stutters).sum()
+    }
+
+    /// Estimated visible (streamed) tokens across rounds.
+    #[must_use]
+    pub fn visible_tokens(&self) -> u64 {
+        self.runs.iter().map(|r| r.visible_tokens).sum()
+    }
+
+    /// Hidden reasoning tokens: provider-reported usage minus the visible
+    /// stream estimate. Zero for classic models and providers without
+    /// usage reporting.
+    #[must_use]
+    pub fn reasoning_tokens(&self) -> u64 {
+        self.total_tokens().saturating_sub(self.visible_tokens())
+    }
+
+    /// Total provider-reported tokens across rounds.
+    #[must_use]
+    pub fn total_tokens(&self) -> u64 {
+        self.runs.iter().map(|r| r.tokens).sum()
     }
 
     fn itl_sample(&self) -> Option<Sample> {
@@ -557,6 +573,7 @@ async fn run_round(
                 .next(),
             itl_gaps_ms,
             stutters,
+            visible_tokens: all.iter().map(|m| m.visible_tokens).sum(),
         }])
     }
 }
@@ -645,13 +662,13 @@ async fn single_request(
     let total = start.elapsed();
     let ttfb =
         ttfb.ok_or_else(|| Error::Protocol(format!("{}: empty response stream", spec.id)))?;
+    // Visible streamed tokens: event count floored by a chars/4 estimate,
+    // so coalesced multi-token deltas are not undercounted (#125).
+    let visible_tokens = tokens.max((chars / 4).max(1));
     if let Some(n) = usage {
         tokens = n;
     } else {
-        // No provider-reported usage: estimate from delivered text. Each SSE
-        // delta may carry several tokens when chunks arrive coalesced, so a
-        // pure event count undercounts bursts (#125).
-        tokens = tokens.max((chars / 4).max(1));
+        tokens = visible_tokens;
     }
     Ok(RunMetrics {
         total_ms: total.as_secs_f64() * 1000.0,
@@ -665,5 +682,6 @@ async fn single_request(
         ratelimit_remaining: server_timing.ratelimit_remaining,
         itl_gaps_ms,
         stutters,
+        visible_tokens,
     })
 }

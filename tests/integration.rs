@@ -772,3 +772,83 @@ fn html_report_renders_lanes_and_bars() {
     assert!(with_podium.contains("Podium"));
     assert!(with_podium.contains("🥇"));
 }
+
+#[test]
+fn reasoning_tokens_split_from_visible() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "gpt5".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: 1665.0,
+            ttfb_ms: 1652.0,
+            tokens: 500,        // usage: includes hidden reasoning
+            visible_tokens: 60, // estimated visible stream
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    assert_eq!(summary.reasoning_tokens(), 440);
+    assert_eq!(summary.visible_tokens(), 60);
+
+    let classic = llmrace::bench::LaneSummary {
+        name: "x".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            tokens: 100,
+            visible_tokens: 100,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    assert_eq!(classic.reasoning_tokens(), 0);
+}
+
+#[test]
+fn terminal_table_marks_reasoning_lanes() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "gpt5".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: 1500.0,
+            ttfb_ms: 1400.0,
+            tokens: 500,
+            visible_tokens: 60,
+            server_ms: Some(1300.0),
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    let table = llmrace::report::terminal_table(&[summary]);
+    assert!(table.contains("🧠440"), "{table}");
+}
+
+#[test]
+fn merge_parses_region_tagged_reports() {
+    let eu = r#"{"region":"eu-central","providers":[
+        {"provider":"groq","model":"m","successful":true,"mean_total_ms":100.0,
+         "p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0},
+        {"provider":"dead","model":"x","successful":false}]}"#;
+    let us = r#"{"providers":[
+        {"provider":"groq","model":"m","successful":true,"mean_total_ms":150.0,
+         "p95_total_ms":180.0,"mean_ttfb_ms":60.0,"mean_tokens_per_sec":55.0}]}"#;
+    let mut lanes = llmrace::merge::parse_report(eu, "eu").unwrap();
+    lanes.extend(llmrace::merge::parse_report(us, "probe-us-east").unwrap());
+    assert_eq!(lanes.len(), 2); // failed lane skipped
+    assert_eq!(lanes[0].region, "eu-central");
+    assert_eq!(lanes[1].region, "probe-us-east"); // file-stem fallback
+
+    let table = llmrace::merge::render_table(&lanes);
+    assert!(table.contains("groq"), "{table}");
+    assert!(table.contains("eu-central"));
+    assert!(table.contains("⚡"), "fastest TTFB marked: {table}");
+    assert!(table.contains("🚀"), "best throughput marked: {table}");
+}
