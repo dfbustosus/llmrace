@@ -17,7 +17,7 @@ pub struct RunMetrics {
     pub ttfb_ms: f64,
     /// Completion tokens (provider-reported usage when available).
     pub tokens: u64,
-    /// Sum of token character lengths.
+    /// Sum of token byte lengths.
     pub chars: u64,
     /// Estimated prompt tokens (0 when unknown).
     pub prompt_tokens: u64,

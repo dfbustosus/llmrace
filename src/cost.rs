@@ -60,7 +60,7 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
     let m = model.to_ascii_lowercase();
     let key = format!("{}/{}", provider, m);
     if let Ok(map) = overrides().read() {
-        if let Some(v) = map.get(&format!("{}/{}", provider, model.to_ascii_lowercase())) {
+        if let Some(v) = map.get(&key) {
             return Some(*v);
         }
     }
@@ -114,8 +114,6 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
 
 /// Estimates prompt token count as the maximum of a word-based and a
 /// character-based heuristic.
-/// Estimates prompt token count as the maximum of a word-based and a
-/// character-based heuristic.
 ///
 /// ```
 /// use llmrace::cost::estimate_prompt_tokens;
@@ -132,7 +130,6 @@ pub fn estimate_prompt_tokens(prompt: &str) -> f64 {
     by_words.max(by_chars)
 }
 
-/// Formats a USD amount for compact display in reports.
 /// Formats a USD amount for compact display in reports.
 ///
 /// ```

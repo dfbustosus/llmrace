@@ -79,8 +79,8 @@ fn group_by_variant(summaries: &[LaneSummary]) -> Vec<(Option<String>, Vec<&Lane
 fn variant_table(lanes: &[&LaneSummary]) -> String {
     let ranked = rank_lanes(lanes);
     let mut out = String::new();
-    out.push_str("\n| # | Provider | Model | Concurrency | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Tokens/s | Cost/run |\n");
-    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-----:|---------:|---------:|\n");
+    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | Tokens/s | Cost/run |\n");
+    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|---------:|---------:|\n");
     for (i, s) in ranked.iter().enumerate() {
         let mean = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("{:.0} ± {:.0} ms", s.mean_total_ms(), (hi - lo) / 2.0),
@@ -96,13 +96,14 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
             "†"
         };
         out.push_str(&format!(
-            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {} ms | {} | {} | **{:.1}** | {} |\n",
+            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | **{:.1}** | {} |\n",
             i + 1,
             s.name,
             outlier_mark,
             s.model,
             s.concurrency,
             mean,
+            s.median_total_ms(),
             s.p95_total_ms(),
             fmt_ms(s.mean_ttfb_ms()),
             s.median_server_ms()
