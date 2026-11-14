@@ -71,7 +71,7 @@ fn dashboard_escapes_hostile_names() {
         mean_ttfb_ms: 20.0,
         mean_tokens_per_sec: 80.0,
     };
-    let html = llmrace::dashboard::render_html(&[record.clone()], 30, 1_700_000_060);
+    let html = llmrace::dashboard::render_html(std::slice::from_ref(&record), 30, 1_700_000_060);
     assert!(!html.contains("<script>p"), "unescaped provider: {html}");
     assert!(!html.contains("<img src=x"), "unescaped model: {html}");
     assert!(html.contains("&lt;script&gt;"), "{html}");
