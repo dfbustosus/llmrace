@@ -315,6 +315,7 @@ fn record_history(summaries: &[LaneSummary], storage: &str) -> Result<()> {
         .unwrap_or(0);
     let records: Vec<llmrace::history::HistoryRecord> = summaries
         .iter()
+        .filter(|s| s.successful())
         .map(|s| llmrace::history::record_from_summary(s, now))
         .collect();
     match storage {

@@ -31,6 +31,17 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
         out.push_str(&variant_table(&lanes));
     }
 
+    let unpriced: Vec<&LaneSummary> = summaries
+        .iter()
+        .filter(|s| s.successful() && s.cost_per_run_usd().is_none())
+        .collect();
+    if !unpriced.is_empty() {
+        out.push_str(&format!(
+            "\n*no pricing data for {} lane(s) — cost column empty; pass `--price provider/model=in:out`*\n",
+            unpriced.len()
+        ));
+    }
+
     let failed: Vec<&LaneSummary> = summaries.iter().filter(|s| !s.successful()).collect();
     if !failed.is_empty() {
         out.push_str("\n**Errors**\n\n");

@@ -1031,3 +1031,24 @@ fn baseline_matches_sweep_variants() {
     let fallback = llmrace::regression::evaluate(&[lane(Some("short"), 300.0)], &plain, 15.0);
     assert!(fallback.any_regressed(), "fallback comparison must run");
 }
+
+#[test]
+fn markdown_report_notes_unpriced_lanes() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "custom".into(),
+        model: "mystery-model".into(), // not in the pricing table
+        runs: vec![RunMetrics {
+            total_ms: 100.0,
+            ttfb_ms: 10.0,
+            tokens: 5,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    let md = llmrace::report::markdown(&[summary], "demo", 1, 32);
+    assert!(md.contains("no pricing data for 1 lane(s)"), "{md}");
+    assert!(md.contains("--price"), "{md}");
+}

@@ -272,20 +272,19 @@ The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) 
 
 ## Real-world results
 
-Measured 2026-11-09 from South America — cloud (OpenAI) vs local inference (Ollama on Apple M5 Pro / 48 GB), 5 rounds each, warmup excluded:
+Measured 2026-11-14 from South America — three OpenAI models head-to-head (`openai=model` lanes) vs local inference (Ollama on Apple M5 Pro / 48 GB), 5 rounds each, warmup excluded:
 
-| Provider | Model | TTFB | Latency (mean ± 95% CI) | Tokens/s |
-|---|---|---:|---:|---:|
-| openai | `gpt-4o-mini` | 579 ms | 1443 ± 94 ms | **186.5** |
-| ollama | `llama3.2:1b` | 91 ms | 2494 ± 295 ms | 69.2 |
+| Provider | Model | TTFB | Latency (mean ± 95% CI) | Tokens/s | Notes |
+|---|---|---:|---:|---:|---|
+| openai | `gpt-4o-mini` | 567 ms | 1351 ± 78 ms | **215.3** | best all-rounder |
+| openai | `gpt-4.1` | 602 ms | 1323 ± 191 ms | 191.8 | |
+| openai | `gpt-5-nano` | 1911 ms | 1922 ± 359 ms | 163.0 | 🧠 1275 hidden reasoning tokens |
+| ollama | `llama3.2:1b` | 130 ms | 2989 ± 90 ms | 65.3 | local, ~0 network |
 
-Tool-calling mode (`--tools`, 3 rounds): **gpt-4o-mini returned valid JSON tool arguments 3/3 rounds** at ~604 ms full round trip; local `llama3.2:1b` answers the same task in ~20 ms when it complies — but only emits tool calls about 80% of the time. Validity rate is a real metric, not noise.
-
-The honest TTFB story: the cloud lane spends ~0.6 s on network + queueing before the first token, while the local lane prefills in ~90 ms — and once streaming, cloud sustains 2.7× the throughput of a 1B local model. Reproduce:
+The reasoning story, honestly measured: gpt-5-nano spends **1.9 s thinking** before its first visible token (TTFB includes reasoning — see the 🧠 count), then delivers everything in a burst. Once streaming, the cloud lanes sustain 2.5–3.3× local throughput, while the local lane prefills in 130 ms. Tokens/s for reasoning models is computed over the server-side window, not the burst, so the numbers are comparable. In tool-calling mode (`--tools`), gpt-4o-mini returns valid JSON tool arguments 3/3 rounds at ~600 ms round trip, while local `llama3.2:1b` complies only ~80% of the time — validity rate is a real metric, not noise. Reproduce:
 
 ```bash
-llmrace openai -m gpt-4o-mini -n 5 --warmup 1
-llmrace ollama -m llama3.2:1b -n 5 --warmup 1
+llmrace openai=gpt-4o-mini openai=gpt-4.1 openai=gpt-5-nano -n 5 --warmup 1 --winner
 ```
 
 PRs with results from other regions are welcome — record with `--json` and extend this table.

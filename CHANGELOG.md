@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `provider` module split into `spec` / `request` / `stream` (public API unchanged); `--record` now skips failed lanes (matching `--watch`), so zero-metric records no longer pollute history files
+- Markdown reports note lanes without pricing data instead of silently showing an empty cost column
+
 - Profile application uses clap's `ValueSource` instead of raw `std::env::args` scanning — every form of an explicit flag (`-n 1`, `--runs 1`, `--runs=1`) now reliably wins over profile values (e2e-tested)
 - `--doctor` derives local-daemon checks from the provider specs (ports live in one place) and no longer reports opt-in locals as *failed* when they are simply not running
 - `--list --json` includes `opt_in` per provider

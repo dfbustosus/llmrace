@@ -57,3 +57,22 @@ fn dashboard_empty_and_window_filtering() {
     let html = render_html(&single, 30, now);
     assert!(html.contains("at least two recorded runs"));
 }
+
+#[test]
+fn dashboard_escapes_hostile_names() {
+    let record = llmrace::history::HistoryRecord {
+        timestamp_unix: 1_700_000_000,
+        provider: "<script>p</script>".into(),
+        model: "<img src=x onerror=alert(1)>".into(),
+        variant: None,
+        concurrency: 1,
+        mean_total_ms: 100.0,
+        p95_total_ms: 120.0,
+        mean_ttfb_ms: 20.0,
+        mean_tokens_per_sec: 80.0,
+    };
+    let html = llmrace::dashboard::render_html(&[record.clone()], 30, 1_700_000_060);
+    assert!(!html.contains("<script>p"), "unescaped provider: {html}");
+    assert!(!html.contains("<img src=x"), "unescaped model: {html}");
+    assert!(html.contains("&lt;script&gt;"), "{html}");
+}
