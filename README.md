@@ -300,13 +300,17 @@ Missing a capability you need? [Open an issue](https://github.com/dfbustosus/llm
 - Panic containment: a failing request becomes an error row, never a crash
 - CI on Linux/macOS/Windows: fmt + clippy `-D warnings` + tests + end-to-end mock race
 
+## Stability
+
+- **CLI**: flags are a contract — deprecations get one minor release of dual support before removal
+- **Library**: the crate follows semver; breaking API changes won't land in a patch release. At `0.x` the surface may still evolve; **1.0 freezes it** (msrv, exports and report schemas)
+- **MSRV**: Rust 1.88, enforced in CI
+- **Reports**: `race.json` field changes are additive-only; `--baseline`/`--compare` keep parsing older reports
+
 ## Roadmap
 
-Tracked in [GitHub milestones](https://github.com/dfbustosus/llmrace/milestones) — highlights:
-
-- **[v0.3.0](https://github.com/dfbustosus/llmrace/milestone/1)** — regression mode as a CI quality gate, Gemini + DeepSeek/Mistral/Together/Fireworks/Cerebras providers, config profiles, prompt-variant sweeps, watch mode, real-HTTP integration tests
-- **[v0.4.0](https://github.com/dfbustosus/llmrace/milestone/2)** — Homebrew tap, code coverage, cargo-deny + dependabot, SSE fuzzing, MSRV enforcement, changelog discipline
-- **[v1.0.0](https://github.com/dfbustosus/llmrace/milestone/3)** — persistent history + `llmrace trend`, community health files, stability guarantees
+- **v0.6.x** — soak the new metrics (ITL, stutters, composite score); more community results across regions; more `--price` coverage
+- **v1.0.0** — stability freeze: CLI + library API + report schemas locked, after the v0.6 metrics surface proves out in the field
 
 Most provider additions are tagged [`good first issue`](https://github.com/dfbustosus/llmrace/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — grab one.
 
