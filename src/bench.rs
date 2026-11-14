@@ -57,13 +57,27 @@ impl RunMetrics {
         (self.total_ms - self.ttfb_ms).max(0.0)
     }
 
-    /// Single-run throughput over the generation window.
+    /// Effective generation window used for throughput: the observed
+    /// streaming window, widened to the provider-reported server processing
+    /// time when that is longer.
+    ///
+    /// Reasoning models (gpt-5, o-series) think before the first visible
+    /// token and then deliver the whole completion in one burst — the
+    /// observed window shrinks to milliseconds while the server spent far
+    /// longer generating. Using the server-reported time keeps tokens/s
+    /// an honest *generation* rate instead of a burst artifact (#125).
+    #[must_use]
+    pub fn effective_gen_ms(&self) -> f64 {
+        self.gen_ms().max(self.server_ms.unwrap_or(0.0))
+    }
+
+    /// Single-run throughput over the effective generation window.
     #[must_use]
     pub fn tokens_per_sec(&self) -> f64 {
-        if self.tokens == 0 || self.gen_ms() <= 0.0 {
+        if self.tokens == 0 || self.effective_gen_ms() <= 0.0 {
             0.0
         } else {
-            self.tokens as f64 / (self.gen_ms() / 1000.0)
+            self.tokens as f64 / (self.effective_gen_ms() / 1000.0)
         }
     }
 }
@@ -210,14 +224,19 @@ impl LaneSummary {
         self.runs.iter().map(|r| r.tokens as f64).sum::<f64>() / self.runs.len() as f64
     }
 
-    /// Aggregate throughput: total tokens over the summed generation window.
+    /// Aggregate throughput: total tokens over the summed effective
+    /// generation window.
     #[must_use]
     pub fn mean_tokens_per_sec(&self) -> f64 {
         if self.runs.is_empty() {
             return 0.0;
         }
         let total_tokens: f64 = self.runs.iter().map(|r| r.tokens as f64).sum();
-        let total_gen: f64 = self.runs.iter().map(|r| r.gen_ms() / 1000.0).sum();
+        let total_gen: f64 = self
+            .runs
+            .iter()
+            .map(|r| r.effective_gen_ms() / 1000.0)
+            .sum();
         if total_gen <= 0.0 {
             0.0
         } else {
@@ -628,6 +647,11 @@ async fn single_request(
         ttfb.ok_or_else(|| Error::Protocol(format!("{}: empty response stream", spec.id)))?;
     if let Some(n) = usage {
         tokens = n;
+    } else {
+        // No provider-reported usage: estimate from delivered text. Each SSE
+        // delta may carry several tokens when chunks arrive coalesced, so a
+        // pure event count undercounts bursts (#125).
+        tokens = tokens.max((chars / 4).max(1));
     }
     Ok(RunMetrics {
         total_ms: total.as_secs_f64() * 1000.0,

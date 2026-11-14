@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Honest throughput for reasoning models** (#125): tokens/s now divides usage tokens by the *effective* generation window — the observed streaming window widened to the provider-reported server processing time when longer. gpt-5/o-series runs previously reported burst artifacts (e.g. 30,000 tok/s); live-verified gpt-5-nano now reports ~200 tok/s, in line with gpt-4o-mini. TTFB was already honest (includes thinking time)
+- Token-count fallback (when a provider reports no usage) estimates from delivered characters instead of counting SSE events, so coalesced multi-token deltas are no longer undercounted
+- SSE parser accepts bare-CR line endings per spec (`\r\r` is a valid event separator)
+- `--profile` now detects combined short flags (`-n5`, `-c8`) as explicit CLI overrides that win over profile values
+- Docs: `--baseline` + `--sweep` comparison semantics documented
+
 ## [0.7.0] - 2026-11-14
 
 ### Added

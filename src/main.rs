@@ -788,9 +788,13 @@ fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)
 fn arg_not_passed(flags: &[&str]) -> bool {
     let args: Vec<String> = std::env::args().collect();
     !args.iter().any(|a| {
-        flags
-            .iter()
-            .any(|f| a == *f || a.starts_with(&format!("{f}=")) || a.starts_with(&format!("{f} ")))
+        flags.iter().any(|f| {
+            a == *f
+                || a.starts_with(&format!("{f}="))
+                || a.starts_with(&format!("{f} "))
+                // combined short flags like `-n5` (clap accepts them)
+                || (f.len() == 2 && a.starts_with(f) && a.len() > 2)
+        })
     })
 }
 

@@ -169,7 +169,7 @@ Every provider with a matching env var races automatically — no config file:
 | Metric | Definition |
 |--------|------------|
 | **TTFB** | Time from just before the request is sent to the first streamed token (includes connection, TLS and queueing) |
-| **Tokens/s** | Completion tokens divided by the *generation window* (total − TTFB); with `--concurrency N`, total tokens of all N parallel requests over the round window — i.e. saturation throughput |
+| **Tokens/s** | Completion tokens divided by the *effective generation window* (total − TTFB, widened to the provider-reported server processing time when longer); with `--concurrency N`, total tokens of all N parallel requests over the round window — i.e. saturation throughput |
 | **ITL p50 / p95** | Distribution of inter-token gaps while streaming — how *smooth* the stream feels, not just how fast it finishes |
 | **Stutters** | Inter-token gaps over 250 ms — visible streaming hiccups, counted per lane |
 | **Latency p50 / p95** | Distribution of round time-to-last-token (linear-interpolation percentiles) |
@@ -184,7 +184,7 @@ Methodology notes:
 - Token counts prefer **provider-reported usage** (`include_usage` on OpenAI-compatible APIs, `message_delta` on Anthropic) and fall back to stream-event counting
 - All requests use the same prompt, `max_tokens` and sampling defaults per run
 - Per-request timeouts (`--timeout`) are enforced mid-stream; panics in a single request never abort the race
-- **Reasoning models** (gpt-5, o-series): TTFB honestly includes thinking time — the model emits nothing visible while it reasons. Tokens/s can read high because provider-reported usage counts hidden reasoning tokens and the visible text arrives in one burst ([#125](https://github.com/dfbustosus/llmrace/issues/125))
+- **Reasoning models** (gpt-5, o-series): TTFB honestly includes thinking time — the model emits nothing visible while it reasons. When the provider reports server processing time, tokens/s uses the wider of the observed streaming window and the server window, so burst delivery after thinking cannot inflate throughput ([#125](https://github.com/dfbustosus/llmrace/issues/125))
 
 ## Reports
 
@@ -257,7 +257,7 @@ llmrace openai groq --json --out llmrace-report.json
 llmrace openai groq --baseline llmrace-report.json --max-regression 15
 ```
 
-The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table, and flags providers that are new or missing from the baseline.
+The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table, and flags providers that are new or missing from the baseline. Note: with `--sweep`, every variant of a provider is compared against that provider's first baseline entry — record baselines without `--sweep` for exact gating.
 
 ## Real-world results
 

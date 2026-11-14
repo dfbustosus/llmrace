@@ -86,6 +86,11 @@ fn find_separator(buf: &[u8]) -> Option<usize> {
         if buf[i] == b'\r' && buf[i..].starts_with(b"\r\n\r\n") {
             return Some(i);
         }
+        // The SSE spec also allows bare-CR line endings, so `\r\r` is a
+        // blank line (event separator) just like `\n\n`.
+        if buf[i] == b'\r' && buf[i + 1] == b'\r' {
+            return Some(i);
+        }
         i += 1;
     }
     None

@@ -644,3 +644,98 @@ fn itl_absent_when_single_token() {
     assert!(summary.itl_p50_ms().is_none());
     assert_eq!(summary.stutters(), 0);
 }
+
+#[test]
+fn reasoning_burst_throughput_uses_server_window() {
+    // gpt-5-style run: thinking until 1652ms, burst delivery in 13ms,
+    // usage counts 500 completion tokens, server spent 1398ms processing.
+    let m = RunMetrics {
+        total_ms: 1665.0,
+        ttfb_ms: 1652.0,
+        tokens: 500,
+        server_ms: Some(1398.0),
+        ..RunMetrics::default()
+    };
+    let tps = m.tokens_per_sec();
+    assert!(
+        (tps - 500.0 / 1.398).abs() < 1.0,
+        "expected ~357 tok/s, got {tps}"
+    );
+    assert!(tps < 1000.0, "burst artifact not corrected: {tps}");
+}
+
+#[test]
+fn classic_streaming_throughput_unchanged_by_server_time() {
+    // Observed generation window (1000ms) dominates the smaller server
+    // processing time (395ms) — throughput stays 100 tok/s.
+    let m = RunMetrics {
+        total_ms: 1100.0,
+        ttfb_ms: 100.0,
+        tokens: 100,
+        server_ms: Some(395.0),
+        ..RunMetrics::default()
+    };
+    assert!((m.tokens_per_sec() - 100.0).abs() < 1e-9);
+}
+
+#[test]
+fn lane_throughput_aggregates_effective_windows() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "x".into(),
+        model: "m".into(),
+        runs: vec![
+            RunMetrics {
+                total_ms: 1665.0,
+                ttfb_ms: 1652.0,
+                tokens: 500,
+                server_ms: Some(1398.0),
+                ..RunMetrics::default()
+            },
+            RunMetrics {
+                total_ms: 1700.0,
+                ttfb_ms: 1660.0,
+                tokens: 500,
+                server_ms: Some(1400.0),
+                ..RunMetrics::default()
+            },
+        ],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    let tps = summary.mean_tokens_per_sec();
+    assert!((tps - 1000.0 / 2.798).abs() < 1.0, "got {tps}");
+}
+
+#[test]
+fn no_usage_token_fallback_estimates_from_chars() {
+    // Mirrors single_request's fallback: 40 events but 1600 delivered chars
+    // (~400 tokens) — the estimate wins over the event count.
+    let events = 40u64;
+    let chars = 1600u64;
+    let tokens = events.max((chars / 4).max(1));
+    assert_eq!(tokens, 400);
+}
+
+#[test]
+fn sse_bare_cr_line_endings_are_separators() {
+    // SSE spec allows \r line endings; \r\r is a blank line (separator).
+    let mut parser = SseParser::new();
+    let blocks = parser.feed(b"data: one\r\rdata: two\r\r").unwrap();
+    assert_eq!(blocks, vec!["data: one", "data: two"]);
+}
+
+#[test]
+fn sse_mixed_line_endings_do_not_split_early() {
+    // \r\n inside a single event is a line ending, not a separator;
+    // only \r\n\r\n (blank line) terminates the block.
+    let mut parser = SseParser::new();
+    let blocks = parser
+        .feed(b"event: message\r\ndata: payload\r\n\r\ndata: next\n\n")
+        .unwrap();
+    assert_eq!(
+        blocks,
+        vec!["event: message\r\ndata: payload", "data: next"]
+    );
+}
