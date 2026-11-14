@@ -95,6 +95,10 @@ struct Cli {
     #[arg(long)]
     csv: bool,
 
+    /// Also write a self-contained shareable HTML report.
+    #[arg(long)]
+    html: bool,
+
     /// Compare results against a baseline JSON report (CI quality gate).
     #[arg(long)]
     baseline: Option<String>,
@@ -534,6 +538,23 @@ async fn main() -> Result<()> {
         let path = report_sibling(&cli.out, "csv");
         std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
         println!("📈 csv report saved to {path}");
+    }
+    if cli.html {
+        let scored = if cli.winner {
+            llmrace::score::score_lanes(&summaries, &weights)
+        } else {
+            Vec::new()
+        };
+        let h = report::html_report(
+            &summaries,
+            &cli.prompt,
+            config.runs,
+            cli.max_tokens,
+            &scored,
+        );
+        let path = report_sibling(&cli.out, "html");
+        std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
+        println!("🌐 html report saved to {path}");
     }
 
     if let Some(gateway) = &cli.push_gateway {

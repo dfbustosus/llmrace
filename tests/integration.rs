@@ -739,3 +739,36 @@ fn sse_mixed_line_endings_do_not_split_early() {
         vec!["event: message\r\ndata: payload", "data: next"]
     );
 }
+
+#[test]
+fn html_report_renders_lanes_and_bars() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "mock".into(),
+        model: "mock-1".into(),
+        runs: vec![RunMetrics {
+            total_ms: 300.0,
+            ttfb_ms: 40.0,
+            tokens: 24,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: "p".into(),
+        concurrency: 1,
+        variant: None,
+    };
+    let html = llmrace::report::html_report(std::slice::from_ref(&summary), "demo", 1, 32, &[]);
+    assert!(html.contains("<!DOCTYPE html>"));
+    assert!(html.contains("mock"));
+    assert!(html.contains("<svg"));
+    assert!(html.contains("300 ms"));
+    assert!(!html.contains("Podium"), "no winner section without scores");
+
+    let scored = vec![llmrace::score::Scored {
+        name: "mock".into(),
+        model: "mock-1".into(),
+        score: 100.0,
+    }];
+    let with_podium = llmrace::report::html_report(&[summary], "demo", 1, 32, &scored);
+    assert!(with_podium.contains("Podium"));
+    assert!(with_podium.contains("🥇"));
+}

@@ -189,12 +189,13 @@ Methodology notes:
 ## Reports
 
 ```bash
-llmrace openai groq --out race.md --json --csv
+llmrace openai groq --out race.md --json --csv --html
 ```
 
 - `race.md` — ranked table with **mean ± 95% CI**, p50/p95, TTFB, tokens/s and cost, ready to paste into GitHub issues or blog posts
 - `race.json` — full per-run data, confidence intervals and outliers for CI pipelines
 - `race.csv` — per-run rows for spreadsheets and dashboards
+- `race.html` — self-contained dark-theme page with podium, ranked table and per-run latency bars (TTFB vs generation split), shareable as a single file
 
 ## Distributed probes
 

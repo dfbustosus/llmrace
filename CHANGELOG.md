@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--html`: self-contained shareable race report — podium (with `--winner`), ranked table and per-run latency bars showing the TTFB vs generation split, no server or external assets
+
 ### Fixed
 
 - **Honest throughput for reasoning models** (#125): tokens/s now divides usage tokens by the *effective* generation window — the observed streaming window widened to the provider-reported server processing time when longer. gpt-5/o-series runs previously reported burst artifacts (e.g. 30,000 tok/s); live-verified gpt-5-nano now reports ~200 tok/s, in line with gpt-4o-mini. TTFB was already honest (includes thinking time)
