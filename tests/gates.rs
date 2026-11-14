@@ -56,3 +56,13 @@ fn ttfb_verdict_messages() {
     assert!(fail.failed());
     assert!(fail.message().contains("slow"), "{}", fail.message());
 }
+
+#[test]
+fn all_lanes_failed_detects_total_outage() {
+    use llmrace::gates::all_lanes_failed;
+    assert!(!all_lanes_failed(&[]), "no lanes raced is not a failure");
+    let dead = vec![lane("a", 1.0, false), lane("b", 1.0, false)];
+    assert!(all_lanes_failed(&dead));
+    let mixed = vec![lane("a", 1.0, false), lane("b", 10.0, true)];
+    assert!(!all_lanes_failed(&mixed));
+}

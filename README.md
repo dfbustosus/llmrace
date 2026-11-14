@@ -268,7 +268,7 @@ llmrace openai groq --json --out llmrace-report.json
 llmrace openai groq --baseline llmrace-report.json --max-regression 15
 ```
 
-The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table, and flags providers that are new or missing from the baseline. Note: with `--sweep`, every variant of a provider is compared against that provider's first baseline entry — record baselines without `--sweep` for exact gating.
+The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table, and flags providers that are new or missing from the baseline. With `--sweep`, each variant lane compares against that provider's matching variant baseline entry, falling back to a plain (variant-less) entry. A run where **every** provider failed exits non-zero — a green pipeline over a total outage is never silent.
 
 ## Real-world results
 

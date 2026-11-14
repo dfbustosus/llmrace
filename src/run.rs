@@ -176,6 +176,14 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         record_history(&summaries, &cfg.storage)?;
     }
 
+    // A run where every lane failed must exit non-zero: the TTFB and
+    // baseline gates only judge successful lanes and would otherwise
+    // pass over a total outage.
+    if llmrace::gates::all_lanes_failed(&summaries) {
+        eprintln!("\n✗ every provider failed — no metrics were measured");
+        return Ok(1);
+    }
+
     if !ttfb_gate(&summaries, &cfg) {
         return Ok(1);
     }

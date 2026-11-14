@@ -373,3 +373,61 @@ fn api_keys_never_leak_into_reports() {
         }
     }
 }
+
+#[test]
+fn man_page_renders() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--man")
+        .output()
+        .expect("spawn llmrace");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(".TH"),
+        "roff header expected: {} bytes",
+        stdout.len()
+    );
+    assert!(stdout.contains("llmrace"));
+}
+
+#[test]
+fn doctor_json_is_structured() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--doctor")
+        .arg("--json")
+        .output()
+        .expect("spawn llmrace");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    let checks = parsed.as_array().expect("array of checks");
+    assert!(!checks.is_empty());
+    assert!(checks
+        .iter()
+        .all(|c| c.get("name").is_some() && c.get("status").is_some()));
+}
+
+#[test]
+fn trend_with_empty_history_renders_hint() {
+    // XDG_DATA_HOME pointed at an empty temp dir — no history exists there
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .env("XDG_DATA_HOME", std::env::temp_dir().join("llmrace-empty"))
+        .arg("--trend")
+        .output()
+        .expect("spawn llmrace");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("no history yet"), "{stdout}");
+}
+
+#[test]
+fn compare_with_missing_file_errors() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--compare")
+        .arg("/tmp/does-not-exist-a.json,/tmp/does-not-exist-b.json")
+        .output()
+        .expect("spawn llmrace");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("reading"), "{stderr}");
+}

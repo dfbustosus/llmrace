@@ -99,6 +99,9 @@ pub struct BaselineReport {
 pub struct BaselineProvider {
     /// Provider id.
     pub provider: String,
+    /// Prompt-variant label for sweep baselines; `None` for plain races.
+    #[serde(default)]
+    pub variant: Option<String>,
     /// Model that was benchmarked.
     #[serde(default)]
     pub model: String,
@@ -160,14 +163,7 @@ pub fn evaluate(
     max_regression_pct: f64,
 ) -> RegressionReport {
     let current_report = baseline_from_lanes(current);
-    let mut report = compare_baselines(&current_report, baseline, max_regression_pct);
-    // Keep model annotations from the live lanes (baseline files may omit them).
-    for c in &mut report.comparisons {
-        if let Some(lane) = current.iter().find(|l| l.name == c.name) {
-            c.current_model = lane.model.clone();
-        }
-    }
-    report
+    compare_baselines(&current_report, baseline, max_regression_pct)
 }
 
 /// Converts live lane summaries into the baseline subset used by comparisons.
@@ -178,6 +174,7 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
             .filter(|s| s.successful())
             .map(|s| BaselineProvider {
                 provider: s.name.clone(),
+                variant: s.variant.clone(),
                 model: s.model.clone(),
                 mean_total_ms: s.mean_total_ms(),
                 p95_total_ms: s.p95_total_ms(),
@@ -186,6 +183,29 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
             })
             .collect(),
     }
+}
+
+/// Finds the baseline entry for one lane: exact variant match first, then a
+/// variant-less entry for that provider (plain baselines still gate sweep
+/// runs, per lane).
+fn find_base<'a>(
+    baseline: &'a BaselineReport,
+    provider: &str,
+    variant: Option<&str>,
+) -> Option<&'a BaselineProvider> {
+    if let Some(v) = variant {
+        if let Some(hit) = baseline
+            .providers
+            .iter()
+            .find(|p| p.provider == provider && p.variant.as_deref() == Some(v))
+        {
+            return Some(hit);
+        }
+    }
+    baseline
+        .providers
+        .iter()
+        .find(|p| p.provider == provider && p.variant.is_none())
 }
 
 /// Compares two saved JSON reports (A/B mode): `b` is treated as the
@@ -209,14 +229,14 @@ pub fn compare_baselines(
     max_regression_pct: f64,
 ) -> RegressionReport {
     let mut report = RegressionReport::default();
-    let mut compared: Vec<String> = Vec::new();
+    let mut compared: Vec<(String, Option<String>)> = Vec::new();
 
     for current in &b.providers {
-        let Some(base) = a.providers.iter().find(|p| p.provider == current.provider) else {
+        let Some(base) = find_base(a, &current.provider, current.variant.as_deref()) else {
             report.new_providers.push(current.provider.clone());
             continue;
         };
-        compared.push(current.provider.clone());
+        compared.push((current.provider.clone(), current.variant.clone()));
         let metrics = vec![
             latency_metric(
                 "mean latency",
@@ -254,8 +274,11 @@ pub fn compare_baselines(
     report.skipped_providers = a
         .providers
         .iter()
-        .map(|p| p.provider.clone())
-        .filter(|name| !compared.contains(name))
+        .filter(|p| !compared.contains(&(p.provider.clone(), p.variant.clone())))
+        .map(|p| match &p.variant {
+            Some(v) => format!("{} ({v})", p.provider),
+            None => p.provider.clone(),
+        })
         .collect();
     report
 }

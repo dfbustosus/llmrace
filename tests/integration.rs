@@ -951,3 +951,83 @@ fn stats_edge_branches() {
     let spiky = Sample::from_values(spiky_values);
     assert!(!spiky.outliers_3sigma().is_empty());
 }
+
+#[test]
+fn race_with_unreachable_endpoint_exits_nonzero() {
+    use std::process::Command;
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--endpoint")
+        .arg("http://127.0.0.1:9/v1/chat/completions")
+        .arg("--provider-name")
+        .arg("dead")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--timeout")
+        .arg("2")
+        .arg("--out")
+        .arg(
+            std::env::temp_dir()
+                .join("llmrace-deadrace.md")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .output()
+        .expect("spawn llmrace");
+    assert!(
+        !out.status.success(),
+        "total outage must exit non-zero (got {:?})",
+        out.status.code()
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("every provider failed"), "{stderr}");
+}
+
+#[test]
+fn baseline_matches_sweep_variants() {
+    // Baseline recorded from a sweep: groq has short and json entries.
+    let baseline = llmrace::regression::BaselineReport::from_json_str(
+        r#"{"providers":[
+            {"provider":"groq","variant":"short","mean_total_ms":100.0,"p95_total_ms":120.0,
+             "mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0},
+            {"provider":"groq","variant":"json","mean_total_ms":200.0,"p95_total_ms":240.0,
+             "mean_ttfb_ms":40.0,"mean_tokens_per_sec":60.0}]}"#,
+    )
+    .unwrap();
+
+    let lane = |variant: Option<&str>, total: f64| llmrace::bench::LaneSummary {
+        name: "groq".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: total,
+            ttfb_ms: 20.0,
+            tokens: 10,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: variant.map(str::to_string),
+    };
+
+    // short lane regressed (100 -> 300 ms), json lane improved (200 -> 100 ms)
+    let report = llmrace::regression::evaluate(
+        &[lane(Some("short"), 300.0), lane(Some("json"), 100.0)],
+        &baseline,
+        15.0,
+    );
+    assert!(report.any_regressed());
+    assert_eq!(report.comparisons.len(), 2);
+    assert_eq!(report.skipped_providers, Vec::<String>::new());
+
+    // a plain (variant-less) baseline still gates variant lanes as fallback
+    let plain = llmrace::regression::BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"groq","mean_total_ms":100.0,"p95_total_ms":120.0,
+           "mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#,
+    )
+    .unwrap();
+    let fallback = llmrace::regression::evaluate(&[lane(Some("short"), 300.0)], &plain, 15.0);
+    assert!(fallback.any_regressed(), "fallback comparison must run");
+}

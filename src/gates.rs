@@ -31,6 +31,15 @@ pub fn ttfb_offenders(summaries: &[LaneSummary], max_ms: f64) -> Vec<TtfbOffende
         .collect()
 }
 
+/// `true` when at least one lane raced but none succeeded.
+///
+/// Without this, `--max-ttfb` and `--baseline` gates would pass on a run
+/// where every provider errored — a green pipeline over a total outage.
+#[must_use]
+pub fn all_lanes_failed(summaries: &[LaneSummary]) -> bool {
+    !summaries.is_empty() && summaries.iter().all(|s| !s.successful())
+}
+
 /// Renders the `--max-ttfb` gate outcome: failure lines to stderr level
 /// (callers print them), pass line only when not quiet.
 #[must_use]
