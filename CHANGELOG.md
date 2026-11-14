@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-14
+
+First stable release. The surface is frozen: CLI flags are a contract, library changes follow semver, report schemas only change additively, and `--baseline`/`--compare` keep parsing reports written since 0.3. No functional changes since 0.8.0 — this tag is the freeze.
+
 ## [0.8.0] - 2026-11-14
 
 ### Added

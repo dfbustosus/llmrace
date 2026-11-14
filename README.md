@@ -307,15 +307,17 @@ Missing a capability you need? [Open an issue](https://github.com/dfbustosus/llm
 
 ## Stability
 
+**From 1.0.0 the surface is frozen:**
+
 - **CLI**: flags are a contract — deprecations get one minor release of dual support before removal
-- **Library**: the crate follows semver; breaking API changes won't land in a patch release. At `0.x` the surface may still evolve; **1.0 freezes it** (msrv, exports and report schemas)
-- **MSRV**: Rust 1.88, enforced in CI
-- **Reports**: `race.json` field changes are additive-only; `--baseline`/`--compare` keep parsing older reports
+- **Library**: semver — breaking API changes only in a new major version; new fields arrive only additively in minors
+- **MSRV**: Rust 1.88, enforced in CI; MSRV bumps are minor-release changes announced in the changelog
+- **Reports**: `race.json` / `race.csv` field changes are additive-only; `--baseline` and `--compare` keep parsing older reports (written since 0.3)
 
 ## Roadmap
 
-- **v0.6.x** — soak the new metrics (ITL, stutters, composite score); more community results across regions; more `--price` coverage
-- **v1.0.0** — stability freeze: CLI + library API + report schemas locked, after the v0.6 metrics surface proves out in the field
+- **v1.x** — more providers, richer reasoning-model metrics (usage vs visible token split, reasoning-time breakdown), community results across regions
+- **Stability freeze is in effect** — new features land additively
 
 Most provider additions are tagged [`good first issue`](https://github.com/dfbustosus/llmrace/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — grab one.
 
