@@ -247,7 +247,11 @@ impl Tui {
         }
     }
 
-    fn render(&self, f: &mut Frame) {
+    /// Renders one frame of the race view.
+    ///
+    /// Public so embedders and tests can draw against any
+    /// [`ratatui`] backend (e.g. `TestBackend`).
+    pub fn render(&self, f: &mut Frame) {
         use ratatui::layout::{Constraint, Layout};
 
         let chunks = Layout::vertical([

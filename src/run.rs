@@ -342,23 +342,14 @@ fn ttfb_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> bool {
     let Some(max_ttfb) = cfg.max_ttfb else {
         return true;
     };
-    let offenders: Vec<&LaneSummary> = summaries
-        .iter()
-        .filter(|s| s.successful() && s.mean_ttfb_ms() > max_ttfb)
-        .collect();
-    if !offenders.is_empty() {
-        eprintln!("\n\u{2717} TTFB GATE FAILED (threshold {max_ttfb:.0} ms):");
-        for s in &offenders {
-            eprintln!(
-                "  {} — TTFB {:.0} ms exceeds threshold",
-                s.name,
-                s.mean_ttfb_ms()
-            );
-        }
+    let offenders = llmrace::gates::ttfb_offenders(summaries, max_ttfb);
+    let verdict = llmrace::gates::render_ttfb_verdict(&offenders, max_ttfb, cfg.quiet);
+    if verdict.failed() {
+        eprintln!("\n{}", verdict.message());
         return false;
     }
-    if !cfg.quiet {
-        println!("\u{2713} TTFB gate passed (all providers under {max_ttfb:.0} ms)");
+    if !verdict.message().is_empty() {
+        println!("{}", verdict.message());
     }
     true
 }

@@ -13,6 +13,7 @@
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
 //! - [`regression`]: baseline comparison for CI quality gates
+//! - [`gates`]: TTFB quality gates over race results
 //! - [`score`]: composite winner scoring and the podium
 //! - [`merge`]: cross-region merging of distributed probe reports
 //! - [`variants`]: built-in prompt variants for multi-shape sweeps
@@ -57,6 +58,7 @@ pub mod cost;
 pub mod dashboard;
 pub mod doctor;
 pub mod error;
+pub mod gates;
 pub mod history;
 pub mod merge;
 pub mod prom;

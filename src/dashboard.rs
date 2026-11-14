@@ -35,8 +35,9 @@ pub fn render_html(records: &[HistoryRecord], days: u64, now_unix: u64) -> Strin
             window.iter().filter(|r| r.provider == *provider).collect();
         let models = distinct_models(&lanes);
         body.push_str(&format!(
-            "<section><h2>{provider} <span class='model'>{}</span></h2>",
-            models.join(" → ")
+            "<section><h2>{} <span class='model'>{}</span></h2>",
+            crate::util::html_escape(provider),
+            crate::util::html_escape(&models.join(" → "))
         ));
         if lanes.len() >= 2 {
             body.push_str(&chart("TTFB (ms)", &lanes, |r| r.mean_ttfb_ms, true));
@@ -48,7 +49,7 @@ pub fn render_html(records: &[HistoryRecord], days: u64, now_unix: u64) -> Strin
             body.push_str(&format!(
                 "<table><tr><th>run</th><th>model</th><th>TTFB</th><th>tok/s</th><th>p95</th></tr><tr><td>{}</td><td>{}</td><td>{:.0} ms</td><td>{:.1}</td><td>{:.0} ms</td></tr></table>",
                 date(last.timestamp_unix),
-                last.model,
+                crate::util::html_escape(&last.model),
                 last.mean_ttfb_ms,
                 last.mean_tokens_per_sec,
                 last.p95_total_ms

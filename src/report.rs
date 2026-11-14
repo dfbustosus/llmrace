@@ -223,8 +223,8 @@ pub fn csv(summaries: &[LaneSummary]) -> String {
         for (i, r) in s.runs.iter().enumerate() {
             out.push_str(&format!(
                 "{},{},{},{:.3},{:.3},{},{:.3}\n",
-                s.name,
-                s.model,
+                crate::util::csv_field(&s.name),
+                crate::util::csv_field(&s.model),
                 i + 1,
                 r.total_ms,
                 r.ttfb_ms,
@@ -400,7 +400,8 @@ pub fn html_report(
             let medal = medals.get(i).copied().unwrap_or("·");
             body.push_str(&format!(
                 "<li><span class='medal'>{medal}</span> {} <span class='score'>{:.1}</span></li>",
-                s.name, s.score
+                crate::util::html_escape(&s.name),
+                s.score
             ));
         }
         body.push_str("</ol></section>");
@@ -415,8 +416,8 @@ pub fn html_report(
         body.push_str(&format!(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0} ms {}</td><td>{:.0} ms</td><td>{}</td><td>{}</td><td><b>{:.1}</b></td></tr>",
             i + 1,
-            s.name,
-            s.model,
+            crate::util::html_escape(&s.name),
+            crate::util::html_escape(&s.model),
             s.concurrency,
             s.mean_total_ms(),
             ci,
@@ -443,8 +444,8 @@ pub fn html_report(
         for s in &failures {
             body.push_str(&format!(
                 "<li>{} — {}</li>",
-                s.name,
-                s.error.as_deref().unwrap_or("no successful rounds")
+                crate::util::html_escape(&s.name),
+                crate::util::html_escape(s.error.as_deref().unwrap_or("no successful rounds"))
             ));
         }
         body.push_str("</ul></section>");
@@ -470,7 +471,7 @@ text {{ fill: #8b949e; font-size: 10px; }} .ttfb {{ fill: #8b949e; }} .gen {{ fi
 </body></html>",
         runs,
         max_tokens,
-        label,
+        crate::util::html_escape(&label),
         if prompt.chars().count() > 120 { "…" } else { "" },
         crate::util::today_utc(),
         env!("CARGO_PKG_VERSION"),
@@ -486,7 +487,7 @@ fn lane_bars(s: &LaneSummary) -> String {
     let height = ROW_H * n as f64 + 26.0;
     let mut svg = format!(
         "<svg viewBox='0 0 {WIDTH} {height}'><text x='4' y='14'>{}</text>",
-        s.name
+        crate::util::html_escape(&s.name)
     );
     for (i, r) in s.runs.iter().enumerate() {
         let y = 22.0 + ROW_H * i as f64;

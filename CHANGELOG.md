@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Library module `llmrace::gates`: `--max-ttfb` gate logic (`ttfb_offenders`, `render_ttfb_verdict`) is now reusable and unit-tested from CI pipelines
+- `Tui::render` is public — the race view can be drawn against any ratatui backend (used by the new TestBackend render tests)
+
+### Security
+
+- **HTML report and dashboard escape user input** (provider, model, prompt, error text): a model id like `<script>` previously landed raw in `--html` output — stored XSS in any shared report. Regression-tested with hostile inputs
+- CSV report fields containing commas, quotes or newlines are now RFC-4180 quoted (custom provider/model names could previously corrupt row structure)
+
 - **Reasoning-token visibility**: reports now split `visible_tokens` from hidden `reasoning_tokens` (provider usage minus the streamed estimate); reasoning lanes are annotated `🧠n` in terminal and markdown tables. Live-verified against gpt-5-nano (255 hidden reasoning tokens on a 256-token budget)
 - **Cross-region merge**: `llmrace --merge a.json,b.json,…` renders a per-provider region table with ⚡ (best TTFB) and 🚀 (best throughput) markers, completing the distributed-probes story; `--region <tag>` stamps reports (also used by the probe workflow), and `--merge --json` writes a machine-readable merged report
 - Providers: **LM Studio** (`lmstudio`, port 1234) and **llama.cpp llama-server** (`llamacpp`, port 8080) — opt-in locals excluded from auto-detect, with `--doctor` reachability checks

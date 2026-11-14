@@ -1,5 +1,37 @@
 //! Shared utility functions used across modules.
 
+/// Escapes the HTML-significant characters in `s`.
+///
+/// Provider names, models and prompts are user input and are interpolated
+/// into HTML reports; without escaping a model id like `<script>` would be
+/// stored XSS in a shared report.
+#[must_use]
+pub fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Quotes a CSV field when it contains a comma, quote or newline
+/// (RFC 4180).
+#[must_use]
+pub fn csv_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
 /// Truncates a string to at most `max` characters, appending an ellipsis
 /// when the original was longer.
 #[must_use]

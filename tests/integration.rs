@@ -852,3 +852,102 @@ fn merge_parses_region_tagged_reports() {
     assert!(table.contains("⚡"), "fastest TTFB marked: {table}");
     assert!(table.contains("🚀"), "best throughput marked: {table}");
 }
+
+#[test]
+fn html_report_escapes_hostile_model_names() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "custom-lane".into(),
+        model: "<script>alert(1)</script>".into(),
+        runs: vec![RunMetrics {
+            total_ms: 100.0,
+            ttfb_ms: 10.0,
+            tokens: 5,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: "p <b>bold</b> & 'quotes'".into(),
+        concurrency: 1,
+        variant: None,
+    };
+    let html =
+        llmrace::report::html_report(std::slice::from_ref(&summary), "prompt <x>", 1, 32, &[]);
+    assert!(!html.contains("<script>"), "unescaped script tag");
+    assert!(!html.contains("<b>bold</b>"), "unescaped prompt html");
+    assert!(html.contains("&lt;script&gt;"), "escaped model missing");
+    // failure lanes escape their error text too
+    let mut dead = summary;
+    dead.error = Some("<img src=x onerror=alert(2)>".into());
+    dead.runs.clear();
+    let html2 = llmrace::report::html_report(&[dead], "p", 1, 32, &[]);
+    assert!(!html2.contains("<img src=x"), "unescaped error html");
+}
+
+#[test]
+fn csv_escapes_commas_and_quotes() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "custom".into(),
+        model: "model,with,\"quotes\"".into(),
+        runs: vec![RunMetrics {
+            total_ms: 100.0,
+            ttfb_ms: 10.0,
+            tokens: 5,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    let csv = llmrace::report::csv(&[summary]);
+    let line = csv.lines().nth(1).unwrap_or_default();
+    assert!(line.starts_with("custom,"), "{line}");
+    assert!(line.ends_with(",1,100.000,10.000,5,55.556"), "{line}");
+    assert!(line.contains("\"model,with,\"\"quotes\"\""), "{line}");
+}
+
+#[test]
+fn stats_edge_branches() {
+    use llmrace::stats::{fmt_ms, Sample};
+    let empty = Sample::new();
+    assert_eq!(empty.mean(), 0.0);
+    assert_eq!(empty.percentile(95.0), 0.0);
+    assert_eq!(empty.percentiles(&[50.0, 95.0]), vec![0.0, 0.0]);
+    assert!(empty.min().is_none() && empty.max().is_none());
+    assert!(empty.t_ci95().is_none());
+    assert!(empty.outliers_3sigma().is_empty());
+    assert_eq!(fmt_ms(0.0), "0");
+    assert_eq!(fmt_ms(0.4), "<1");
+    assert_eq!(fmt_ms(12.0), "12");
+
+    let single = Sample::from_values(vec![7.0]);
+    assert_eq!(single.percentile(0.0), 7.0);
+    assert_eq!(single.percentile(100.0), 7.0);
+    assert_eq!(single.percentiles(&[10.0, 90.0]), vec![7.0, 7.0]);
+
+    // identical values: zero variance, no outliers
+    let flat = Sample::from_values(vec![5.0, 5.0, 5.0]);
+    assert_eq!(flat.variance(), 0.0);
+    assert!(flat.outliers_3sigma().is_empty());
+
+    // clamping and the two-sided percentile edges
+    let s = Sample::from_values(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    assert_eq!(s.percentile(-10.0), 1.0);
+    assert_eq!(s.percentile(1e9), 5.0);
+    let ladder = s.percentiles(&[0.0, 50.0, 100.0]);
+    assert_eq!(ladder, vec![1.0, 3.0, 5.0]);
+
+    // t-table interpolation between tabulated degrees of freedom (df=12)
+    let df12: Vec<f64> = (0..13).map(|i| i as f64).collect();
+    let ci = Sample::from_values(df12).t_ci95().unwrap();
+    // interpolated t between df=10 (2.228) and df=15 (2.131) ≈ 2.209
+    let half = 2.209 * Sample::from_values((0..13).map(|i| i as f64).collect::<Vec<_>>()).stddev()
+        / (13.0_f64).sqrt();
+    assert!((ci.1 - ci.0 - 2.0 * half).abs() < 0.05, "{ci:?}");
+
+    // obvious 3-sigma outlier detection (needs enough clustered samples
+    // that the spike cannot inflate sigma past its own deviation)
+    let mut spiky_values: Vec<f64> = (0..20).map(|i| 10.0 + (i as f64 % 5.0) * 0.1).collect();
+    spiky_values.push(1000.0);
+    let spiky = Sample::from_values(spiky_values);
+    assert!(!spiky.outliers_3sigma().is_empty());
+}
