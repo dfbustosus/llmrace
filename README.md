@@ -34,7 +34,7 @@ Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tai
 
 ![llmrace demo](docs/demo.gif)
 
-*A four-lane sweep race — local Ollama vs the instant mock lane across \`short\` and \`json\` prompt variants — followed by \`llmrace --doctor\` environment diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs)).*
+*A mixed race — local Ollama `llama3.2:1b` vs the instant mock lane — finishing in the ranked table (with inter-token latency) and the `--winner` podium, then `llmrace --doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs)).*
 
 ## Why
 

@@ -1,17 +1,23 @@
 Output docs/demo.gif
-Set FontSize 15
-Set Width 1100
-Set Height 520
-Set Theme "Dark+"
-Set Padding 14
-Set TypingSpeed 40ms
+Require llmrace
+
+Set FontSize 16
+Set Width 1000
+Set Height 560
+Set Theme "Catppuccin Mocha"
+Set WindowBar Rings
+Set Padding 18
+Set TypingSpeed 10ms
 Set CursorBlink true
 
-Type@40ms "llmrace openai ollama mock -m ollama=llama3.2:1b -n 1 --warmup 0"
+# Local race — real Ollama lane vs the instant mock lane, winner podium
+Type "llmrace ollama mock -m ollama=llama3.2:1b -n 2 --warmup 0 --winner"
 Enter
-Sleep 7s
-Type "q"
-Sleep 800ms
-Type "llmrace --doctor --json | head -20"
+Sleep 9s
 Enter
 Sleep 3s
+
+# Environment diagnostics
+Type "llmrace --doctor"
+Enter
+Sleep 4s
