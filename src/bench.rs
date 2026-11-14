@@ -498,33 +498,22 @@ async fn run_round(
     config: &BenchConfig,
     progress: &mpsc::Sender<LaneUpdate>,
 ) -> crate::error::Result<Vec<RunMetrics>> {
+    let model_label: Arc<str> = Arc::from(model);
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..config.concurrency.max(1) {
-        let client = client.clone();
-        let spec = spec.clone();
-        let model = model.to_string();
-        let model_label: Arc<str> = Arc::from(model.as_str());
-        let prompt = config.prompt.clone();
-        let max_tokens = config.max_tokens;
-        let timeout = Duration::from_secs(config.timeout_secs);
+        let job = RequestJob {
+            client: client.clone(),
+            spec: spec.clone(),
+            model: model.to_string(),
+            model_label: Arc::clone(&model_label),
+            prompt: config.prompt.clone(),
+            max_tokens: config.max_tokens,
+            timeout: Duration::from_secs(config.timeout_secs),
+            tools: config.tools,
+            variant_label: config.variant.clone(),
+        };
         let progress = progress.clone();
-        let tools = config.tools;
-        let variant_label = config.variant.clone();
-        tasks.spawn(async move {
-            single_request(
-                &client,
-                &spec,
-                &model,
-                model_label,
-                &prompt,
-                max_tokens,
-                timeout,
-                tools,
-                variant_label,
-                &progress,
-            )
-            .await
-        });
+        tasks.spawn(async move { single_request(job, &progress).await });
     }
 
     let mut all = Vec::new();
@@ -578,27 +567,44 @@ async fn run_round(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn single_request(
-    client: &reqwest::Client,
-    spec: &ProviderSpec,
-    model: &str,
+/// Everything one in-flight request needs, bundled so the request path
+/// stays a two-argument function.
+struct RequestJob {
+    client: reqwest::Client,
+    spec: ProviderSpec,
+    model: String,
     model_label: Arc<str>,
-    prompt: &str,
+    prompt: String,
     max_tokens: u64,
     timeout: Duration,
     tools: bool,
     variant_label: Option<Arc<str>>,
+}
+
+/// Streams one completion, measuring TTFB, token gaps and usage.
+async fn single_request(
+    job: RequestJob,
     progress: &mpsc::Sender<LaneUpdate>,
 ) -> crate::error::Result<RunMetrics> {
-    let req = CompletionRequest {
+    let RequestJob {
+        client,
+        spec,
         model,
+        model_label,
         prompt,
+        max_tokens,
+        timeout,
+        tools,
+        variant_label,
+    } = job;
+    let req = CompletionRequest {
+        model: &model,
+        prompt: &prompt,
         max_tokens,
         tools,
     };
     let start = Instant::now();
-    let mut stream = stream_completion(client, spec, &req).await?;
+    let mut stream = stream_completion(&client, &spec, &req).await?;
     let server_timing = stream.server_timing();
     let deadline = tokio::time::Instant::now() + timeout;
     let mut ttfb: Option<Duration> = None;

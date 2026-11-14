@@ -333,3 +333,43 @@ fn positional_with_unknown_provider_errors() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("unknown provider"), "{stderr}");
 }
+
+#[test]
+fn api_keys_never_leak_into_reports() {
+    // A distinctive fake key: if any output path ever echoes environment
+    // values, this test catches it.
+    const MARKER: &str = "sk-LEAK-MARKER-do-not-print";
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .env("OPENAI_API_KEY", MARKER)
+        .arg("mock")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--json")
+        .arg("--csv")
+        .arg("--html")
+        .arg("--out")
+        .arg(tmppath("leak"))
+        .output()
+        .expect("spawn llmrace");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains(MARKER), "key leaked to stdout");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains(MARKER), "key leaked to stderr");
+    for ext in ["md", "json", "csv", "html"] {
+        let path = std::env::temp_dir().join(format!(
+            "llmrace-leak{}",
+            if ext == "md" {
+                ".md".to_string()
+            } else {
+                format!(".{ext}")
+            }
+        ));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            assert!(!content.contains(MARKER), "key leaked into {ext} report");
+        }
+    }
+}

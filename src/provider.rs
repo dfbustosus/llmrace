@@ -400,6 +400,112 @@ impl futures_util::Stream for EventStream {
     }
 }
 
+/// How a built wire request authenticates.
+#[derive(Debug, Clone)]
+enum RequestAuth {
+    /// No key required (local daemons, mock).
+    None,
+    /// `Authorization: Bearer <key>`.
+    Bearer(String),
+    /// Extra headers carrying the key (e.g. `x-api-key`, `x-goog-api-key`).
+    Headers(Vec<(&'static str, String)>),
+}
+
+/// A wire-specific request, ready to send: URL, JSON body and auth.
+struct WireRequest {
+    url: String,
+    body: serde_json::Value,
+    auth: RequestAuth,
+}
+
+/// Builds the request for the given wire protocol; pure, no I/O.
+fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Result<WireRequest> {
+    let mut body = match spec.wire {
+        Wire::Mock => json!(null),
+        Wire::OpenAiCompat => {
+            // gpt-5 / o-series reject `max_tokens` (HTTP 400) and require
+            // `max_completion_tokens` instead.
+            let cap_key = if requires_completion_tokens(req.model) {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            let mut body = json!({
+                "model": req.model,
+                "messages": [{"role": "user", "content": req.prompt}],
+                "stream": true,
+            });
+            body[cap_key] = json!(req.max_tokens);
+            if *spec.id != *"ollama" {
+                body["stream_options"] = json!({"include_usage": true});
+            }
+            body
+        }
+        Wire::Anthropic | Wire::Cohere => json!({
+            "model": req.model,
+            "max_tokens": req.max_tokens,
+            "messages": [{"role": "user", "content": req.prompt}],
+            "stream": true,
+        }),
+        Wire::Gemini => json!({
+            "contents": [{"parts": [{"text": req.prompt}]}],
+            "generationConfig": {"maxOutputTokens": req.max_tokens},
+        }),
+    };
+    if req.tools {
+        body["tools"] = crate::tools::weather_tool(spec.wire);
+    }
+
+    let key = spec.api_key()?;
+    let auth = match (spec.wire, spec.auth) {
+        (Wire::Mock, _) => RequestAuth::None,
+        (Wire::OpenAiCompat, AuthKind::ApiKeyHeader) => {
+            RequestAuth::Headers(vec![("api-key", key.unwrap_or_default())])
+        }
+        (Wire::Anthropic, _) => RequestAuth::Headers(vec![
+            ("x-api-key", key.clone().unwrap_or_default()),
+            ("anthropic-version", "2023-06-01".to_string()),
+        ]),
+        (Wire::Gemini, _) => {
+            RequestAuth::Headers(vec![("x-goog-api-key", key.clone().unwrap_or_default())])
+        }
+        _ => match key {
+            Some(k) => RequestAuth::Bearer(k),
+            None => RequestAuth::None,
+        },
+    };
+    let url = if spec.wire == Wire::Gemini {
+        spec.endpoint.replace("{model}", req.model)
+    } else {
+        spec.endpoint.to_string()
+    };
+    Ok(WireRequest { url, body, auth })
+}
+
+/// Sends a built wire request and returns the decoded SSE stream.
+async fn send_wire_request(
+    client: &reqwest::Client,
+    spec: &ProviderSpec,
+    wire_req: WireRequest,
+) -> Result<EventStream> {
+    let mut request = client.post(&wire_req.url).json(&wire_req.body);
+    match &wire_req.auth {
+        RequestAuth::None => {}
+        RequestAuth::Bearer(key) => request = request.bearer_auth(key),
+        RequestAuth::Headers(headers) => {
+            for (name, value) in headers {
+                request = request.header(*name, value);
+            }
+        }
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| Error::Stream(e.to_string()))?;
+    let resp = check_status(spec, resp).await?;
+    Ok(EventStream::Http(SseStream::new(resp, spec.wire)))
+}
+
 /// Starts a streaming completion against `spec` and returns a live event stream.
 ///
 /// ```
@@ -423,108 +529,13 @@ pub async fn stream_completion(
     spec: &ProviderSpec,
     req: &CompletionRequest<'_>,
 ) -> Result<EventStream> {
-    match spec.wire {
-        Wire::Mock => Ok(EventStream::Mock(MockStream::new(
+    if spec.wire == Wire::Mock {
+        return Ok(EventStream::Mock(MockStream::new(
             Duration::from_millis(12),
             24,
-        ))),
-        Wire::OpenAiCompat => {
-            let key = spec.api_key()?;
-            let cap_key = if requires_completion_tokens(req.model) {
-                "max_completion_tokens"
-            } else {
-                "max_tokens"
-            };
-            let mut body = json!({
-                "model": req.model,
-                "messages": [{"role": "user", "content": req.prompt}],
-                "stream": true,
-            });
-            body[cap_key] = json!(req.max_tokens);
-            if *spec.id != *"ollama" {
-                body["stream_options"] = json!({"include_usage": true});
-            }
-            if req.tools {
-                body["tools"] = crate::tools::weather_tool(Wire::OpenAiCompat);
-            }
-            let mut request = client.post(spec.endpoint.as_ref()).json(&body);
-            if let Some(k) = &key {
-                request = match spec.auth {
-                    AuthKind::Bearer => request.bearer_auth(k),
-                    AuthKind::ApiKeyHeader => request.header("api-key", k),
-                };
-            }
-            let resp = request
-                .send()
-                .await
-                .map_err(|e| Error::Stream(e.to_string()))?;
-            let resp = check_status(spec, resp).await?;
-            Ok(EventStream::Http(SseStream::new(resp, Wire::OpenAiCompat)))
-        }
-        Wire::Anthropic => {
-            let key = spec.api_key()?;
-            let mut body = json!({
-                "model": req.model,
-                "max_tokens": req.max_tokens,
-                "messages": [{"role": "user", "content": req.prompt}],
-                "stream": true,
-            });
-            if req.tools {
-                body["tools"] = crate::tools::weather_tool(Wire::Anthropic);
-            }
-            let resp = client
-                .post(spec.endpoint.as_ref())
-                .header("x-api-key", key.as_deref().unwrap_or_default())
-                .header("anthropic-version", "2023-06-01")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| Error::Stream(e.to_string()))?;
-            let resp = check_status(spec, resp).await?;
-            Ok(EventStream::Http(SseStream::new(resp, Wire::Anthropic)))
-        }
-        Wire::Cohere => {
-            let key = spec.api_key()?;
-            let mut body = json!({
-                "model": req.model,
-                "messages": [{"role": "user", "content": req.prompt}],
-                "max_tokens": req.max_tokens,
-                "stream": true,
-            });
-            if req.tools {
-                body["tools"] = crate::tools::weather_tool(Wire::Cohere);
-            }
-            let resp = client
-                .post(spec.endpoint.as_ref())
-                .bearer_auth(key.as_deref().unwrap_or_default())
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| Error::Stream(e.to_string()))?;
-            let resp = check_status(spec, resp).await?;
-            Ok(EventStream::Http(SseStream::new(resp, Wire::Cohere)))
-        }
-        Wire::Gemini => {
-            let key = spec.api_key()?;
-            let endpoint = spec.endpoint.replace("{model}", req.model);
-            let mut body = json!({
-                "contents": [{"parts": [{"text": req.prompt}]}],
-                "generationConfig": {"maxOutputTokens": req.max_tokens},
-            });
-            if req.tools {
-                body["tools"] = crate::tools::weather_tool(Wire::Gemini);
-            }
-            let resp = client
-                .post(endpoint)
-                .header("x-goog-api-key", key.as_deref().unwrap_or_default())
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| Error::Stream(e.to_string()))?;
-            let resp = check_status(spec, resp).await?;
-            Ok(EventStream::Http(SseStream::new(resp, Wire::Gemini)))
-        }
+        )));
     }
+    send_wire_request(client, spec, build_wire_request(spec, req)?).await
 }
 
 /// Splits a `--model` entry into a provider-specific override when written

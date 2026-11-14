@@ -1,18 +1,24 @@
+//! llmrace CLI: argument definitions, profile/provider resolution and
+//! dispatch. Execution lives in [`run`], standalone modes in [`modes`].
+
+mod modes;
+mod run;
+
 use anyhow::{Context, Result};
 use clap::Parser;
-use llmrace::bench::{spawn_lane, BenchConfig, LaneSummary};
+use llmrace::bench::BenchConfig;
 use llmrace::provider::ProviderSpec;
-use llmrace::{report, tui};
+use run::{resolve_model, RunConfig};
 use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
     name = "llmrace",
     version,
-    about = "🏁 Race LLM providers head-to-head in your terminal",
+    about = "\u{1f3c1} Race LLM providers head-to-head in your terminal",
     long_about = "llmrace benchmarks streaming latency, throughput and cost across LLM providers (OpenAI, Anthropic, Groq, OpenRouter, local Ollama or any OpenAI-compatible endpoint) with a live TUI race and shareable markdown, JSON and CSV reports."
 )]
-struct Cli {
+pub(crate) struct Cli {
     /// Providers to race (see --list). Omit to auto-detect from env vars.
     /// `provider=model` entries race a specific model; repeat a provider
     /// with different models to race them head-to-head.
@@ -204,181 +210,48 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-
     let (cli, _profile) = apply_profile(cli)?;
+    let code = dispatch(cli).await?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
 
+/// Routes to a standalone mode or the race; returns the process exit code.
+async fn dispatch(cli: Cli) -> Result<i32> {
     if cli.init {
-        let path = std::path::Path::new("llmrace.toml");
-        if path.exists() {
-            anyhow::bail!("llmrace.toml already exists — edit it or remove it first");
-        }
-        std::fs::write(path, include_str!("../examples/llmrace.toml"))
-            .with_context(|| "writing llmrace.toml")?;
-        println!("Created llmrace.toml with example profiles (fast, overnight, saturation, ci)");
-        println!("Edit it, then run: llmrace --profile fast");
-        return Ok(());
+        return modes::init().map(|_| 0);
     }
-
     if cli.doctor {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .context("failed to build http client")?;
-        let mut checks = vec![
-            llmrace::doctor::check_config(),
-            llmrace::doctor::check_history(),
-        ];
-        checks.push(llmrace::doctor::check_ollama(&client).await);
-        checks.push(llmrace::doctor::check_local_daemon(&client, "lmstudio", 1234).await);
-        checks.push(llmrace::doctor::check_local_daemon(&client, "llamacpp", 8080).await);
-        checks.extend(llmrace::doctor::check_providers(&client, &ProviderSpec::registry()).await);
-        if cli.json {
-            let payload: Vec<serde_json::Value> = checks
-                .iter()
-                .map(|c| {
-                    serde_json::json!({
-                        "name": c.name,
-                        "status": match c.status {
-                            llmrace::doctor::Status::Pass => "pass",
-                            llmrace::doctor::Status::Warn => "warn",
-                            llmrace::doctor::Status::Fail => "fail",
-                        },
-                        "detail": c.detail,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&payload)?);
-            return Ok(());
-        }
-        print!("{}", llmrace::doctor::render(&checks));
-        return Ok(());
+        return modes::doctor(cli.json).await.map(|_| 0);
     }
-
     if let Some(shell) = &cli.completions {
-        let shell: clap_complete::Shell = shell
-            .parse()
-            .map_err(|e| anyhow::anyhow!("unknown shell '{shell}': {e}"))?;
-        let mut cmd = <Cli as clap::CommandFactory>::command();
-        let name = cmd.get_name().to_string();
-        clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
-        return Ok(());
+        return modes::completions(shell).map(|_| 0);
     }
-
     if cli.man {
-        let cmd = <Cli as clap::CommandFactory>::command();
-        let man = clap_mangen::Man::new(cmd);
-        let mut buffer: Vec<u8> = Default::default();
-        man.render(&mut buffer)?;
-        use std::io::Write;
-        std::io::stdout().write_all(&buffer)?;
-        return Ok(());
+        return modes::man().map(|_| 0);
     }
-
     if cli.list {
-        if cli.json {
-            let providers: Vec<serde_json::Value> = ProviderSpec::registry()
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "id": p.id.as_ref(),
-                        "endpoint": p.endpoint.as_ref(),
-                        "api_key_env": p.api_key_env.as_deref(),
-                        "default_model": p.default_model.as_ref(),
-                        "available": p.is_available(),
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&providers)?);
-            return Ok(());
-        }
-        let header = format!("{:<14} {:<30} {}\n", "PROVIDER", "DEFAULT MODEL", "NEEDS");
-        print!("{header}");
-        for p in ProviderSpec::registry() {
-            let needs = match (p.api_key_env.as_deref(), p.opt_in) {
-                (Some(env), _) => env.to_string(),
-                (None, true) => "nothing (opt-in local)".to_string(),
-                (None, false) => "nothing (local)".to_string(),
-            };
-            let row = format!("{:<14} {:<30} {}\n", p.id, p.default_model, needs);
-            print!("{row}");
-        }
-        return Ok(());
+        return modes::list(cli.json).map(|_| 0);
     }
-
     if cli.dashboard {
-        let records = load_history(&cli)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let html = llmrace::dashboard::render_html(&records, cli.days, now);
-        let path = if cli.out == "llmrace-report.md" {
-            std::path::PathBuf::from("llmrace-dashboard.html")
-        } else {
-            std::path::PathBuf::from(&cli.out)
-        };
-        std::fs::write(&path, html).with_context(|| format!("writing {}", path.display()))?;
-        println!("🖥 dashboard written to {}", path.display());
-        return Ok(());
+        return modes::dashboard(cli.days, &cli.out, &cli.storage).map(|_| 0);
     }
-
     if cli.merge.len() >= 2 {
-        let paths: Vec<std::path::PathBuf> = cli.merge.iter().map(Into::into).collect();
-        let lanes = llmrace::merge::load_files(&paths)?;
-        println!("{}", llmrace::merge::render_table(&lanes));
-        if cli.json {
-            let merged = serde_json::json!({
-                "tool": "llmrace",
-                "version": env!("CARGO_PKG_VERSION"),
-                "merged": lanes,
-            });
-            let path = report_sibling(&cli.out, "json");
-            std::fs::write(&path, serde_json::to_string_pretty(&merged)?)
-                .with_context(|| format!("writing {path}"))?;
-            println!("🌍 merged report saved to {path}");
-        }
-        return Ok(());
+        return modes::merge(&cli.merge, cli.json, &cli.out).map(|_| 0);
     }
     if cli.merge.len() == 1 {
         anyhow::bail!("--merge expects two or more comma-separated report paths");
     }
-
     if cli.compare.len() == 2 {
-        let (a_raw, b_raw) = (
-            std::fs::read_to_string(&cli.compare[0])
-                .with_context(|| format!("reading {}", cli.compare[0]))?,
-            std::fs::read_to_string(&cli.compare[1])
-                .with_context(|| format!("reading {}", cli.compare[1]))?,
-        );
-        let a = llmrace::regression::BaselineReport::from_json_str(&a_raw)
-            .with_context(|| format!("parsing {}", cli.compare[0]))?;
-        let b = llmrace::regression::BaselineReport::from_json_str(&b_raw)
-            .with_context(|| format!("parsing {}", cli.compare[1]))?;
-        let report = llmrace::regression::compare_baselines(&b, &a, cli.max_regression);
-        println!(
-            "⚖  comparing {} (baseline) vs {} (current)\n",
-            cli.compare[0], cli.compare[1]
-        );
-        println!("{}", report.terminal_table(cli.max_regression));
-        return Ok(());
+        return modes::compare(&cli.compare, cli.max_regression).map(|_| 0);
     }
     if cli.compare.len() == 1 {
         anyhow::bail!("--compare expects two comma-separated report paths (a.json,b.json)");
     }
-
     if cli.trend {
-        let records = load_history(&cli)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let filter: Vec<String> = cli.providers.clone();
-        let trends = llmrace::history::build_trends(&records, cli.days, now, &filter);
-        print!(
-            "{}",
-            llmrace::history::render_trend_table(&trends, cli.days)
-        );
-        return Ok(());
+        return modes::trend(cli.days, &cli.providers, &cli.storage).map(|_| 0);
     }
 
     if !cli.prices.is_empty() {
@@ -389,24 +262,32 @@ async fn main() -> Result<()> {
         llmrace::cost::set_overrides(parsed);
     }
 
-    let selected = resolve_providers(&cli)?;
+    let cfg = build_run_config(cli)?;
+    if cfg_watch(&cfg) {
+        run::watch_race(cfg).await
+    } else {
+        run::run_race(cfg).await
+    }
+}
 
+fn cfg_watch(cfg: &RunConfig) -> bool {
+    cfg.watch
+}
+
+/// Resolves the CLI into the plain data the race path needs.
+fn build_run_config(cli: Cli) -> Result<RunConfig> {
+    let selected = resolve_providers(&cli)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
         .build()
         .context("failed to build http client")?;
-
-    if cli.watch {
-        return watch_main(cli, selected, client).await;
-    }
 
     let runs = if cli.duration.is_some() {
         100_000
     } else {
         cli.runs
     };
-
-    let config = BenchConfig {
+    let bench = BenchConfig {
         prompt: if cli.tools {
             llmrace::tools::tool_task_prompt().to_string()
         } else {
@@ -422,362 +303,47 @@ async fn main() -> Result<()> {
         duration_secs: cli.duration,
         retries: cli.retries,
     };
-
     let weights = match &cli.weights {
         Some(spec) => llmrace::score::Weights::parse(spec)
             .map_err(|e| anyhow::anyhow!("{e}"))
             .with_context(|| "parsing --weights")?,
         None => llmrace::score::Weights::default(),
     };
-
-    if !cli.quiet {
-        println!(
-            "🏁 llmrace v{} — {} providers × {} rounds ({} warmup, c={})",
-            env!("CARGO_PKG_VERSION"),
-            selected.len(),
-            config.runs,
-            config.warmup,
-            config.concurrency
-        );
-        println!("   prompt: \"{}\"\n", cli.prompt.replace('\n', " "));
-    }
-
-    if cli.tools {
-        println!("🛠 tool-calling mode: weather task, argument validity tracked");
-    }
-
-    let variants: Vec<Option<llmrace::variants::Variant>> = match &cli.sweep {
-        Some(spec) => llmrace::variants::parse(spec)
-            .map(|vs| vs.into_iter().map(Some).collect())
-            .map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => vec![None],
-    };
-
-    let mut lanes: Vec<(Arc<str>, Option<Arc<str>>, String)> = Vec::new();
-    let mut handles = Vec::new();
-    let mut receivers = Vec::new();
-    for variant in &variants {
-        for p in &selected {
-            lanes.push((
-                Arc::clone(&p.id),
-                variant.as_ref().map(|v| Arc::from(v.name)),
-                resolve_model(&cli.model, &p.id, &p.default_model),
-            ));
-        }
-        let prompt = match variant {
-            Some(v) => v.prompt.to_string(),
-            None => config.prompt.clone(),
-        };
-        for p in &selected {
-            let model = resolve_model(&cli.model, &p.id, &p.default_model);
-            let (handle, rx) = spawn_lane(
-                client.clone(),
-                p.clone(),
-                model,
-                BenchConfig {
-                    prompt: prompt.clone(),
-                    variant: variant.as_ref().map(|v| Arc::from(v.name)),
-                    ..config.clone()
-                },
-            );
-            handles.push(async move { handle.await.map_err(anyhow::Error::from) });
-            receivers.push(rx);
-        }
-    }
-
-    let summaries: Vec<LaneSummary> = if cli.no_tui {
-        drop(receivers);
-        let mut all = Vec::new();
-        for h in handles {
-            match h.await {
-                Ok(s) => {
-                    if !cli.quiet {
-                        print_lane_progress(&s);
-                    }
-                    all.push(s);
-                }
-                Err(e) => eprintln!("lane failed: {e}"),
-            }
-        }
-        all
-    } else {
-        let merged = std::sync::mpsc::channel::<llmrace::bench::LaneUpdate>();
-        for rx in receivers {
-            let tx = merged.0.clone();
-            tokio::spawn(async move {
-                while let Ok(u) = rx.recv() {
-                    if tx.send(u).is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        drop(merged.0);
-        let lanes_clone = lanes.clone();
-        let prompt = cli.prompt.clone();
-        let runs_ui = config.runs;
-        let rx_final = merged.1;
-        let tui = tui::Tui::new(lanes_clone, prompt, runs_ui);
-        let tui_handle = tokio::task::spawn_blocking(move || tui.run(rx_final).map(|_| ()));
-
-        let mut all = Vec::new();
-        for h in handles {
-            match h.await {
-                Ok(s) => all.push(s),
-                Err(e) => eprintln!("lane failed: {e}"),
-            }
-        }
-        match tui_handle.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
-            Err(e) => return Err(e.into()),
-        }
-        all
-    };
-
-    if !cli.quiet {
-        let table = report::terminal_table(&summaries);
-        println!("\n{table}");
-        if cli.winner {
-            let scored = llmrace::score::score_lanes(&summaries, &weights);
-            print!("{}", llmrace::score::podium(&scored, &weights));
-        }
-    }
-
-    let mut md = report::markdown(&summaries, &cli.prompt, config.runs, cli.max_tokens);
-    if cli.winner {
-        let scored = llmrace::score::score_lanes(&summaries, &weights);
-        let block = llmrace::score::podium(&scored, &weights);
-        if !block.is_empty() {
-            md.push_str("\n## Podium\n");
-            md.push_str(&block);
-        }
-    }
-    if cli.histogram {
-        md.push_str(&report::histogram_section(&summaries));
-    }
-    std::fs::write(&cli.out, &md).with_context(|| format!("writing {}", cli.out))?;
-    println!("📄 markdown report saved to {}", cli.out);
-
-    if cli.json {
-        let j = report::json_report_with_region(
-            &summaries,
-            &cli.prompt,
-            config.runs,
-            cli.max_tokens,
-            cli.region.as_deref(),
-        );
-        let path = report_sibling(&cli.out, "json");
-        std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
-        println!("📊 json report saved to {path}");
-    }
-    if cli.csv {
-        let c = report::csv(&summaries);
-        let path = report_sibling(&cli.out, "csv");
-        std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
-        println!("📈 csv report saved to {path}");
-    }
-    if cli.html {
-        let scored = if cli.winner {
-            llmrace::score::score_lanes(&summaries, &weights)
-        } else {
-            Vec::new()
-        };
-        let h = report::html_report(
-            &summaries,
-            &cli.prompt,
-            config.runs,
-            cli.max_tokens,
-            &scored,
-        );
-        let path = report_sibling(&cli.out, "html");
-        std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
-        println!("🌐 html report saved to {path}");
-    }
-
-    if let Some(gateway) = &cli.push_gateway {
-        llmrace::prom::push(&client, gateway, &summaries)
-            .await
-            .with_context(|| format!("pushing metrics to {gateway}"))?;
-        println!("📡 metrics pushed to {gateway}");
-    }
-
-    if cli.record {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let records: Vec<llmrace::history::HistoryRecord> = summaries
-            .iter()
-            .map(|s| llmrace::history::record_from_summary(s, now))
-            .collect();
-        match cli.storage.as_str() {
-            "jsonl" => {
-                let path = llmrace::history::history_path();
-                llmrace::history::append(&path, &records)
-                    .with_context(|| format!("recording history to {}", path.display()))?;
-                println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
-            }
-            #[cfg(feature = "sqlite")]
-            "sqlite" => {
-                let path = sqlite_path();
-                let conn =
-                    llmrace::sqlite::open(&path).with_context(|| "opening sqlite history")?;
-                llmrace::sqlite::save(&conn, &records).with_context(|| "writing sqlite history")?;
-                println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
-            }
-            other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
-        }
-    }
-
-    if let Some(max_ttfb) = cli.max_ttfb {
-        let offenders: Vec<&LaneSummary> = summaries
-            .iter()
-            .filter(|s| s.successful() && s.mean_ttfb_ms() > max_ttfb)
-            .collect();
-        if !offenders.is_empty() {
-            eprintln!("\n✗ TTFB GATE FAILED (threshold {max_ttfb:.0} ms):");
-            for s in &offenders {
-                eprintln!(
-                    "  {} — TTFB {:.0} ms exceeds threshold",
-                    s.name,
-                    s.mean_ttfb_ms()
-                );
-            }
-            std::process::exit(1);
-        }
-        if !cli.quiet {
-            println!("✓ TTFB gate passed (all providers under {max_ttfb:.0} ms)");
-        }
-    }
-
-    if let Some(baseline_path) = &cli.baseline {
-        let raw = std::fs::read_to_string(baseline_path)
-            .with_context(|| format!("reading baseline {baseline_path}"))?;
-        let baseline = llmrace::regression::BaselineReport::from_json_str(&raw)
-            .with_context(|| format!("parsing baseline {baseline_path}"))?;
-        let regression = llmrace::regression::evaluate(&summaries, &baseline, cli.max_regression);
-        println!("\n{}", regression.terminal_table(cli.max_regression));
-        if regression.any_regressed() {
-            std::process::exit(1);
-        }
-    }
-
-    Ok(())
-}
-
-async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Client) -> Result<()> {
-    let model = resolve_model(&cli.model, &selected[0].id, &selected[0].default_model);
-    let bench = BenchConfig {
-        prompt: if cli.tools {
-            llmrace::tools::tool_task_prompt().to_string()
-        } else {
-            cli.prompt.clone()
-        },
-        max_tokens: cli.max_tokens,
-        runs: cli.runs,
-        warmup: cli.warmup,
-        concurrency: cli.concurrency.max(1),
-        timeout_secs: cli.timeout,
-        tools: cli.tools,
-        variant: None,
-        duration_secs: None,
-        retries: cli.retries,
-    };
-    let watch_config = llmrace::watch::WatchConfig {
-        every_secs: cli.every,
-        max_regression_pct: cli.max_regression,
-        rounds: None,
-        bench,
-    };
-
-    println!(
-        "👀 llmrace watch — every {}s, alert threshold {}% (Ctrl+C to stop)\n",
-        cli.every, cli.max_regression
-    );
-
-    let ctrl_c_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stop_flag = std::sync::Arc::clone(&ctrl_c_flag);
-    tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
-        stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        println!("\n⏹ interrupted — finishing current round, then writing reports…");
-    });
-
-    let report = llmrace::watch::watch(
-        selected,
-        model,
-        watch_config,
+    Ok(RunConfig {
         client,
-        |round, summaries, alerts| {
-            for s in summaries {
-                if s.successful() {
-                    println!(
-                        "  r{round} ✓ {:<14} {:>6.1} tok/s   TTFB {:>5.0} ms",
-                        s.name,
-                        s.mean_tokens_per_sec(),
-                        s.mean_ttfb_ms()
-                    );
-                } else {
-                    println!(
-                        "  r{round} ✗ {:<14} {}",
-                        s.name,
-                        s.error.clone().unwrap_or_default()
-                    );
-                }
-            }
-            for a in alerts {
-                println!(
-                    "  ⚠ ALERT r{} {} {} {:.0} → {:.0} ms (+{:.0}%)",
-                    a.round, a.provider, a.metric, a.baseline, a.current, a.delta_pct
-                );
-            }
-        },
-        move || ctrl_c_flag.load(std::sync::atomic::Ordering::Relaxed),
-    )
-    .await;
-
-    println!(
-        "\nsession: {} rounds, {} alert(s)",
-        report.rounds.len(),
-        report.alerts.len()
-    );
-
-    if cli.record {
-        let mut records = Vec::new();
-        for summaries in &report.rounds {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            for s in summaries.iter().filter(|s| s.successful()) {
-                records.push(llmrace::history::record_from_summary(s, now));
-            }
-        }
-        let path = llmrace::history::history_path();
-        llmrace::history::append(&path, &records)
-            .with_context(|| format!("recording history to {}", path.display()))?;
-        println!("🗂 recorded {} lane(s) to {}", records.len(), path.display());
-    }
-
-    let last = report.last_round();
-    if !last.is_empty() {
-        let table = report::terminal_table(last);
-        println!("\n{table}");
-        let md = report::markdown(last, &cli.prompt, cli.runs, cli.max_tokens);
-        std::fs::write(&cli.out, md).with_context(|| format!("writing {}", cli.out))?;
-        println!("📄 report saved to {}", cli.out);
-    }
-    Ok(())
+        providers: selected,
+        model_overrides: cli.model,
+        bench,
+        prompt: cli.prompt,
+        sweep: cli.sweep,
+        quiet: cli.quiet,
+        no_tui: cli.no_tui,
+        winner: cli.winner,
+        weights,
+        histogram: cli.histogram,
+        json: cli.json,
+        csv: cli.csv,
+        html: cli.html,
+        out: cli.out,
+        region: cli.region,
+        push_gateway: cli.push_gateway,
+        record: cli.record,
+        storage: cli.storage,
+        max_ttfb: cli.max_ttfb,
+        baseline: cli.baseline,
+        max_regression: cli.max_regression,
+        watch: cli.watch,
+        every_secs: cli.every,
+    })
 }
 
 #[cfg(feature = "sqlite")]
-fn sqlite_path() -> std::path::PathBuf {
+pub(crate) fn sqlite_path() -> std::path::PathBuf {
     llmrace::history::history_path().with_extension("sqlite3")
 }
 
-fn load_history(cli: &Cli) -> Result<Vec<llmrace::history::HistoryRecord>> {
-    match cli.storage.as_str() {
+pub(crate) fn load_history(storage: &str) -> Result<Vec<llmrace::history::HistoryRecord>> {
+    match storage {
         "jsonl" => Ok(llmrace::history::load(&llmrace::history::history_path())),
         #[cfg(feature = "sqlite")]
         "sqlite" => {
@@ -789,23 +355,7 @@ fn load_history(cli: &Cli) -> Result<Vec<llmrace::history::HistoryRecord>> {
     }
 }
 
-fn resolve_model(cli_models: &[String], provider_id: &str, default_model: &str) -> String {
-    let mut global: Option<&str> = None;
-    for entry in cli_models {
-        if let Some((for_provider, model)) = llmrace::provider::split_model_override(entry) {
-            if for_provider == provider_id {
-                return model;
-            }
-        } else if global.is_none() {
-            global = Some(entry.as_str());
-        }
-    }
-    global
-        .map(str::to_string)
-        .unwrap_or_else(|| default_model.to_string())
-}
-
-fn report_sibling(out: &str, ext: &str) -> String {
+pub(crate) fn report_sibling(out: &str, ext: &str) -> String {
     let path = std::path::Path::new(out);
     if path.extension().is_some() {
         // `--out race.md` → race.json; `--out probe-eu.json` stays probe-eu.json
@@ -813,6 +363,50 @@ fn report_sibling(out: &str, ext: &str) -> String {
     } else {
         format!("{out}.{ext}")
     }
+}
+
+fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
+    let mut out: Vec<ProviderSpec> = Vec::new();
+    if let (Some(endpoint), Some(name)) = (&cli.endpoint, &cli.provider_name) {
+        let model = resolve_model(&cli.model, "custom", "default");
+        out.push(ProviderSpec::custom(
+            name,
+            endpoint,
+            cli.api_key_env.as_deref(),
+            &model,
+        ));
+    }
+    if !cli.providers.is_empty() {
+        for arg in &cli.providers {
+            // `provider=model` entries race that provider with a specific
+            // model; the same provider may appear multiple times with
+            // different models.
+            let (id, model_override) = match arg.split_once('=') {
+                Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
+                _ => (arg.as_str(), None),
+            };
+            let mut spec = ProviderSpec::find(id)
+                .with_context(|| format!("unknown provider '{arg}' (try --list)"))?;
+            if let Some(m) = model_override {
+                spec.default_model = Arc::from(m);
+            }
+            out.push(spec);
+        }
+        return Ok(out);
+    }
+    if out.is_empty() {
+        let available: Vec<ProviderSpec> = ProviderSpec::registry()
+            .into_iter()
+            .filter(|p| *p.id != *"mock" && !p.opt_in && p.is_available())
+            .collect();
+        if available.is_empty() {
+            anyhow::bail!(
+                "no providers configured; set an API key (e.g. OPENAI_API_KEY), start Ollama, or name providers explicitly"
+            );
+        }
+        return Ok(available);
+    }
+    Ok(out)
 }
 
 fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)> {
@@ -863,7 +457,7 @@ fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)
             cli.timeout = v;
         }
     }
-    println!("⚙  profile '{name}' loaded");
+    println!("\u{2699}  profile '{name}' loaded");
     Ok((cli, Some(profile)))
 }
 
@@ -878,67 +472,4 @@ fn arg_not_passed(flags: &[&str]) -> bool {
                 || (f.len() == 2 && a.starts_with(f) && a.len() > 2)
         })
     })
-}
-
-fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
-    let mut out: Vec<ProviderSpec> = Vec::new();
-    if let (Some(endpoint), Some(name)) = (&cli.endpoint, &cli.provider_name) {
-        let model = resolve_model(&cli.model, "custom", "default");
-        out.push(ProviderSpec::custom(
-            name,
-            endpoint,
-            cli.api_key_env.as_deref(),
-            &model,
-        ));
-    }
-    if !cli.providers.is_empty() {
-        for arg in &cli.providers {
-            // `provider=model` entries race that provider with a specific
-            // model; the same provider may appear multiple times with
-            // different models.
-            let (id, model_override) = match arg.split_once('=') {
-                Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
-                _ => (arg.as_str(), None),
-            };
-            let mut spec = ProviderSpec::find(id)
-                .with_context(|| format!("unknown provider '{arg}' (try --list)"))?;
-            if let Some(m) = model_override {
-                spec.default_model = Arc::from(m);
-            }
-            out.push(spec);
-        }
-        return Ok(out);
-    }
-    if out.is_empty() {
-        let available: Vec<ProviderSpec> = ProviderSpec::registry()
-            .into_iter()
-            .filter(|p| *p.id != *"mock" && !p.opt_in && p.is_available())
-            .collect();
-        if available.is_empty() {
-            anyhow::bail!(
-                "no providers configured; set an API key (e.g. OPENAI_API_KEY), start Ollama, or name providers explicitly"
-            );
-        }
-        return Ok(available);
-    }
-    Ok(out)
-}
-
-fn print_lane_progress(s: &LaneSummary) {
-    if let Some(e) = &s.error {
-        println!("  ✗ {:<14} {}", s.name, e);
-    } else {
-        let ci = match s.ci95_total_ms() {
-            Some((lo, hi)) => format!("±{:.0}", (hi - lo) / 2.0),
-            None => "—".to_string(),
-        };
-        println!(
-            "  ✓ {:<14} {:>6.1} tok/s   {:>6.0} ms {}   TTFB {:>4} ms",
-            s.name,
-            s.mean_tokens_per_sec(),
-            s.mean_total_ms(),
-            ci,
-            llmrace::stats::fmt_ms(s.mean_ttfb_ms())
-        );
-    }
 }

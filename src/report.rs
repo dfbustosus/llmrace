@@ -77,7 +77,7 @@ fn group_by_variant(summaries: &[LaneSummary]) -> Vec<(Option<String>, Vec<&Lane
 }
 
 fn variant_table(lanes: &[&LaneSummary]) -> String {
-    let ranked = rank_lanes(lanes);
+    let ranked = rank(lanes);
     let mut out = String::new();
     out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | ITL p95 | Stutters | Tokens/s | Cost/run |\n");
     out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|--------:|---------:|---------:|---------:|\n");
@@ -133,8 +133,13 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
     out
 }
 
-fn rank_lanes<'a>(lanes: &[&'a LaneSummary]) -> Vec<&'a LaneSummary> {
-    let mut ranked: Vec<&LaneSummary> = lanes.iter().filter(|s| s.successful()).copied().collect();
+/// Lanes ranked best-first by aggregate throughput; failed lanes drop out.
+fn rank<L: std::borrow::Borrow<LaneSummary>>(lanes: &[L]) -> Vec<&LaneSummary> {
+    let mut ranked: Vec<&LaneSummary> = lanes
+        .iter()
+        .filter(|s| s.borrow().successful())
+        .map(|s| s.borrow())
+        .collect();
     ranked.sort_by(|a, b| {
         b.mean_tokens_per_sec()
             .partial_cmp(&a.mean_tokens_per_sec())
@@ -307,24 +312,8 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
     out
 }
 
-fn rank(summaries: &[LaneSummary]) -> Vec<&LaneSummary> {
-    let mut ranked: Vec<&LaneSummary> = summaries.iter().filter(|s| s.successful()).collect();
-    ranked.sort_by(|a, b| {
-        b.mean_tokens_per_sec()
-            .partial_cmp(&a.mean_tokens_per_sec())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    ranked
-}
-
 fn today_utc() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let days = secs.div_euclid(86_400);
-    let (y, m, d) = crate::util::civil_from_days(days);
-    format!("{y:04}-{m:02}-{d:02} UTC")
+    format!("{} UTC", crate::util::today_utc())
 }
 
 /// Renders the latency distribution section: percentile ladder plus a
