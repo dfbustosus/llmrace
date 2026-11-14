@@ -94,7 +94,7 @@ impl Lane {
 struct RaceState {
     lanes: Vec<Lane>,
     prompt: String,
-    runs: usize,
+    rounds_label: String,
     started: Instant,
     all_done: bool,
 }
@@ -105,11 +105,21 @@ pub struct Tui {
 }
 
 impl Tui {
-    /// Creates a TUI for the given lanes.
+    /// Creates a TUI for the given lanes and round count.
     pub fn new(
         lanes: Vec<(Arc<str>, Option<Arc<str>>, String)>,
         prompt: String,
         runs: usize,
+    ) -> Self {
+        Self::with_rounds_label(lanes, prompt, format!("{runs} rounds"))
+    }
+
+    /// Creates a TUI for a time-bounded run (`--duration`): the header
+    /// shows the bound instead of a misleading sentinel round count.
+    pub fn with_rounds_label(
+        lanes: Vec<(Arc<str>, Option<Arc<str>>, String)>,
+        prompt: String,
+        rounds_label: String,
     ) -> Self {
         Tui {
             state: RaceState {
@@ -118,7 +128,7 @@ impl Tui {
                     .map(|(name, variant, model)| Lane::new(name, variant, model))
                     .collect(),
                 prompt,
-                runs,
+                rounds_label,
                 started: Instant::now(),
                 all_done: false,
             },
@@ -271,8 +281,8 @@ impl Tui {
             Span::raw("  "),
             Span::styled(
                 format!(
-                    "{} rounds · {:>4.1}s · {}",
-                    self.state.runs,
+                    "{} · {:>4.1}s · {}",
+                    self.state.rounds_label,
                     self.state.started.elapsed().as_secs_f32(),
                     crate::util::truncate(self.state.prompt.trim(), 48)
                 ),

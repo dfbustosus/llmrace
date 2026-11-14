@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- TUI header showed `100000 rounds` with `--duration` (the internal sentinel round count leaked into the display); it now shows `≤Ns`
+- `--sweep --winner`: podiums are now computed per prompt variant — variants race different prompts and must not compete head-to-head in one podium (terminal, markdown and HTML)
+
 - **Total-outage runs now exit non-zero**: when every lane fails, `--max-ttfb` and `--baseline` previously passed (failed lanes never gate) — a green CI pipeline over a complete outage. `llmrace` now prints `every provider failed` and exits 1
 - `--baseline` with `--sweep`: variant lanes now compare against the provider's matching variant baseline entry (falling back to a plain entry) instead of all variants matching the first entry; skipped providers are reported per variant
 

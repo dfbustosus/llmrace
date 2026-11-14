@@ -158,15 +158,19 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         }
         all
     } else {
-        collect_with_tui(lanes, handles, receivers, &cfg.prompt, cfg.bench.runs).await?
+        let rounds_label = match cfg.bench.duration_secs {
+            Some(secs) => format!("\u{2264}{secs}s"),
+            None => format!("{} rounds", cfg.bench.runs),
+        };
+        collect_with_tui(lanes, handles, receivers, &cfg.prompt, &rounds_label).await?
     };
 
     if !cfg.quiet {
         let table = report::terminal_table(&summaries);
         println!("\n{table}");
         if cfg.winner {
-            let scored = llmrace::score::score_lanes(&summaries, &cfg.weights);
-            print!("{}", llmrace::score::podium(&scored, &cfg.weights));
+            let groups = llmrace::score::score_groups(&summaries, &cfg.weights);
+            print!("{}", llmrace::score::podiums(&groups, &cfg.weights));
         }
     }
 
@@ -201,7 +205,7 @@ async fn collect_with_tui(
     >,
     receivers: Vec<std::sync::mpsc::Receiver<llmrace::bench::LaneUpdate>>,
     prompt: &str,
-    runs: usize,
+    rounds_label: &str,
 ) -> Result<Vec<LaneSummary>> {
     let merged = std::sync::mpsc::channel::<llmrace::bench::LaneUpdate>();
     for rx in receivers {
@@ -215,7 +219,7 @@ async fn collect_with_tui(
         });
     }
     drop(merged.0);
-    let tui = tui::Tui::new(lanes, prompt.to_string(), runs);
+    let tui = tui::Tui::with_rounds_label(lanes, prompt.to_string(), rounds_label.to_string());
     let rx_final = merged.1;
     let tui_handle = tokio::task::spawn_blocking(move || tui.run(rx_final).map(|_| ()));
 

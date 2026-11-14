@@ -85,3 +85,29 @@ fn duplicate_providers_label_with_model() {
     );
     assert!(scored.iter().all(|s| s.name.contains("gpt-")), "{scored:?}");
 }
+
+#[test]
+fn sweep_podiums_group_by_variant() {
+    let mut short_a = lane_with_model("openai", "a", 10.0, 200.0, 100.0);
+    short_a.variant = Some("short".into());
+    let mut short_b = lane_with_model("groq", "b", 20.0, 100.0, 200.0);
+    short_b.variant = Some("short".into());
+    let mut json_a = lane_with_model("openai", "a", 400.0, 20.0, 900.0);
+    json_a.variant = Some("json".into());
+
+    let groups = score_lanes_groups_helper(vec![short_a, short_b, json_a]);
+    // two groups: short (2 lanes) and json (1 lane, too few to score)
+    assert_eq!(groups.len(), 2);
+    let (label, scored) = &groups[0];
+    assert_eq!(label.as_deref(), Some("short"));
+    assert_eq!(scored.len(), 2);
+
+    let text = llmrace::score::podiums(&groups, &Weights::default());
+    assert!(text.contains("variant `short`"), "{text}");
+}
+
+fn score_lanes_groups_helper(
+    lanes: Vec<llmrace::bench::LaneSummary>,
+) -> Vec<(Option<String>, Vec<llmrace::score::Scored>)> {
+    llmrace::score::score_groups(&lanes, &Weights::default())
+}

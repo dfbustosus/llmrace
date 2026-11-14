@@ -100,9 +100,46 @@ pub struct Scored {
 /// qualify — a single lane cannot lose a race.
 #[must_use]
 pub fn score_lanes(summaries: &[LaneSummary], w: &Weights) -> Vec<Scored> {
-    let lanes: Vec<&LaneSummary> = summaries
+    score_group(
+        &summaries
+            .iter()
+            .filter(|s| s.variant.is_none())
+            .collect::<Vec<_>>(),
+        w,
+    )
+}
+
+/// Scores each prompt-variant group separately — variants race different
+/// prompts, so their lanes must not compete head-to-head in one podium.
+///
+/// Returns `(variant label, scored lanes)` pairs in first-seen order;
+/// plain (variant-less) races yield exactly one group labelled `None`.
+#[must_use]
+pub fn score_groups(summaries: &[LaneSummary], w: &Weights) -> Vec<(Option<String>, Vec<Scored>)> {
+    let mut order: Vec<Option<String>> = Vec::new();
+    for s in summaries {
+        if !order.contains(&s.variant) {
+            order.push(s.variant.clone());
+        }
+    }
+    order
+        .into_iter()
+        .map(|v| {
+            let group: Vec<&LaneSummary> = summaries
+                .iter()
+                .filter(|s| s.variant == v)
+                .collect::<Vec<_>>();
+            (v, score_group(&group, w))
+        })
+        .collect()
+}
+
+/// Shared scoring over a pre-selected group of lanes.
+fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
+    let lanes: Vec<&LaneSummary> = lanes
         .iter()
         .filter(|s| s.successful() && s.mean_tokens_per_sec() > 0.0 && s.mean_ttfb_ms() > 0.0)
+        .copied()
         .collect();
     if lanes.len() < 2 {
         return Vec::new();
@@ -152,7 +189,8 @@ pub fn score_lanes(summaries: &[LaneSummary], w: &Weights) -> Vec<Scored> {
     scored
 }
 
-/// Renders the podium as a terminal/markdown-friendly block.
+/// Renders the podium as a terminal/markdown-friendly block. For sweep
+/// runs, use [`podiums`] — one podium per variant.
 #[must_use]
 pub fn podium(scored: &[Scored], w: &Weights) -> String {
     if scored.is_empty() {
@@ -166,6 +204,23 @@ pub fn podium(scored: &[Scored], w: &Weights) -> String {
     for (i, s) in scored.iter().enumerate() {
         let medal = medals.get(i).copied().unwrap_or(" ");
         out.push_str(&format!("  {medal} {:<22} score {:.1}\n", s.name, s.score));
+    }
+    out
+}
+
+/// Renders one podium per variant group (see [`score_groups`]).
+#[must_use]
+pub fn podiums(groups: &[(Option<String>, Vec<Scored>)], w: &Weights) -> String {
+    let mut out = String::new();
+    for (variant, scored) in groups {
+        let block = podium(scored, w);
+        if block.is_empty() {
+            continue;
+        }
+        match variant {
+            Some(v) => out.push_str(&format!("\n\u{2014} variant `{v}` \u{2014}{block}")),
+            None => out.push_str(&block),
+        }
     }
     out
 }

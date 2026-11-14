@@ -402,11 +402,35 @@ pub fn html_report(
     max_tokens: u64,
     scored: &[crate::score::Scored],
 ) -> String {
+    let groups: Vec<(Option<String>, Vec<crate::score::Scored>)> = if scored.is_empty() {
+        Vec::new()
+    } else {
+        vec![(None, scored.to_vec())]
+    };
+    html_report_grouped(summaries, prompt, runs, max_tokens, &groups)
+}
+
+/// Like [`html_report`], but with one podium per prompt-variant group —
+/// sweep runs must not mix variants in a single podium.
+pub fn html_report_grouped(
+    summaries: &[LaneSummary],
+    prompt: &str,
+    runs: usize,
+    max_tokens: u64,
+    groups: &[(Option<String>, Vec<crate::score::Scored>)],
+) -> String {
     let mut body = String::new();
 
-    if !scored.is_empty() {
+    for (variant, scored) in groups {
+        if scored.is_empty() {
+            continue;
+        }
         let medals = ["🥇", "🥈", "🥉"];
-        body.push_str("<section><h2>Podium</h2><ol class='podium'>");
+        let heading = match variant {
+            Some(v) => format!("Podium · {}", crate::util::html_escape(v)),
+            None => "Podium".to_string(),
+        };
+        body.push_str(&format!("<section><h2>{heading}</h2><ol class='podium'>"));
         for (i, s) in scored.iter().enumerate() {
             let medal = medals.get(i).copied().unwrap_or("·");
             body.push_str(&format!(
