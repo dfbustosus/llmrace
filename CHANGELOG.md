@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Profile application uses clap's `ValueSource` instead of raw `std::env::args` scanning — every form of an explicit flag (`-n 1`, `--runs 1`, `--runs=1`) now reliably wins over profile values (e2e-tested)
+- `--doctor` derives local-daemon checks from the provider specs (ports live in one place) and no longer reports opt-in locals as *failed* when they are simply not running
+- `--list --json` includes `opt_in` per provider
 - `--doctor` probes keyed provider endpoints concurrently instead of sequentially — several blocked endpoints no longer stall diagnostics behind back-to-back 3s timeouts
 - Profiles accept `retries` (`llmrace.toml`), included in the `--init` starter
 

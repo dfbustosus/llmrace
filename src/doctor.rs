@@ -39,7 +39,9 @@ pub async fn check_providers(client: &reqwest::Client, specs: &[ProviderSpec]) -
     // blocked. Results keep registry order.
     let futures: Vec<_> = specs
         .iter()
-        .filter(|spec| *spec.id != *"mock")
+        // opt-in local daemons are covered by check_local_daemon; a daemon
+        // that is intentionally not running must not read as a failure here
+        .filter(|spec| *spec.id != *"mock" && !spec.opt_in)
         .map(|spec| async move {
             if !spec.is_available() {
                 return Check {
@@ -122,30 +124,41 @@ pub async fn check_ollama(client: &reqwest::Client) -> Check {
     }
 }
 
-/// Checks an opt-in local OpenAI-compatible daemon (LM Studio on 1234,
-/// llama.cpp llama-server on 8080): a `Warn` when it is not running is
-/// expected — these providers only race when named explicitly.
-pub async fn check_local_daemon(client: &reqwest::Client, name: &str, port: u16) -> Check {
+/// Checks an opt-in local OpenAI-compatible daemon (LM Studio, llama.cpp
+/// llama-server): a `Warn` when it is not running is expected — these
+/// providers only race when named explicitly. The endpoint comes from the
+/// provider spec, so ports live in exactly one place.
+pub async fn check_local_daemon(client: &reqwest::Client, name: &str, endpoint: &str) -> Check {
+    // probe the sibling /models path of the chat-completions endpoint
+    let models_url = endpoint.replace("/chat/completions", "/models");
     let resp = client
-        .get(format!("http://localhost:{port}/v1/models"))
+        .get(&models_url)
         .timeout(std::time::Duration::from_secs(2))
         .send()
         .await;
+    let host_of = || {
+        models_url
+            .split("//")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("localhost")
+            .to_string()
+    };
     match resp {
         Ok(r) if r.status().is_success() => Check {
             name: name.into(),
             status: Status::Pass,
-            detail: format!("daemon reachable on :{port}"),
+            detail: format!("daemon reachable at {}", host_of()),
         },
         Ok(r) => Check {
             name: name.into(),
             status: Status::Warn,
-            detail: format!("answered HTTP {} on :{port}", r.status()),
+            detail: format!("answered HTTP {} at {}", r.status(), host_of()),
         },
         Err(_) => Check {
             name: name.into(),
             status: Status::Warn,
-            detail: format!("not running on :{port} (fine — opt-in provider)"),
+            detail: format!("not running at {} (fine — opt-in provider)", host_of()),
         },
     }
 }

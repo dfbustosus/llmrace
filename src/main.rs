@@ -209,8 +209,14 @@ pub(crate) struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let (cli, _profile) = apply_profile(cli)?;
+    // Parse once, keeping the matches so profile application can tell
+    // explicitly-passed flags apart from clap defaults (ValueSource) —
+    // no raw `std::env::args` scanning.
+    let matches = <Cli as clap::CommandFactory>::command().get_matches();
+    let explicit =
+        |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
+    let cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches)?;
+    let (cli, _profile) = apply_profile(cli, &explicit)?;
     let code = dispatch(cli).await?;
     if code != 0 {
         std::process::exit(code);
@@ -409,7 +415,10 @@ fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
     Ok(out)
 }
 
-fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)> {
+fn apply_profile(
+    mut cli: Cli,
+    explicit: &dyn Fn(&str) -> bool,
+) -> Result<(Cli, Option<llmrace::config::Profile>)> {
     let Some(name) = cli.profile.clone() else {
         return Ok((cli, None));
     };
@@ -427,54 +436,41 @@ fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)
             cli.model = vec![model.clone()];
         }
     }
-    if arg_not_passed(&["-p", "--prompt"]) {
+    if !explicit("prompt") {
         if let Some(prompt) = &profile.prompt {
             cli.prompt = prompt.clone();
         }
     }
-    if arg_not_passed(&["-n", "--runs"]) {
+    if !explicit("runs") {
         if let Some(v) = profile.runs {
             cli.runs = v;
         }
     }
-    if arg_not_passed(&["--warmup"]) {
+    if !explicit("warmup") {
         if let Some(v) = profile.warmup {
             cli.warmup = v;
         }
     }
-    if arg_not_passed(&["-c", "--concurrency"]) {
+    if !explicit("concurrency") {
         if let Some(v) = profile.concurrency {
             cli.concurrency = v;
         }
     }
-    if arg_not_passed(&["--max-tokens"]) {
+    if !explicit("max_tokens") {
         if let Some(v) = profile.max_tokens {
             cli.max_tokens = v;
         }
     }
-    if arg_not_passed(&["--timeout"]) {
+    if !explicit("timeout") {
         if let Some(v) = profile.timeout {
             cli.timeout = v;
         }
     }
-    if arg_not_passed(&["--retries"]) {
+    if !explicit("retries") {
         if let Some(v) = profile.retries {
             cli.retries = v;
         }
     }
     println!("\u{2699}  profile '{name}' loaded");
     Ok((cli, Some(profile)))
-}
-
-fn arg_not_passed(flags: &[&str]) -> bool {
-    let args: Vec<String> = std::env::args().collect();
-    !args.iter().any(|a| {
-        flags.iter().any(|f| {
-            a == *f
-                || a.starts_with(&format!("{f}="))
-                || a.starts_with(&format!("{f} "))
-                // combined short flags like `-n5` (clap accepts them)
-                || (f.len() == 2 && a.starts_with(f) && a.len() > 2)
-        })
-    })
 }

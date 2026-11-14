@@ -29,8 +29,12 @@ pub(crate) async fn doctor(json: bool) -> Result<()> {
         llmrace::doctor::check_history(),
     ];
     checks.push(llmrace::doctor::check_ollama(&client).await);
-    checks.push(llmrace::doctor::check_local_daemon(&client, "lmstudio", 1234).await);
-    checks.push(llmrace::doctor::check_local_daemon(&client, "llamacpp", 8080).await);
+    for spec in llmrace::provider::ProviderSpec::registry()
+        .iter()
+        .filter(|p| p.opt_in)
+    {
+        checks.push(llmrace::doctor::check_local_daemon(&client, &spec.id, &spec.endpoint).await);
+    }
     checks.extend(
         llmrace::doctor::check_providers(&client, &llmrace::provider::ProviderSpec::registry())
             .await,
@@ -92,6 +96,7 @@ pub(crate) fn list(json: bool) -> Result<()> {
                     "api_key_env": p.api_key_env.as_deref(),
                     "default_model": p.default_model.as_ref(),
                     "available": p.is_available(),
+                    "opt_in": p.opt_in,
                 })
             })
             .collect();

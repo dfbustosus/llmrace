@@ -85,3 +85,87 @@ fn profiles_accept_retries() {
     let flaky = config.profile("flaky").unwrap();
     assert_eq!(flaky.retries, Some(2));
 }
+
+#[test]
+fn explicit_flags_win_over_profile_values() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("llmrace-profile-e2e");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("llmrace.toml"),
+        r#"
+        [profiles.p]
+        providers = ["mock"]
+        runs = 4
+        warmup = 0
+        "#,
+    )
+    .unwrap();
+
+    let run = |extra: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+            .current_dir(&dir)
+            .arg("--profile")
+            .arg("p")
+            .arg("--no-tui")
+            .arg("--quiet")
+            .arg("--json")
+            .args(extra)
+            .output()
+            .unwrap();
+        let json_path = dir.join("llmrace-report.json");
+        let json = std::fs::read_to_string(&json_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&json_path);
+        (out, json)
+    };
+
+    // profile value applies when the flag is absent
+    let (_, json) = run(&[]);
+    assert!(json.contains("\"runs\": 4"), "{json}");
+
+    // explicit short flag wins (also proves -n5-style combined parsing is moot)
+    let (_, json) = run(&["-n", "1"]);
+    assert!(json.contains("\"runs\": 1"), "{json}");
+
+    // explicit long flag wins
+    let (_, json) = run(&["--runs", "2"]);
+    assert!(json.contains("\"runs\": 2"), "{json}");
+
+    // equals-form also counts as explicit
+    let (_, json) = run(&["--runs=3"]);
+    assert!(json.contains("\"runs\": 3"), "{json}");
+}
+
+#[test]
+fn explicit_max_tokens_wins_over_profile() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("llmrace-profile-mt");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("llmrace.toml"),
+        r#"
+        [profiles.p]
+        providers = ["mock"]
+        runs = 1
+        warmup = 0
+        max_tokens = 100
+        "#,
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .current_dir(&dir)
+        .arg("--profile")
+        .arg("p")
+        .arg("--no-tui")
+        .arg("--quiet")
+        .arg("--json")
+        .arg("--max-tokens")
+        .arg("32")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let json = std::fs::read_to_string(dir.join("llmrace-report.json")).unwrap();
+    assert!(json.contains("\"max_tokens\": 32"), "{json}");
+}
