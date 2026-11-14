@@ -30,3 +30,5 @@ concurrency = 8
 providers = ["mock"]
 runs = 3
 warmup = 1
+# One retry keeps transient blips from failing the gate.
+retries = 1

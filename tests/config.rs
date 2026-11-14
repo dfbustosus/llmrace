@@ -71,3 +71,17 @@ fn profile_typos_are_rejected_loudly() {
     let valid = Config::from_toml_str("[profiles.fast]\nruns = 3\n");
     assert!(valid.is_ok());
 }
+
+#[test]
+fn profiles_accept_retries() {
+    let config = Config::from_toml_str(
+        r#"
+        [profiles.flaky]
+        providers = ["mock"]
+        retries = 2
+        "#,
+    )
+    .unwrap();
+    let flaky = config.profile("flaky").unwrap();
+    assert_eq!(flaky.retries, Some(2));
+}

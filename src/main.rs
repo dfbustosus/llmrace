@@ -457,6 +457,11 @@ fn apply_profile(mut cli: Cli) -> Result<(Cli, Option<llmrace::config::Profile>)
             cli.timeout = v;
         }
     }
+    if arg_not_passed(&["--retries"]) {
+        if let Some(v) = profile.retries {
+            cli.retries = v;
+        }
+    }
     println!("\u{2699}  profile '{name}' loaded");
     Ok((cli, Some(profile)))
 }

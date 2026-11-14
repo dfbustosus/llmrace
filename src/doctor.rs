@@ -34,38 +34,38 @@ pub struct Check {
 /// Egress is probed with a 3-second GET; any HTTP status (including 401/404)
 /// counts as reachable, since it proves DNS + TLS + routing work.
 pub async fn check_providers(client: &reqwest::Client, specs: &[ProviderSpec]) -> Vec<Check> {
-    let mut checks = Vec::new();
-    for spec in specs {
-        if *spec.id == *"mock" {
-            continue;
-        }
-        let has_key = spec.is_available();
-        let detail;
-        let status = if !has_key {
-            detail = format!(
-                "no {} — provider skipped in auto-detect",
-                spec.api_key_env.as_deref().unwrap_or("key")
-            );
-            Status::Warn
-        } else {
-            match probe(client, &spec.endpoint).await {
-                Ok(()) => {
-                    detail = format!("key set, {} reachable", host(&spec.endpoint));
-                    Status::Pass
-                }
-                Err(e) => {
-                    detail = format!("key set but {} unreachable: {e}", host(&spec.endpoint));
-                    Status::Fail
-                }
+    // Probe every keyed provider concurrently — sequential 3s timeouts
+    // could stall --doctor for half a minute when several endpoints are
+    // blocked. Results keep registry order.
+    let futures: Vec<_> = specs
+        .iter()
+        .filter(|spec| *spec.id != *"mock")
+        .map(|spec| async move {
+            if !spec.is_available() {
+                return Check {
+                    name: spec.id.to_string(),
+                    status: Status::Warn,
+                    detail: format!(
+                        "no {} — provider skipped in auto-detect",
+                        spec.api_key_env.as_deref().unwrap_or("key")
+                    ),
+                };
             }
-        };
-        checks.push(Check {
-            name: spec.id.to_string(),
-            status,
-            detail,
-        });
-    }
-    checks
+            match probe(client, &spec.endpoint).await {
+                Ok(()) => Check {
+                    name: spec.id.to_string(),
+                    status: Status::Pass,
+                    detail: format!("key set, {} reachable", host(&spec.endpoint)),
+                },
+                Err(e) => Check {
+                    name: spec.id.to_string(),
+                    status: Status::Fail,
+                    detail: format!("key set but {} unreachable: {e}", host(&spec.endpoint)),
+                },
+            }
+        })
+        .collect();
+    futures_util::future::join_all(futures).await
 }
 
 async fn probe(client: &reqwest::Client, endpoint: &str) -> Result<(), String> {

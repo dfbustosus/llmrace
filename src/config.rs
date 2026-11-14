@@ -40,6 +40,9 @@ pub struct Profile {
     /// Per-request timeout in seconds.
     #[serde(default)]
     pub timeout: Option<u64>,
+    /// Additional attempts for failed rounds.
+    #[serde(default)]
+    pub retries: Option<usize>,
 }
 
 /// Root of a `llmrace.toml` file.

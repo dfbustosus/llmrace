@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Library module `llmrace::gates`: `--max-ttfb` gate logic (`ttfb_offenders`, `render_ttfb_verdict`) is now reusable and unit-tested from CI pipelines
 - `Tui::render` is public — the race view can be drawn against any ratatui backend (used by the new TestBackend render tests)
 
+### Changed
+
+- `--doctor` probes keyed provider endpoints concurrently instead of sequentially — several blocked endpoints no longer stall diagnostics behind back-to-back 3s timeouts
+- Profiles accept `retries` (`llmrace.toml`), included in the `--init` starter
+
 ### Fixed
 
 - **Total-outage runs now exit non-zero**: when every lane fails, `--max-ttfb` and `--baseline` previously passed (failed lanes never gate) — a green CI pipeline over a complete outage. `llmrace` now prints `every provider failed` and exits 1

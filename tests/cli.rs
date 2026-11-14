@@ -431,3 +431,81 @@ fn compare_with_missing_file_errors() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("reading"), "{stderr}");
 }
+
+#[cfg(unix)]
+#[test]
+fn watch_mode_runs_records_and_exits_cleanly_on_sigint() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let data_dir = std::env::temp_dir().join("llmrace-watch-test");
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let out_path = std::env::temp_dir().join("llmrace-watch.md");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--watch")
+        .arg("--every")
+        .arg("1")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--record")
+        .env("XDG_DATA_HOME", &data_dir)
+        .arg("--out")
+        .arg(&out_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn llmrace --watch");
+
+    // let at least one round finish, then interrupt
+    std::thread::sleep(Duration::from_secs(3));
+    let status = Command::new("kill")
+        .arg("-INT")
+        .arg(child.id().to_string())
+        .status()
+        .expect("send SIGINT");
+
+    assert!(status.success(), "kill -INT should succeed");
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let out = loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break child.wait_with_output().expect("collect output");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "watch did not exit after SIGINT (watchdog)"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        if Instant::now() > deadline - Duration::from_secs(20) {
+            let _ = Command::new("kill")
+                .arg("-9")
+                .arg(child.id().to_string())
+                .status();
+        }
+    };
+
+    assert!(
+        out.status.success(),
+        "graceful exit expected, got {:?} — {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("session:"), "{stdout}");
+    assert!(stdout.contains("interrupted"), "{stdout}");
+
+    let report = std::fs::read_to_string(&out_path).expect("final report written");
+    assert!(report.contains("llmrace report"), "{report}");
+
+    let history_path = data_dir.join("llmrace/history.jsonl");
+    let mut history = String::new();
+    std::fs::File::open(&history_path)
+        .expect("history recorded")
+        .read_to_string(&mut history)
+        .unwrap();
+    assert!(history.contains("\"provider\":\"mock\""), "{history}");
+}
