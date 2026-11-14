@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
 ### Added
 
 - `provider=model` positional lanes: `llmrace openai=gpt-4o-mini openai=gpt-4.1` races several models of the same provider head-to-head in one run — TUI lanes, tables and the podium disambiguate them with `provider/model` labels
