@@ -271,3 +271,65 @@ fn max_ttfb_gate_fails_and_passes() {
         .unwrap();
     assert!(pass.status.success());
 }
+
+#[test]
+fn provider_model_positional_races_named_model() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock=demo-model")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--json")
+        .arg("--out")
+        .arg(tmppath("positional"))
+        .output()
+        .expect("spawn llmrace");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = std::fs::read_to_string(std::env::temp_dir().join("llmrace-positional.json"))
+        .expect("json report written");
+    assert!(json.contains("demo-model"), "{json}");
+}
+
+#[test]
+fn same_provider_twice_races_two_models() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock=model-a")
+        .arg("mock=model-b")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--json")
+        .arg("--out")
+        .arg(tmppath("twice"))
+        .output()
+        .expect("spawn llmrace");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = std::fs::read_to_string(std::env::temp_dir().join("llmrace-twice.json"))
+        .expect("json report written");
+    assert!(json.contains("model-a"), "{json}");
+    assert!(json.contains("model-b"), "{json}");
+}
+
+#[test]
+fn positional_with_unknown_provider_errors() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("bogus=model-x")
+        .arg("--no-tui")
+        .output()
+        .expect("spawn llmrace");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown provider"), "{stderr}");
+}

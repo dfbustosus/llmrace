@@ -123,6 +123,9 @@ pub struct LaneUpdate {
     pub provider: Arc<str>,
     /// Variant label when running a sweep (shared, cheap to clone).
     pub variant: Option<Arc<str>>,
+    /// Model of the lane that emitted this update; used to disambiguate
+    /// multiple lanes of the same provider racing different models.
+    pub model: Option<Arc<str>>,
     /// Tokens received so far in the current request.
     pub tokens: u64,
     /// Elapsed milliseconds of the current request.
@@ -352,6 +355,7 @@ pub fn spawn_lane(
     mpsc::Receiver<LaneUpdate>,
 ) {
     let (tx, rx) = mpsc::channel();
+    let model_label: Arc<str> = Arc::from(model.as_str());
     let handle = tokio::spawn(async move {
         let mut summary = LaneSummary {
             name: spec.id.to_string(),
@@ -382,6 +386,7 @@ pub fn spawn_lane(
                         let _ = tx.send(LaneUpdate {
                             provider: Arc::clone(&spec.id),
                             variant: config.variant.clone(),
+                            model: Some(Arc::clone(&model_label)),
                             tokens: 0,
                             elapsed_ms: 0.0,
                             ttfb_ms: None,
@@ -409,6 +414,7 @@ pub fn spawn_lane(
                     let _ = tx.send(LaneUpdate {
                         provider: Arc::clone(&spec.id),
                         variant: config.variant.clone(),
+                        model: Some(Arc::clone(&model_label)),
                         tokens: 0,
                         elapsed_ms: 0.0,
                         ttfb_ms: None,
@@ -431,6 +437,7 @@ pub fn spawn_lane(
         let _ = tx.send(LaneUpdate {
             provider: Arc::from(summary.name.as_str()),
             variant: config.variant.clone(),
+            model: Some(Arc::clone(&model_label)),
             tokens: summary.mean_tokens() as u64,
             elapsed_ms: summary.mean_total_ms(),
             ttfb_ms: Some(summary.mean_ttfb_ms()),
@@ -461,6 +468,7 @@ async fn run_round(
         let client = client.clone();
         let spec = spec.clone();
         let model = model.to_string();
+        let model_label: Arc<str> = Arc::from(model.as_str());
         let prompt = config.prompt.clone();
         let max_tokens = config.max_tokens;
         let timeout = Duration::from_secs(config.timeout_secs);
@@ -472,6 +480,7 @@ async fn run_round(
                 &client,
                 &spec,
                 &model,
+                model_label,
                 &prompt,
                 max_tokens,
                 timeout,
@@ -538,6 +547,7 @@ async fn single_request(
     client: &reqwest::Client,
     spec: &ProviderSpec,
     model: &str,
+    model_label: Arc<str>,
     prompt: &str,
     max_tokens: u64,
     timeout: Duration,
@@ -597,6 +607,7 @@ async fn single_request(
             let _ = progress.send(LaneUpdate {
                 provider: Arc::clone(&spec.id),
                 variant: variant_label.clone(),
+                model: Some(Arc::clone(&model_label)),
                 tokens,
                 elapsed_ms: (now - start).as_secs_f64() * 1000.0,
                 ttfb_ms: ttfb.map(|d| d.as_secs_f64() * 1000.0),

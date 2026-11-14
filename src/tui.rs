@@ -16,6 +16,14 @@ const SPARK_POINTS: usize = 40;
 
 static RESTORE_GUARD: OnceLock<()> = OnceLock::new();
 
+/// Matches a lane against a (provider, variant, model) key; a `None` model
+/// in the key matches any lane of that provider and variant (legacy updates).
+fn lane_matches(lane: &Lane, provider: &str, variant: Option<&str>, model: Option<&str>) -> bool {
+    *lane.name == *provider
+        && lane.variant.as_deref() == variant
+        && model.is_none_or(|m| lane.model == m)
+}
+
 fn restore_once() {
     if RESTORE_GUARD.set(()).is_err() {
         return;
@@ -118,11 +126,16 @@ impl Tui {
     }
 
     /// Progress snapshot for one lane key: `(tokens, finished)`.
-    pub fn lane_progress(&self, provider: &str, variant: Option<&str>) -> Option<(u64, bool)> {
+    pub fn lane_progress(
+        &self,
+        provider: &str,
+        variant: Option<&str>,
+        model: Option<&str>,
+    ) -> Option<(u64, bool)> {
         self.state
             .lanes
             .iter()
-            .find(|l| *l.name == *provider && l.variant.as_deref() == variant)
+            .find(|l| lane_matches(l, provider, variant, model))
             .map(|l| (l.tokens, l.finished))
     }
 
@@ -132,7 +145,7 @@ impl Tui {
             .state
             .lanes
             .iter_mut()
-            .find(|l| *l.name == *u.provider && l.variant.as_deref() == u.variant.as_deref())
+            .find(|l| lane_matches(l, &u.provider, u.variant.as_deref(), u.model.as_deref()))
         {
             if u.finished {
                 lane.finished = true;
@@ -295,6 +308,21 @@ impl Tui {
                         None => format!(" {} ", lane.name.to_uppercase()),
                     },
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ))
+                .title(Span::styled(
+                    if self
+                        .state
+                        .lanes
+                        .iter()
+                        .filter(|l| *l.name == *lane.name)
+                        .count()
+                        > 1
+                    {
+                        format!(" {} ", crate::util::truncate(&lane.model, 28))
+                    } else {
+                        String::new()
+                    },
+                    Style::default().fg(Color::DarkGray),
                 ));
             let rows = Layout::vertical([
                 Constraint::Length(1),

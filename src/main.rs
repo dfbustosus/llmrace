@@ -14,6 +14,8 @@ use std::sync::Arc;
 )]
 struct Cli {
     /// Providers to race (see --list). Omit to auto-detect from env vars.
+    /// `provider=model` entries race a specific model; repeat a provider
+    /// with different models to race them head-to-head.
     providers: Vec<String>,
 
     /// Prompt sent to every provider.
@@ -804,11 +806,20 @@ fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
         ));
     }
     if !cli.providers.is_empty() {
-        for name in &cli.providers {
-            out.push(
-                ProviderSpec::find(name)
-                    .with_context(|| format!("unknown provider '{name}' (try --list)"))?,
-            );
+        for arg in &cli.providers {
+            // `provider=model` entries race that provider with a specific
+            // model; the same provider may appear multiple times with
+            // different models.
+            let (id, model_override) = match arg.split_once('=') {
+                Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
+                _ => (arg.as_str(), None),
+            };
+            let mut spec = ProviderSpec::find(id)
+                .with_context(|| format!("unknown provider '{arg}' (try --list)"))?;
+            if let Some(m) = model_override {
+                spec.default_model = Arc::from(m);
+            }
+            out.push(spec);
         }
         return Ok(out);
     }

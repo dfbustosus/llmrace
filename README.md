@@ -34,7 +34,7 @@ Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tai
 
 ![llmrace demo](docs/demo.gif)
 
-*A mixed race — local Ollama `llama3.2:1b` vs the instant mock lane — finishing in the ranked table (with inter-token latency) and the `--winner` podium, then `llmrace --doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs)).*
+*A multi-model race — two OpenAI models (`gpt-4o-mini` vs `gpt-4.1`) against local Ollama and the instant mock lane — finishing in the ranked table (with inter-token latency) and the `--winner` podium, then `llmrace --doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs); needs `OPENAI_API_KEY` in the environment).*
 
 ## Why
 
@@ -112,6 +112,9 @@ llmrace ollama groq -m llama-3.3-70b-versatile
 # Mixed race: different models per provider (cloud + local)
 llmrace openai ollama -m gpt-4o-mini -m ollama=llama3.2:1b
 
+# Same provider, several models, head-to-head in one race
+llmrace openai=gpt-4o-mini openai=gpt-4.1 ollama=llama3.2:1b --winner
+
 # Saturation throughput: 8 parallel requests per provider
 llmrace openai groq -c 8 -n 5
 
@@ -181,6 +184,7 @@ Methodology notes:
 - Token counts prefer **provider-reported usage** (`include_usage` on OpenAI-compatible APIs, `message_delta` on Anthropic) and fall back to stream-event counting
 - All requests use the same prompt, `max_tokens` and sampling defaults per run
 - Per-request timeouts (`--timeout`) are enforced mid-stream; panics in a single request never abort the race
+- **Reasoning models** (gpt-5, o-series): TTFB honestly includes thinking time — the model emits nothing visible while it reasons. Tokens/s can read high because provider-reported usage counts hidden reasoning tokens and the visible text arrives in one burst ([#125](https://github.com/dfbustosus/llmrace/issues/125))
 
 ## Reports
 

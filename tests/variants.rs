@@ -101,6 +101,7 @@ async fn tui_lanes_distinguish_variants() {
     let upd = |variant: Option<&str>, tokens: u64| llmrace::bench::LaneUpdate {
         provider: Arc::from("mock"),
         variant: variant.map(Arc::from),
+        model: Some(Arc::from("mock-1")),
         tokens,
         elapsed_ms: 10.0,
         ttfb_ms: Some(1.0),
@@ -115,7 +116,52 @@ async fn tui_lanes_distinguish_variants() {
     tui.update(upd(Some("json"), 9));
     tui.update(upd(None, 3));
 
-    assert_eq!(tui.lane_progress("mock", Some("short")), Some((5, false)));
-    assert_eq!(tui.lane_progress("mock", Some("json")), Some((9, false)));
-    assert_eq!(tui.lane_progress("mock", None), Some((3, false)));
+    assert_eq!(
+        tui.lane_progress("mock", Some("short"), Some("mock-1")),
+        Some((5, false))
+    );
+    assert_eq!(
+        tui.lane_progress("mock", Some("json"), Some("mock-1")),
+        Some((9, false))
+    );
+    assert_eq!(
+        tui.lane_progress("mock", None, Some("mock-1")),
+        Some((3, false))
+    );
+}
+
+#[tokio::test]
+async fn tui_lanes_distinguish_models_of_same_provider() {
+    use std::sync::Arc;
+    let lanes = vec![
+        (Arc::from("mock"), None, "model-a".into()),
+        (Arc::from("mock"), None, "model-b".into()),
+    ];
+    let mut tui = llmrace::tui::Tui::new(lanes, "p".into(), 1);
+
+    let upd = |model: &str, tokens: u64| llmrace::bench::LaneUpdate {
+        provider: Arc::from("mock"),
+        variant: None,
+        model: Some(Arc::from(model)),
+        tokens,
+        elapsed_ms: 10.0,
+        ttfb_ms: Some(1.0),
+        finished: false,
+        error: None,
+        server_ms: None,
+        last_token: None,
+        ratelimit: None,
+    };
+
+    tui.update(upd("model-a", 5));
+    tui.update(upd("model-b", 9));
+
+    assert_eq!(
+        tui.lane_progress("mock", None, Some("model-a")),
+        Some((5, false))
+    );
+    assert_eq!(
+        tui.lane_progress("mock", None, Some("model-b")),
+        Some((9, false))
+    );
 }

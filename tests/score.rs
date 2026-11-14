@@ -2,10 +2,14 @@ use llmrace::bench::{LaneSummary, RunMetrics};
 use llmrace::score::{podium, score_lanes, Weights};
 
 fn lane(name: &str, ttfb: f64, tps: f64, p95: f64) -> LaneSummary {
+    lane_with_model(name, "m", ttfb, tps, p95)
+}
+
+fn lane_with_model(name: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> LaneSummary {
     let gen_s = (p95 - ttfb) / 1000.0;
     LaneSummary {
         name: name.into(),
-        model: "m".into(),
+        model: model.into(),
         runs: vec![RunMetrics {
             total_ms: p95,
             ttfb_ms: ttfb,
@@ -65,4 +69,19 @@ fn podium_renders_medals() {
     let text = podium(&scored, &Weights::default());
     assert!(text.contains("🥇 fast"));
     assert!(text.contains("🥉 slow"));
+}
+
+#[test]
+fn duplicate_providers_label_with_model() {
+    let lanes = vec![
+        lane_with_model("openai", "gpt-a", 10.0, 200.0, 100.0),
+        lane_with_model("openai", "gpt-b", 20.0, 100.0, 200.0),
+    ];
+    let scored = score_lanes(&lanes, &Weights::default());
+    assert!(
+        scored[0].name.starts_with("openai/gpt-"),
+        "{:?}",
+        scored[0].name
+    );
+    assert!(scored.iter().all(|s| s.name.contains("gpt-")), "{scored:?}");
 }

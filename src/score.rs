@@ -84,8 +84,11 @@ impl Weights {
 /// One lane's composite result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scored {
-    /// Provider id.
+    /// Display label: provider id, plus `/model` when one provider raced
+    /// several models.
     pub name: String,
+    /// Model that was benchmarked.
+    pub model: String,
     /// Composite score: `100` for the best lane, less for the rest.
     pub score: f64,
 }
@@ -125,6 +128,7 @@ pub fn score_lanes(summaries: &[LaneSummary], w: &Weights) -> Vec<Scored> {
                 + w.p95 * (s.p95_total_ms() / best_p95);
             Scored {
                 name: s.name.clone(),
+                model: s.model.clone(),
                 score: 100.0 * w.total() / penalty,
             }
         })
@@ -134,6 +138,17 @@ pub fn score_lanes(summaries: &[LaneSummary], w: &Weights) -> Vec<Scored> {
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    // When one provider races several models, disambiguate labels with the model.
+    let duplicated: Vec<String> = scored
+        .iter()
+        .map(|s| s.name.clone())
+        .filter(|n| scored.iter().filter(|x| x.name == *n).count() > 1)
+        .collect();
+    for s in &mut scored {
+        if duplicated.contains(&s.name) && !s.model.is_empty() {
+            s.name = format!("{}/{}", s.name, s.model);
+        }
+    }
     scored
 }
 
@@ -150,7 +165,7 @@ pub fn podium(scored: &[Scored], w: &Weights) -> String {
     );
     for (i, s) in scored.iter().enumerate() {
         let medal = medals.get(i).copied().unwrap_or(" ");
-        out.push_str(&format!("  {medal} {:<14} score {:.1}\n", s.name, s.score));
+        out.push_str(&format!("  {medal} {:<22} score {:.1}\n", s.name, s.score));
     }
     out
 }

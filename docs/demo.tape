@@ -10,8 +10,8 @@ Set Padding 18
 Set TypingSpeed 10ms
 Set CursorBlink true
 
-# Local race — real Ollama lane vs the instant mock lane, winner podium
-Type "llmrace ollama mock -m ollama=llama3.2:1b -n 2 --warmup 0 --winner"
+# Multi-model race — two OpenAI models head-to-head vs local Ollama vs the instant mock
+Type "llmrace openai=gpt-4o-mini openai=gpt-4.1 ollama=llama3.2:1b mock -n 2 --warmup 0 --winner"
 Enter
 Sleep 9s
 Enter
