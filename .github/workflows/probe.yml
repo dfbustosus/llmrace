@@ -75,7 +75,7 @@ jobs:
             --json --out "probe-${{ steps.meta.outputs.region }}.json"
 
       - name: Upload probe report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: probe-${{ steps.meta.outputs.region }}
           path: probe-*.json

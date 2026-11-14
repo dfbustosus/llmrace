@@ -20,7 +20,7 @@ jobs:
         run: cargo fuzz run sse_parser -- -max_total_time=120 -rss_limit_mb=2048
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts
           path: fuzz/artifacts/
