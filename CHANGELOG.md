@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-14
+
+### Changed
+
+- Dependencies: toml 1.2.0 → 1.2.1, rusqlite 0.41 → 0.42 (`sqlite` feature), clap_mangen 0.2 → 0.3
+- CI: actions/checkout v7, actions/upload-artifact v7, codecov-action v7, action-gh-release v3
+
 ## [0.5.0] - 2026-11-10
 
 ## [0.4.2] - 2026-11-09
