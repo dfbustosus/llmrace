@@ -144,6 +144,7 @@ impl BaselineReport {
 ///         total_ms: 105.0, ttfb_ms: 21.0, tokens: 6, chars: 24,
 ///         prompt_tokens: 0, tool_args: String::new(),
 ///         server_ms: None, request_id: None, ratelimit_remaining: None,
+///         ..llmrace::bench::RunMetrics::default()
 ///     }],
 ///     error: None,
 ///     prompt: "p".into(),
@@ -158,50 +159,99 @@ pub fn evaluate(
     baseline: &BaselineReport,
     max_regression_pct: f64,
 ) -> RegressionReport {
+    let current_report = baseline_from_lanes(current);
+    let mut report = compare_baselines(&current_report, baseline, max_regression_pct);
+    // Keep model annotations from the live lanes (baseline files may omit them).
+    for c in &mut report.comparisons {
+        if let Some(lane) = current.iter().find(|l| l.name == c.name) {
+            c.current_model = lane.model.clone();
+        }
+    }
+    report
+}
+
+/// Converts live lane summaries into the baseline subset used by comparisons.
+fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
+    BaselineReport {
+        providers: lanes
+            .iter()
+            .filter(|s| s.successful())
+            .map(|s| BaselineProvider {
+                provider: s.name.clone(),
+                model: s.model.clone(),
+                mean_total_ms: s.mean_total_ms(),
+                p95_total_ms: s.p95_total_ms(),
+                mean_ttfb_ms: s.mean_ttfb_ms(),
+                mean_tokens_per_sec: s.mean_tokens_per_sec(),
+            })
+            .collect(),
+    }
+}
+
+/// Compares two saved JSON reports (A/B mode): `b` is treated as the
+/// "current" side and `a` as the baseline.
+///
+/// ```
+/// use llmrace::regression::{compare_baselines, BaselineReport};
+///
+/// let a = BaselineReport::from_json_str(
+///     r#"{"providers":[{"provider":"mock","mean_total_ms":100.0,"p95_total_ms":120.0,
+///        "mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#).unwrap();
+/// let b = BaselineReport::from_json_str(
+///     r#"{"providers":[{"provider":"mock","mean_total_ms":200.0,"p95_total_ms":240.0,
+///        "mean_ttfb_ms":40.0,"mean_tokens_per_sec":60.0}]}"#).unwrap();
+/// let report = compare_baselines(&b, &a, 15.0);
+/// assert!(report.any_regressed());
+/// ```
+pub fn compare_baselines(
+    b: &BaselineReport,
+    a: &BaselineReport,
+    max_regression_pct: f64,
+) -> RegressionReport {
     let mut report = RegressionReport::default();
     let mut compared: Vec<String> = Vec::new();
 
-    for lane in current.iter().filter(|s| s.successful()) {
-        let Some(base) = baseline.providers.iter().find(|p| p.provider == lane.name) else {
-            report.new_providers.push(lane.name.clone());
+    for current in &b.providers {
+        let Some(base) = a.providers.iter().find(|p| p.provider == current.provider) else {
+            report.new_providers.push(current.provider.clone());
             continue;
         };
-        compared.push(lane.name.clone());
+        compared.push(current.provider.clone());
         let metrics = vec![
             latency_metric(
                 "mean latency",
                 base.mean_total_ms,
-                lane.mean_total_ms(),
+                current.mean_total_ms,
                 max_regression_pct,
             ),
             latency_metric(
                 "p95 latency",
                 base.p95_total_ms,
-                lane.p95_total_ms(),
+                current.p95_total_ms,
                 max_regression_pct,
             ),
             latency_metric(
                 "ttfb",
                 base.mean_ttfb_ms,
-                lane.mean_ttfb_ms(),
+                current.mean_ttfb_ms,
                 max_regression_pct,
             ),
             throughput_metric(
                 "tokens/s",
                 base.mean_tokens_per_sec,
-                lane.mean_tokens_per_sec(),
+                current.mean_tokens_per_sec,
                 max_regression_pct,
             ),
         ];
         report.comparisons.push(ProviderComparison {
-            name: lane.name.clone(),
+            name: current.provider.clone(),
             baseline_model: base.model.clone(),
-            current_model: lane.model.clone(),
+            current_model: current.model.clone(),
             metrics,
         });
     }
 
-    report.skipped_providers = baseline
+    report.skipped_providers = a
         .providers
         .iter()
         .map(|p| p.provider.clone())

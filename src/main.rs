@@ -53,6 +53,22 @@ struct Cli {
     #[arg(long, default_value_t = 120)]
     timeout: u64,
 
+    /// Retry a failed round up to N additional times before it counts as failed.
+    #[arg(long, default_value_t = 0)]
+    retries: usize,
+
+    /// Declare an overall winner with a composite score (ttfb/tps/p95 weighted).
+    #[arg(long)]
+    winner: bool,
+
+    /// Composite score weights: ttfb=30,tps=40,p95=30 (with --winner).
+    #[arg(long)]
+    weights: Option<String>,
+
+    /// Compare two saved JSON reports side by side (a.json,b.json) and exit.
+    #[arg(long, value_delimiter = ',')]
+    compare: Vec<String>,
+
     /// Register a custom OpenAI-compatible endpoint (e.g. vLLM, LiteLLM).
     #[arg(long, requires = "provider_name")]
     endpoint: Option<String>,
@@ -289,6 +305,29 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.compare.len() == 2 {
+        let (a_raw, b_raw) = (
+            std::fs::read_to_string(&cli.compare[0])
+                .with_context(|| format!("reading {}", cli.compare[0]))?,
+            std::fs::read_to_string(&cli.compare[1])
+                .with_context(|| format!("reading {}", cli.compare[1]))?,
+        );
+        let a = llmrace::regression::BaselineReport::from_json_str(&a_raw)
+            .with_context(|| format!("parsing {}", cli.compare[0]))?;
+        let b = llmrace::regression::BaselineReport::from_json_str(&b_raw)
+            .with_context(|| format!("parsing {}", cli.compare[1]))?;
+        let report = llmrace::regression::compare_baselines(&b, &a, cli.max_regression);
+        println!(
+            "⚖  comparing {} (baseline) vs {} (current)\n",
+            cli.compare[0], cli.compare[1]
+        );
+        println!("{}", report.terminal_table(cli.max_regression));
+        return Ok(());
+    }
+    if cli.compare.len() == 1 {
+        anyhow::bail!("--compare expects two comma-separated report paths (a.json,b.json)");
+    }
+
     if cli.trend {
         let records = load_history(&cli)?;
         let now = std::time::SystemTime::now()
@@ -343,6 +382,14 @@ async fn main() -> Result<()> {
         tools: cli.tools,
         variant: None,
         duration_secs: cli.duration,
+        retries: cli.retries,
+    };
+
+    let weights = match &cli.weights {
+        Some(spec) => llmrace::score::Weights::parse(spec)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .with_context(|| "parsing --weights")?,
+        None => llmrace::score::Weights::default(),
     };
 
     if !cli.quiet {
@@ -453,9 +500,21 @@ async fn main() -> Result<()> {
     if !cli.quiet {
         let table = report::terminal_table(&summaries);
         println!("\n{table}");
+        if cli.winner {
+            let scored = llmrace::score::score_lanes(&summaries, &weights);
+            print!("{}", llmrace::score::podium(&scored, &weights));
+        }
     }
 
     let mut md = report::markdown(&summaries, &cli.prompt, config.runs, cli.max_tokens);
+    if cli.winner {
+        let scored = llmrace::score::score_lanes(&summaries, &weights);
+        let block = llmrace::score::podium(&scored, &weights);
+        if !block.is_empty() {
+            md.push_str("\n## Podium\n");
+            md.push_str(&block);
+        }
+    }
     if cli.histogram {
         md.push_str(&report::histogram_section(&summaries));
     }
@@ -562,6 +621,7 @@ async fn watch_main(cli: Cli, selected: Vec<ProviderSpec>, client: reqwest::Clie
         tools: cli.tools,
         variant: None,
         duration_secs: None,
+        retries: cli.retries,
     };
     let watch_config = llmrace::watch::WatchConfig {
         every_secs: cli.every,

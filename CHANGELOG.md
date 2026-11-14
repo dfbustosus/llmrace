@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-14
+
+### Added
+
+- **Inter-token latency (ITL) metrics**: p50/p95 of the gaps between consecutive streamed tokens, plus a stutter count (gaps over 250 ms) — streaming *smoothness* alongside raw throughput. Shown in the terminal and markdown tables, and as `itl_p50_ms`/`itl_p95_ms`/`stutters` in JSON reports
+- `--retries N`: retry a failed round up to N additional times before it counts as failed — resilience against transient provider errors in CI runs
+- `--winner` (+ `--weights ttfb=30,tps=40,p95=30`): composite podium scoring across successful lanes, best-normalized per metric (winner scores 100); included in the markdown report as a Podium section
+- `--compare a.json,b.json`: side-by-side diff of two saved JSON reports without racing — before/after deploy comparisons reusing the regression table
+
+### Fixed
+
+- Markdown report table was misaligned: the header lacked the Server and Network columns, so every value after Latency rendered one column left and cost dangled outside the table
+- TUI: a transient round error permanently marked the lane red even when later rounds succeeded — errors now clear when the lane recovers
+
 ## [0.5.1] - 2026-11-14
 
 ### Changed

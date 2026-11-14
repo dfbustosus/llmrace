@@ -13,6 +13,7 @@
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
 //! - [`regression`]: baseline comparison for CI quality gates
+//! - [`score`]: composite winner scoring and the podium
 //! - [`variants`]: built-in prompt variants for multi-shape sweeps
 //! - [`tui`]: the live terminal race view
 //! - [`util`]: shared helpers for truncation, dates, ranking
@@ -60,6 +61,7 @@ pub mod prom;
 pub mod provider;
 pub mod regression;
 pub mod report;
+pub mod score;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod sse;

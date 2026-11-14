@@ -140,10 +140,19 @@ impl Tui {
                 lane.ratelimit = u.ratelimit.clone().or_else(|| lane.ratelimit.clone());
                 if let Some(e) = u.error {
                     lane.error = Some(e);
-                } else if u.elapsed_ms > 0.0 {
-                    lane.best_ms = Some(lane.best_ms.map_or(u.elapsed_ms, |b| b.min(u.elapsed_ms)));
+                } else {
+                    // A completed lane clears transient round errors seen
+                    // earlier in the race (the lane ultimately succeeded).
+                    lane.error = None;
+                    if u.elapsed_ms > 0.0 {
+                        lane.best_ms =
+                            Some(lane.best_ms.map_or(u.elapsed_ms, |b| b.min(u.elapsed_ms)));
+                    }
                 }
             } else {
+                // Transient state (streaming or retrying): show and clear
+                // round errors as they come.
+                lane.error = u.error.clone();
                 lane.tokens = u.tokens;
                 lane.elapsed_ms = u.elapsed_ms;
                 lane.ttfb_ms = u.ttfb_ms.or(lane.ttfb_ms);

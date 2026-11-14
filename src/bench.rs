@@ -30,7 +30,16 @@ pub struct RunMetrics {
     pub request_id: Option<String>,
     /// Remaining rate-limit requests after this call.
     pub ratelimit_remaining: Option<String>,
+    /// Inter-token gaps in milliseconds (time between consecutive streamed
+    /// tokens); TTFB itself is not included.
+    pub itl_gaps_ms: Vec<f64>,
+    /// Count of inter-token gaps exceeding [`STUTTER_MS`].
+    pub stutters: u64,
 }
+
+/// A gap between consecutive tokens longer than this (ms) counts as a
+/// stutter — a visible streaming hiccup.
+pub const STUTTER_MS: f64 = 250.0;
 
 impl RunMetrics {
     /// Whether the accumulated tool-call arguments parsed as valid JSON
@@ -85,6 +94,9 @@ pub struct BenchConfig {
     /// When set, measured rounds continue until this many seconds have
     /// elapsed (overrides `runs` as the stopping condition).
     pub duration_secs: Option<u64>,
+    /// Additional attempts made for a failed round before it counts as
+    /// failed. `0` keeps the previous behaviour of failing immediately.
+    pub retries: usize,
 }
 
 impl Default for BenchConfig {
@@ -99,6 +111,7 @@ impl Default for BenchConfig {
             tools: false,
             variant: None,
             duration_secs: None,
+            retries: 0,
         }
     }
 }
@@ -269,6 +282,39 @@ impl LaneSummary {
         Some(Sample::from_values(values).median())
     }
 
+    /// p50 of inter-token gaps across all measured rounds; `None` when no
+    /// gap was observed (single-token responses).
+    #[must_use]
+    pub fn itl_p50_ms(&self) -> Option<f64> {
+        self.itl_sample().map(|s| s.percentile(50.0))
+    }
+
+    /// p95 of inter-token gaps across all measured rounds; `None` when no
+    /// gap was observed.
+    #[must_use]
+    pub fn itl_p95_ms(&self) -> Option<f64> {
+        self.itl_sample().map(|s| s.percentile(95.0))
+    }
+
+    /// Total stutters (inter-token gaps over [`STUTTER_MS`]) across rounds.
+    #[must_use]
+    pub fn stutters(&self) -> u64 {
+        self.runs.iter().map(|r| r.stutters).sum()
+    }
+
+    fn itl_sample(&self) -> Option<Sample> {
+        let gaps: Vec<f64> = self
+            .runs
+            .iter()
+            .flat_map(|r| r.itl_gaps_ms.iter().copied())
+            .collect();
+        if gaps.is_empty() {
+            None
+        } else {
+            Some(Sample::from_values(gaps))
+        }
+    }
+
     /// Last provider request ID.
     #[must_use]
     pub fn last_request_id(&self) -> Option<&str> {
@@ -327,7 +373,32 @@ pub fn spawn_lane(
                     break;
                 }
             }
-            let outcome = run_round(&client, &spec, &model, &config, &tx).await;
+            let mut attempts_left = config.retries;
+            let outcome = loop {
+                match run_round(&client, &spec, &model, &config, &tx).await {
+                    Ok(metrics) => break Ok(metrics),
+                    Err(e) if attempts_left > 0 => {
+                        attempts_left -= 1;
+                        let _ = tx.send(LaneUpdate {
+                            provider: Arc::clone(&spec.id),
+                            variant: config.variant.clone(),
+                            tokens: 0,
+                            elapsed_ms: 0.0,
+                            ttfb_ms: None,
+                            finished: false,
+                            error: Some(format!(
+                                "round failed, retrying ({attempts_left} left): {e}"
+                            )),
+                            server_ms: None,
+                            last_token: None,
+                            ratelimit: None,
+                        });
+                        continue;
+                    }
+                    Err(e) => break Err(e),
+                }
+            };
+            let outcome: crate::error::Result<Vec<RunMetrics>> = outcome;
             match outcome {
                 Ok(metrics) => {
                     if counted {
@@ -429,6 +500,12 @@ async fn run_round(
     if all.is_empty() {
         Err(first_err.unwrap_or_else(|| Error::Protocol("round produced no metrics".into())))
     } else {
+        let mut itl_gaps_ms = Vec::new();
+        let mut stutters = 0u64;
+        for m in &all {
+            itl_gaps_ms.extend(m.itl_gaps_ms.iter().copied());
+            stutters += m.stutters;
+        }
         Ok(vec![RunMetrics {
             total_ms: all.iter().map(|m| m.total_ms).fold(f64::MIN, f64::max),
             ttfb_ms: all.iter().map(|m| m.ttfb_ms).fold(f64::MAX, f64::min),
@@ -450,6 +527,8 @@ async fn run_round(
                 .iter()
                 .filter_map(|m| m.ratelimit_remaining.clone())
                 .next(),
+            itl_gaps_ms,
+            stutters,
         }])
     }
 }
@@ -481,6 +560,9 @@ async fn single_request(
     let mut chars = 0u64;
     let mut usage: Option<u64> = None;
     let mut tool_args = String::new();
+    let mut last_token_at: Option<Instant> = None;
+    let mut itl_gaps_ms: Vec<f64> = Vec::new();
+    let mut stutters = 0u64;
 
     loop {
         let next = tokio::select! {
@@ -502,6 +584,14 @@ async fn single_request(
             tool_args.push_str(fragment);
         }
         if let Some(t) = &event.token {
+            if let Some(last) = last_token_at {
+                let gap_ms = (now - last).as_secs_f64() * 1000.0;
+                itl_gaps_ms.push(gap_ms);
+                if gap_ms > STUTTER_MS {
+                    stutters += 1;
+                }
+            }
+            last_token_at = Some(now);
             tokens += 1;
             chars += t.len() as u64;
             let _ = progress.send(LaneUpdate {
@@ -538,5 +628,7 @@ async fn single_request(
         server_ms: server_timing.processing_ms,
         request_id: server_timing.request_id,
         ratelimit_remaining: server_timing.ratelimit_remaining,
+        itl_gaps_ms,
+        stutters,
     })
 }

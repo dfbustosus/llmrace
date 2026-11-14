@@ -79,8 +79,8 @@ fn group_by_variant(summaries: &[LaneSummary]) -> Vec<(Option<String>, Vec<&Lane
 fn variant_table(lanes: &[&LaneSummary]) -> String {
     let ranked = rank_lanes(lanes);
     let mut out = String::new();
-    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | Tokens/s | Cost/run |\n");
-    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|---------:|---------:|\n");
+    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | ITL p95 | Stutters | Tokens/s | Cost/run |\n");
+    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|--------:|---------:|---------:|---------:|\n");
     for (i, s) in ranked.iter().enumerate() {
         let mean = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("{:.0} ± {:.0} ms", s.mean_total_ms(), (hi - lo) / 2.0),
@@ -95,8 +95,12 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
         } else {
             "†"
         };
+        let itl_p95 = s
+            .itl_p95_ms()
+            .map(|v| format!("{v:.0} ms"))
+            .unwrap_or_else(|| "—".into());
         out.push_str(&format!(
-            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | **{:.1}** | {} |\n",
+            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | **{:.1}** | {} |\n",
             i + 1,
             s.name,
             outlier_mark,
@@ -112,6 +116,12 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
             s.network_overhead_ms()
                 .map(|v| format!("{v:+.0} ms"))
                 .unwrap_or_else(|| "—".into()),
+            itl_p95,
+            if s.stutters() > 0 {
+                format!("{} ⏸", s.stutters())
+            } else {
+                "0".to_string()
+            },
             s.mean_tokens_per_sec(),
             cost
         ));
@@ -163,6 +173,9 @@ pub fn json_report(
                 "cost_per_run_usd": s.cost_per_run_usd(),
                 "server_ms": s.median_server_ms(),
                 "network_overhead_ms": s.network_overhead_ms(),
+                "itl_p50_ms": s.itl_p50_ms(),
+                "itl_p95_ms": s.itl_p95_ms(),
+                "stutters": s.stutters(),
                 "request_id": s.last_request_id(),
                 "tool_validity": s.tool_validity(),
             })
@@ -203,8 +216,18 @@ pub fn csv(summaries: &[LaneSummary]) -> String {
 pub fn terminal_table(summaries: &[LaneSummary]) -> String {
     let ranked = rank(summaries);
     let mut out = format!(
-        "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>9}\n",
-        "#", "Provider", "Model", "C", "Lat (mean±CI)", "p95", "TTFB", "Server", "Network", "Tok/s"
+        "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>7}\n",
+        "#",
+        "Provider",
+        "Model",
+        "C",
+        "Lat (mean±CI)",
+        "p95",
+        "TTFB",
+        "Server",
+        "Network",
+        "ITLp95",
+        "Tok/s"
     );
     out.push_str(&"-".repeat(out.len()));
     out.push('\n');
@@ -218,8 +241,19 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
         } else {
             "†"
         };
+        let itl = s
+            .itl_p95_ms()
+            .map(|v| {
+                let st = if s.stutters() > 0 {
+                    format!("⏸{}", s.stutters())
+                } else {
+                    String::new()
+                };
+                format!("{v:.0}{st}")
+            })
+            .unwrap_or_else(|| "—".into());
         out.push_str(&format!(
-            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8.1}{}\n",
+            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>8.1}{}\n",
             i + 1,
             s.name,
             crate::util::truncate(&s.model, 26),
@@ -233,6 +267,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
             s.network_overhead_ms()
                 .map(|v| format!("{v:+.0}"))
                 .unwrap_or_else(|| "—".into()),
+            itl,
             s.mean_tokens_per_sec(),
             mark
         ));

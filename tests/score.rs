@@ -1,0 +1,68 @@
+use llmrace::bench::{LaneSummary, RunMetrics};
+use llmrace::score::{podium, score_lanes, Weights};
+
+fn lane(name: &str, ttfb: f64, tps: f64, p95: f64) -> LaneSummary {
+    let gen_s = (p95 - ttfb) / 1000.0;
+    LaneSummary {
+        name: name.into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: p95,
+            ttfb_ms: ttfb,
+            tokens: (tps * gen_s).round().max(1.0) as u64,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    }
+}
+
+#[test]
+fn winner_scores_hundred() {
+    let lanes = vec![
+        lane("fast", 10.0, 200.0, 100.0),
+        lane("slow", 40.0, 50.0, 400.0),
+    ];
+    let scored = score_lanes(&lanes, &Weights::default());
+    assert_eq!(scored[0].name, "fast");
+    assert!((scored[0].score - 100.0).abs() < 1e-9);
+    assert!(scored[1].score < 100.0);
+}
+
+#[test]
+fn single_lane_not_scored() {
+    let lanes = vec![lane("solo", 10.0, 200.0, 100.0)];
+    assert!(score_lanes(&lanes, &Weights::default()).is_empty());
+}
+
+#[test]
+fn failed_lane_ignored() {
+    let mut failed = lane("dead", 1.0, 1.0, 1.0);
+    failed.error = Some("boom".into());
+    let lanes = vec![lane("ok", 10.0, 200.0, 100.0), failed];
+    assert!(score_lanes(&lanes, &Weights::default()).is_empty());
+}
+
+#[test]
+fn weights_parse_defaults_and_errors() {
+    assert_eq!(Weights::parse("").unwrap(), Weights::default());
+    assert_eq!(Weights::parse("tps=60").unwrap().tps, 60.0);
+    assert!(Weights::parse("ttfb=0,tps=0,p95=0").is_err());
+    assert!(Weights::parse("ttfb").is_err());
+    assert!(Weights::parse("bogus=1").is_err());
+}
+
+#[test]
+fn podium_renders_medals() {
+    let lanes = vec![
+        lane("fast", 10.0, 200.0, 100.0),
+        lane("mid", 20.0, 100.0, 200.0),
+        lane("slow", 40.0, 50.0, 400.0),
+    ];
+    let scored = score_lanes(&lanes, &Weights::default());
+    let text = podium(&scored, &Weights::default());
+    assert!(text.contains("🥇 fast"));
+    assert!(text.contains("🥉 slow"));
+}

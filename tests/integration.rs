@@ -236,15 +236,12 @@ async fn concurrency_two_measures_saturation_throughput() {
 #[test]
 fn run_metrics_generation_math() {
     let m = RunMetrics {
-        server_ms: None,
-        request_id: None,
-        ratelimit_remaining: None,
-        tool_args: String::new(),
         total_ms: 1000.0,
         ttfb_ms: 200.0,
         tokens: 160,
         chars: 640,
         prompt_tokens: 0,
+        ..RunMetrics::default()
     };
     assert!((m.gen_ms() - 800.0).abs() < 1e-9);
     assert!((m.tokens_per_sec() - 200.0).abs() < 1e-9);
@@ -272,15 +269,12 @@ fn regression_summary(
 ) -> llmrace::bench::LaneSummary {
     let gen_s = (mean_ms - ttfb_ms).max(0.0) / 1000.0;
     let run = RunMetrics {
-        server_ms: None,
-        request_id: None,
-        ratelimit_remaining: None,
-        tool_args: String::new(),
         total_ms: mean_ms,
         ttfb_ms,
         tokens: (tps * gen_s).round() as u64,
         chars: 400,
         prompt_tokens: 0,
+        ..RunMetrics::default()
     };
     let _ = p95_ms;
     llmrace::bench::LaneSummary {
@@ -466,15 +460,12 @@ fn xai_and_perplexity_specs() {
 async fn percentile_ladder_and_histogram_render() {
     let runs: Vec<RunMetrics> = (0..10)
         .map(|i| RunMetrics {
-            server_ms: None,
-            request_id: None,
-            ratelimit_remaining: None,
-            tool_args: String::new(),
             total_ms: 100.0 + i as f64 * 50.0,
             ttfb_ms: 10.0,
             tokens: 10,
             chars: 40,
             prompt_tokens: 0,
+            ..RunMetrics::default()
         })
         .collect();
     let summary = llmrace::bench::LaneSummary {
@@ -574,4 +565,82 @@ async fn duration_bound_runs_real_time() {
         summary.runs.len()
     );
     assert!(elapsed.as_secs() <= 3, "elapsed {elapsed:?}");
+}
+
+#[tokio::test]
+async fn retries_retry_failed_rounds_before_giving_up() {
+    // An unreachable endpoint: every attempt fails fast (connection refused).
+    let spec = ProviderSpec::custom("dead", "http://127.0.0.1:9/v1/chat/completions", None, "m");
+    let config = BenchConfig {
+        prompt: "demo".into(),
+        runs: 1,
+        warmup: 0,
+        timeout_secs: 2,
+        retries: 2,
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(reqwest::Client::new(), spec, "m".into(), config);
+    let summary = handle.await.unwrap();
+    assert!(!summary.successful());
+    let updates: Vec<llmrace::bench::LaneUpdate> = progress.into_iter().collect();
+    let retry_notices = updates
+        .iter()
+        .filter(|u| u.error.as_deref().is_some_and(|e| e.contains("retrying")))
+        .count();
+    assert_eq!(retry_notices, 2, "expected one notice per retry");
+}
+
+#[test]
+fn itl_metrics_aggregate_across_runs() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "x".into(),
+        model: "m".into(),
+        runs: vec![
+            RunMetrics {
+                total_ms: 1000.0,
+                ttfb_ms: 100.0,
+                tokens: 5,
+                itl_gaps_ms: vec![10.0, 12.0, 300.0],
+                stutters: 1,
+                ..RunMetrics::default()
+            },
+            RunMetrics {
+                total_ms: 1000.0,
+                ttfb_ms: 100.0,
+                tokens: 5,
+                itl_gaps_ms: vec![14.0],
+                stutters: 0,
+                ..RunMetrics::default()
+            },
+        ],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    assert_eq!(summary.stutters(), 1);
+    let p50 = summary.itl_p50_ms().unwrap();
+    let p95 = summary.itl_p95_ms().unwrap();
+    assert!((10.0..=14.0).contains(&p50), "p50 {p50}");
+    assert!(p95 > 200.0, "p95 {p95}");
+}
+
+#[test]
+fn itl_absent_when_single_token() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "x".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: 100.0,
+            ttfb_ms: 100.0,
+            tokens: 1,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    assert!(summary.itl_p50_ms().is_none());
+    assert_eq!(summary.stutters(), 0);
 }

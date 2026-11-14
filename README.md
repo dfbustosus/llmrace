@@ -118,6 +118,16 @@ llmrace openai groq -c 8 -n 5
 # CI gate: fail if any provider exceeds 500ms TTFB
 llmrace openai groq --max-ttfb 500 --quiet
 
+# Declare an overall winner (weighted ttfb/tps/p95 composite)
+llmrace openai groq --winner
+llmrace openai groq --winner --weights ttfb=50,tps=50
+
+# Retry failed rounds up to 3 times (flaky providers, CI runs)
+llmrace openai groq --retries 3
+
+# A/B compare two saved reports (no race, prints diff table)
+llmrace --compare old.json,new.json
+
 # Prompt-variant sweep: same race across prompt shapes
 llmrace openai groq --sweep short,long,code,json,reasoning
 
@@ -157,6 +167,8 @@ Every provider with a matching env var races automatically — no config file:
 |--------|------------|
 | **TTFB** | Time from just before the request is sent to the first streamed token (includes connection, TLS and queueing) |
 | **Tokens/s** | Completion tokens divided by the *generation window* (total − TTFB); with `--concurrency N`, total tokens of all N parallel requests over the round window — i.e. saturation throughput |
+| **ITL p50 / p95** | Distribution of inter-token gaps while streaming — how *smooth* the stream feels, not just how fast it finishes |
+| **Stutters** | Inter-token gaps over 250 ms — visible streaming hiccups, counted per lane |
 | **Latency p50 / p95** | Distribution of round time-to-last-token (linear-interpolation percentiles) |
 | **Mean ± 95% CI** | Student-t confidence interval on the mean latency |
 | **Cost/run** | Provider-reported token counts × public per-model prices (editable in `src/cost.rs`) |
