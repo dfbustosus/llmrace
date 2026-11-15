@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Significance verdicts label same-provider multi-model races as `openai/gpt-4o-mini vs openai/gpt-4.1` (previously an ambiguous `openai vs openai`), mirroring the podium
+
+
 ## [1.3.0] - 2026-11-15
 
 The breadth-and-reliability release: two more providers, price-aware podiums, watch hardening, and CI ergonomics end to end.
