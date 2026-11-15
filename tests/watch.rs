@@ -19,6 +19,7 @@ fn degrade_check_fires_only_beyond_threshold() {
 async fn watch_collects_rounds_and_stops_at_limit() {
     let config = WatchConfig {
         every_secs: 0,
+        alert_rounds: 1,
         max_regression_pct: 1000.0,
         rounds: Some(2),
         bench: BenchConfig {
@@ -54,6 +55,7 @@ async fn watch_collects_rounds_and_stops_at_limit() {
 async fn watch_stop_flag_ends_before_first_round() {
     let config = WatchConfig {
         every_secs: 0,
+        alert_rounds: 1,
         max_regression_pct: 15.0,
         rounds: None,
         bench: BenchConfig::default(),
@@ -69,4 +71,32 @@ async fn watch_stop_flag_ends_before_first_round() {
     .await;
     assert!(report.rounds.is_empty());
     assert!(report.last_round().is_empty());
+}
+
+#[test]
+fn alert_streaks_debounce_until_consecutive_rounds() {
+    use llmrace::watch::degrade_check;
+    use std::collections::BTreeMap;
+
+    // simulate: history median 100ms; rounds arrive [blip 500, ok 110, bad 500, bad 500]
+    let mut streaks: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
+    let history = vec![100.0, 100.0, 100.0, 100.0];
+
+    let degraded = |v: f64| degrade_check(1, "p", "p95", &history, v, 15.0).is_some();
+    // round 1: one-off blip
+    let s = llmrace::watch::streak_of_pub(&mut streaks, "p", "p95", degraded(500.0));
+    assert_eq!(s, 1, "blip alone must not reach a 2-round threshold");
+    // round 2: recovery resets
+    let s = llmrace::watch::streak_of_pub(&mut streaks, "p", "p95", degraded(110.0));
+    assert_eq!(s, 0, "recovery must reset the streak");
+    // rounds 3+4: sustained degradation crosses the debounce threshold
+    assert_eq!(
+        llmrace::watch::streak_of_pub(&mut streaks, "p", "p95", degraded(500.0)),
+        1
+    );
+    assert_eq!(
+        llmrace::watch::streak_of_pub(&mut streaks, "p", "p95", degraded(500.0)),
+        2,
+        "second consecutive degraded round reaches the threshold"
+    );
 }

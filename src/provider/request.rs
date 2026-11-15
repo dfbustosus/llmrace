@@ -319,6 +319,16 @@ async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<re
             " — the model is not pulled; run `ollama pull <model>` or pass `-m <model>` with an already-pulled tag",
         );
     }
+    // OpenAI-style model errors: point at live model discovery
+    if body.contains("model_not_found")
+        || (status.as_u16() == 404 && body.contains("does not exist"))
+        || (status.as_u16() == 403 && body.contains("does not have access to model"))
+    {
+        body.push_str(&format!(
+            " — list what this provider offers with `llmrace --models {}`",
+            spec.id
+        ));
+    }
     Err(Error::Http {
         provider: spec.id.to_string(),
         status: status.as_u16(),

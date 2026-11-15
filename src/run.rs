@@ -69,6 +69,8 @@ pub(crate) struct RunConfig {
     pub watch: bool,
     /// Seconds between watch rounds.
     pub every_secs: u64,
+    /// Consecutive degraded rounds required before a --watch alert fires.
+    pub alert_rounds: usize,
 }
 
 /// Resolves the model for one provider from `--model` overrides.
@@ -460,6 +462,7 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
     let watch_config = llmrace::watch::WatchConfig {
         every_secs: cfg.every_secs,
         max_regression_pct: cfg.max_regression,
+        alert_rounds: cfg.alert_rounds,
         rounds: None,
         bench: cfg.bench.clone(),
     };

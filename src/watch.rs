@@ -14,6 +14,9 @@ pub struct WatchConfig {
     pub every_secs: u64,
     /// Degradation threshold in percent versus the rolling median.
     pub max_regression_pct: f64,
+    /// Consecutive degraded rounds required before an alert fires
+    /// (debounce; 1 keeps the immediate behavior).
+    pub alert_rounds: usize,
     /// Total rounds to run; `None` until interrupted.
     pub rounds: Option<usize>,
     /// Bench configuration forwarded to every lane.
@@ -87,6 +90,35 @@ pub fn degrade_check(
     }
 }
 
+/// Tracks the consecutive-degradation streak for one (provider, metric);
+/// returns the streak after this round's update.
+fn streak_of(
+    streaks: &mut BTreeMap<(String, &'static str), usize>,
+    provider: &str,
+    metric: &'static str,
+    degraded_this_round: bool,
+) -> usize {
+    let key = (provider.to_string(), metric);
+    let entry = streaks.entry(key).or_default();
+    if degraded_this_round {
+        *entry += 1;
+    } else {
+        *entry = 0;
+    }
+    *entry
+}
+
+/// Test-visible wrapper for [`streak_of`].
+#[doc(hidden)]
+pub fn streak_of_pub(
+    streaks: &mut BTreeMap<(String, &'static str), usize>,
+    provider: &str,
+    metric: &'static str,
+    degraded_this_round: bool,
+) -> usize {
+    streak_of(streaks, provider, metric, degraded_this_round)
+}
+
 /// Runs watch rounds until interrupted or the round limit is reached.
 ///
 /// `stop` is polled between rounds and ends the loop gracefully. Every round
@@ -130,6 +162,7 @@ where
     let mut report = WatchReport::default();
     let mut history: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut p95_history: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut streaks: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
     let limit = config.rounds.unwrap_or(usize::MAX);
     let mut round = 0usize;
 
@@ -161,26 +194,46 @@ where
                 continue;
             }
             let ttfb_hist = history.get(&s.name).cloned().unwrap_or_default();
-            if let Some(alert) = degrade_check(
-                round,
+            let ttfb_streak = streak_of(
+                &mut streaks,
                 &s.name,
                 "ttfb",
-                &ttfb_hist,
-                s.mean_ttfb_ms(),
-                config.max_regression_pct,
-            ) {
-                alerts.push(alert);
+                degrade_check(
+                    round,
+                    &s.name,
+                    "ttfb",
+                    &ttfb_hist,
+                    s.mean_ttfb_ms(),
+                    config.max_regression_pct,
+                )
+                .is_some(),
+            );
+            if ttfb_streak == config.alert_rounds {
+                if let Some(alert) = degrade_check(
+                    round,
+                    &s.name,
+                    "ttfb",
+                    &ttfb_hist,
+                    s.mean_ttfb_ms(),
+                    config.max_regression_pct,
+                ) {
+                    alerts.push(alert);
+                }
             }
             let p95_hist = p95_history.get(&s.name).cloned().unwrap_or_default();
-            if let Some(alert) = degrade_check(
+            let p95_degraded = degrade_check(
                 round,
                 &s.name,
                 "p95",
                 &p95_hist,
                 s.p95_total_ms(),
                 config.max_regression_pct,
-            ) {
-                alerts.push(alert);
+            );
+            let p95_streak = streak_of(&mut streaks, &s.name, "p95", p95_degraded.is_some());
+            if p95_streak == config.alert_rounds {
+                if let Some(alert) = p95_degraded {
+                    alerts.push(alert);
+                }
             }
             history
                 .entry(s.name.clone())

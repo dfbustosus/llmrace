@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--out -` streams the markdown report to stdout (siblings keep conventional filenames) — pipe straight into `$GITHUB_STEP_SUMMARY`
 - **TTFB p50/p95** in JSON reports (`ttfb_p50_ms`, `ttfb_p95_ms`): tail first-token latency, not just the mean
 - `--trend` shows the median ITL p95 column for providers whose recorded history carries it
+- `--alert-rounds N` (with `--watch`): alerts fire only after N consecutive degraded rounds — one-off network blips no longer page you (default 1 keeps the immediate behavior)
+- Model-not-found HTTP errors append a `llmrace --models <provider>` hint pointing at live discovery
 - End-to-end `--baseline --require-significance` gate test through the real binary (record → replay → pass with an explanatory verdict; platform jitter is absorbed by the significance requirement)
 
 ### Fixed

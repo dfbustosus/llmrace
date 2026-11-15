@@ -479,3 +479,24 @@ async fn list_models_gemini_shape_and_mock_error() {
         .expect_err("mock has no models");
     assert!(err.to_string().contains("no model listing"), "{err}");
 }
+
+#[tokio::test]
+async fn model_not_found_errors_point_at_discovery() {
+    // OpenAI-style 404 model error gets the --models hint
+    let body = r#"{"error":{"message":"The model 'gpt-nope' does not exist or you do not have access to it.","type":"invalid_request_error","param":null,"code":"model_not_found"}}"#.to_string();
+    let (endpoint, _server) = spawn_server(Script::Error { status: 404, body }).await;
+    let spec = ProviderSpec::custom("openai-ish", &endpoint, None, "gpt-nope");
+    let config = BenchConfig {
+        prompt: "demo".into(),
+        runs: 1,
+        warmup: 0,
+        ..BenchConfig::default()
+    };
+    let (handle, _p) = spawn_lane(reqwest::Client::new(), spec, "gpt-nope".into(), config);
+    let summary = handle.await.unwrap();
+    let err = summary.error.expect("must fail");
+    assert!(
+        err.to_string().contains("llmrace --models openai-ish"),
+        "hint missing: {err}"
+    );
+}

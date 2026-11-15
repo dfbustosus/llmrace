@@ -186,6 +186,10 @@ pub(crate) struct Cli {
     #[arg(long, default_value_t = 900)]
     every: u64,
 
+    /// Consecutive degraded rounds before a --watch alert fires (debounce).
+    #[arg(long, default_value_t = 1)]
+    alert_rounds: usize,
+
     /// Run the race once per comma-separated prompt variant (short,long,code,json,reasoning).
     #[arg(long)]
     sweep: Option<String>,
@@ -417,6 +421,7 @@ fn build_run_config(
         require_significance: cli.require_significance,
         watch: cli.watch,
         every_secs: cli.every,
+        alert_rounds: cli.alert_rounds.max(1),
     })
 }
 
