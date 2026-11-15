@@ -256,7 +256,11 @@ async fn single_request(
         let next = tokio::select! {
             biased;
             _ = tokio::time::sleep_until(deadline) => {
-                return Err(Error::Stream(format!("{}: request timed out", spec.id)));
+                return Err(Error::Stream(format!(
+                    "{} ({model}): request timed out after {timeout:?} ({} tokens received)",
+                    spec.id,
+                    tokens,
+                )));
             }
             item = stream.next() => item,
         };

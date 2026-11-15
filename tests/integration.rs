@@ -1052,3 +1052,16 @@ fn markdown_report_notes_unpriced_lanes() {
     assert!(md.contains("no pricing data for 1 lane(s)"), "{md}");
     assert!(md.contains("--price"), "{md}");
 }
+
+#[test]
+fn merge_missing_file_reports_which_file() {
+    let err = llmrace::merge::load_files(&[
+        "/tmp/llmrace-merge-nonexistent-a.json".into(),
+        "/tmp/llmrace-merge-nonexistent-b.json".into(),
+    ])
+    .expect_err("missing files must error");
+    assert!(
+        err.to_string().contains("llmrace-merge-nonexistent-a.json"),
+        "{err}"
+    );
+}

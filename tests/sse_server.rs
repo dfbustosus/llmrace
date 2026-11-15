@@ -15,6 +15,9 @@ enum Script {
         status: u16,
         body: String,
     },
+    /// Sends one token, then stops sending anything — keeps the connection
+    /// open to exercise the mid-stream timeout path.
+    Stall,
 }
 
 async fn spawn_server(script: Script) -> (String, tokio::task::JoinHandle<()>) {
@@ -69,6 +72,20 @@ async fn spawn_server(script: Script) -> (String, tokio::task::JoinHandle<()>) {
                     .write_all(body.as_bytes())
                     .await
                     .expect("write error body");
+            }
+            Script::Stall => {
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .expect("write headers");
+                socket
+                    .write_all(b"data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n")
+                    .await
+                    .expect("write first token");
+                // hold the connection open without further data
+                std::future::pending::<()>().await;
             }
         }
         socket.shutdown().await.ok();
@@ -380,4 +397,24 @@ async fn gpt5_models_send_max_completion_tokens() {
         let _ = tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     server.abort();
+}
+
+#[tokio::test]
+async fn mid_stream_timeout_names_model_and_window() {
+    let (endpoint, _server) = spawn_server(Script::Stall).await;
+    let spec = ProviderSpec::custom("stalled", &endpoint, None, "stall-model");
+    let config = BenchConfig {
+        prompt: "demo".into(),
+        runs: 1,
+        warmup: 0,
+        timeout_secs: 1,
+        ..BenchConfig::default()
+    };
+    let (handle, _progress) =
+        spawn_lane(reqwest::Client::new(), spec, "stall-model".into(), config);
+    let summary = handle.await.unwrap();
+    let err = summary.error.expect("run must time out");
+    assert!(err.contains("timed out after"), "{err}");
+    assert!(err.contains("stall-model"), "{err}");
+    assert!(err.contains("1 tokens received"), "{err}");
 }

@@ -183,7 +183,7 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 Methodology notes:
 
 - One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes
-- Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other
+- Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other. Exception: `provider=model` lanes of the *same* provider race concurrently — the provider's rate limits and capacity are then shared between those lanes, which is exactly what a mixed-model race measures in practice
 - Rounds with 3σ latency outliers are flagged with `†`
 - Token counts prefer **provider-reported usage** (`include_usage` on OpenAI-compatible APIs, `message_delta` on Anthropic) and fall back to stream-event counting
 - All requests use the same prompt, `max_tokens` and sampling defaults per run
