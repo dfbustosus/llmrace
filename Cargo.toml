@@ -11,6 +11,12 @@ readme = "README.md"
 keywords = ["llm", "ai", "benchmark", "cli", "openai"]
 categories = ["command-line-utilities", "development-tools"]
 
+# Policy (README "Stability"): new struct fields arrive additively in
+# minors — exhaustive literals in downstream code are the known trade-off.
+# Everything else (removed items, signature changes) stays deny.
+[package.metadata.cargo-semver-checks.lints]
+constructible_struct_adds_field = { level = "warn", required-update = "minor" }
+
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
 bin-dir = "{ bin }{ binary-ext }"

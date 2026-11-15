@@ -509,3 +509,18 @@ fn watch_mode_runs_records_and_exits_cleanly_on_sigint() {
         .unwrap();
     assert!(history.contains("\"provider\":\"mock\""), "{history}");
 }
+
+#[test]
+fn tools_conflicts_with_sweep() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--tools")
+        .arg("--sweep")
+        .arg("short,json")
+        .arg("--no-tui")
+        .output()
+        .expect("spawn llmrace");
+    assert!(!out.status.success(), "conflicting flags must be rejected");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+}

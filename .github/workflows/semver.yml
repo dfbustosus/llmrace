@@ -1,0 +1,26 @@
+name: Semver
+
+# Enforces the README stability promise mechanically: breaking API changes
+# (removed items, signature changes, …) fail CI. Additive struct fields are
+# warn-only per the documented policy ("new fields arrive only additively
+# in minors") — see [package.metadata.cargo-semver-checks.lints] in
+# Cargo.toml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  semver:
+    name: cargo-semver-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Compares against the latest release published to crates.io.
+      - uses: obi1kenobi/cargo-semver-checks-action@v2

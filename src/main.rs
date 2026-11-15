@@ -156,7 +156,8 @@ pub(crate) struct Cli {
 
     /// Benchmark tool calling and measure argument validity. Optional task
     /// name from the registry (weather, math, lookup); defaults to weather.
-    #[arg(long, num_args = 0..=1, default_missing_value = "weather")]
+    /// Conflicts with --sweep (both control the prompt).
+    #[arg(long, num_args = 0..=1, default_missing_value = "weather", conflicts_with = "sweep")]
     tools: Option<String>,
 
     /// Push race metrics to a Prometheus pushgateway job URL after the race.
