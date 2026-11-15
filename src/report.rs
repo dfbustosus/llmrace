@@ -294,13 +294,20 @@ fn top_two_significance(summaries: &[LaneSummary]) -> Option<(String, String, f6
     let (t, df) = crate::stats::welch_t(&a, &b)?;
     let p = crate::stats::t_two_sided_p(t, df);
     let delta = leader.mean_total_ms() - runner_up.mean_total_ms();
-    Some((
-        leader.name.clone(),
-        runner_up.name.clone(),
-        delta,
-        p,
-        p < 0.05,
-    ))
+    // disambiguate same-provider multi-model races, mirroring the podium
+    let label = |s: &LaneSummary| {
+        let dup = summaries
+            .iter()
+            .filter(|x| x.name == s.name && x.successful())
+            .count()
+            > 1;
+        if dup && !s.model.is_empty() {
+            format!("{}/{}", s.name, s.model)
+        } else {
+            s.name.clone()
+        }
+    };
+    Some((label(leader), label(runner_up), delta, p, p < 0.05))
 }
 
 /// Renders the compact terminal ranking table.

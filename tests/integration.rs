@@ -1245,3 +1245,73 @@ fn ttfb_percentiles_exposed_in_json() {
     let json = llmrace::report::json_report(&[summary], "p", 2, 32);
     assert!(json.contains("ttfb_p95_ms"), "{json}");
 }
+
+#[test]
+fn significance_labels_disambiguate_same_provider_models() {
+    let lane = |model: &str, total: f64| llmrace::bench::LaneSummary {
+        name: "openai".into(),
+        model: model.into(),
+        runs: vec![
+            RunMetrics {
+                total_ms: total,
+                ttfb_ms: 10.0,
+                tokens: 5,
+                ..RunMetrics::default()
+            },
+            RunMetrics {
+                total_ms: total + 2.0,
+                ttfb_ms: 10.0,
+                tokens: 5,
+                ..RunMetrics::default()
+            },
+        ],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    let table =
+        llmrace::report::terminal_table(&[lane("gpt-4o-mini", 100.0), lane("gpt-4.1", 300.0)]);
+    assert!(
+        table.contains("openai/gpt-4o-mini vs openai/gpt-4.1"),
+        "labels must carry models: {table}"
+    );
+
+    // single-provider lanes keep plain names
+    let plain = llmrace::bench::LaneSummary {
+        name: "mock".into(),
+        model: "m1".into(),
+        runs: vec![
+            RunMetrics {
+                total_ms: 100.0,
+                ttfb_ms: 5.0,
+                tokens: 3,
+                ..RunMetrics::default()
+            },
+            RunMetrics {
+                total_ms: 102.0,
+                ttfb_ms: 5.0,
+                tokens: 3,
+                ..RunMetrics::default()
+            },
+        ],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    let other = llmrace::bench::LaneSummary {
+        name: "mock2".into(),
+        model: plain.model.clone(),
+        runs: plain.runs.clone(),
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    let t2 = llmrace::report::terminal_table(&[plain, other]);
+    assert!(t2.contains("mock vs mock2"), "{t2}");
+}
