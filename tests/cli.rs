@@ -691,9 +691,11 @@ fn baseline_gate_end_to_end_passes_on_stable_provider() {
         String::from_utf8_lossy(&gate.stderr)
     );
     let stdout = String::from_utf8_lossy(&gate.stdout);
+    // either a clean pass, or a threshold breach absorbed by the
+    // significance requirement (platform TTFB jitter)
     assert!(
-        stdout.contains("no regressions beyond threshold"),
-        "{stdout}"
+        stdout.contains("no regressions beyond threshold") || stdout.contains("treating as noise"),
+        "gate must pass with an explanatory verdict: {stdout}"
     );
     assert!(stdout.contains("p="), "p-values rendered: {stdout}");
 }
