@@ -27,7 +27,7 @@ jobs:
       - name: Schema drift check
         run: |
           cargo run --quiet -- --schema > schema-check.json
-          diff -u docs/schema.json schema-check.json
+          git diff --no-index --exit-code docs/schema.json schema-check.json
           rm schema-check.json
       - run: cargo test --all-targets
   sqlite:
