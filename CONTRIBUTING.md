@@ -38,3 +38,8 @@ Include the provider, model, OS, and the output of `llmrace --version` plus the 
 | `src/score.rs` | composite winner scoring and podiums |
 | `src/merge.rs` | cross-region probe merging |
 | `src/main.rs` / `src/run.rs` / `src/modes.rs` | binary: CLI + dispatch / race execution / standalone modes |
+
+## Releasing
+
+Maintainers: see [`docs/release.md`](docs/release.md) — tagging is the only
+manual step; binaries, crates.io and the Homebrew tap are automated.

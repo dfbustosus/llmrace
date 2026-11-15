@@ -11,6 +11,7 @@ Latency · Time-to-first-byte · Tokens/s · p95 · Cost — live, in one comman
 [![Codecov](https://img.shields.io/codecov/c/github/dfbustosus/llmrace?style=flat-square&logo=codecov&color=3390FF)](https://codecov.io/gh/dfbustosus/llmrace)
 [![License](https://img.shields.io/crates/l/llmrace?style=flat-square&color=8B949E)](#license)
 [![Made with Rust](https://img.shields.io/badge/built%20with-Rust-DEA584?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-DEA584?style=flat-square&logo=rust)](./Cargo.toml)
 
 *A single static binary. No telemetry. Works with cloud APIs and local models.*
 
