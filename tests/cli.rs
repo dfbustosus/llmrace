@@ -751,3 +751,25 @@ fn watch_resolves_model_per_lane() {
     assert!(history.contains("\"model\":\"model-a\""), "{history}");
     assert!(history.contains("\"model\":\"model-b\""), "{history}");
 }
+
+#[test]
+fn out_dash_streams_markdown_to_stdout() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--quiet")
+        .arg("--out")
+        .arg("-")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("# 🏁 llmrace report"), "{stdout}");
+    assert!(stdout.contains("| 1 | mock |"), "{stdout}");
+    // no report file named '-' left behind
+    assert!(!std::path::Path::new("-").exists());
+}

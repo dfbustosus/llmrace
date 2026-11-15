@@ -288,15 +288,25 @@ fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<()> {
     if cfg.histogram {
         md.push_str(&report::histogram_section(summaries));
     }
-    std::fs::write(&cfg.out, &md).with_context(|| format!("writing {}", cfg.out))?;
-    println!("\u{1f4c4} markdown report saved to {}", cfg.out);
+    if cfg.out == "-" {
+        // markdown to stdout (piping into CI summaries); sibling formats
+        // fall back to the conventional filenames
+        println!("{md}");
+    } else {
+        std::fs::write(&cfg.out, &md).with_context(|| format!("writing {}", cfg.out))?;
+        println!("\u{1f4c4} markdown report saved to {}", cfg.out);
+    }
 
     let sibling = |ext: &str| -> String {
-        let path = std::path::Path::new(&cfg.out);
-        if path.extension().is_some() {
-            path.with_extension(ext).to_string_lossy().into_owned()
+        let base = if cfg.out == "-" {
+            std::path::Path::new("llmrace-report")
         } else {
-            format!("{}.{ext}", cfg.out)
+            std::path::Path::new(&cfg.out)
+        };
+        if base.extension().is_some() {
+            base.with_extension(ext).to_string_lossy().into_owned()
+        } else {
+            format!("{}.{ext}", base.display())
         }
     };
     if cfg.json {

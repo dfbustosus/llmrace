@@ -55,6 +55,25 @@ impl LaneSummary {
         self.total_sample().t_ci95()
     }
 
+    /// p50 time-to-first-byte across rounds; `None` with no runs.
+    #[must_use]
+    pub fn ttfb_p50_ms(&self) -> Option<f64> {
+        self.ttfb_sample().map(|s| s.percentile(50.0))
+    }
+
+    /// p95 time-to-first-byte across rounds — the tail first-token
+    /// latency; `None` with no runs.
+    #[must_use]
+    pub fn ttfb_p95_ms(&self) -> Option<f64> {
+        self.ttfb_sample().map(|s| s.percentile(95.0))
+    }
+
+    fn ttfb_sample(&self) -> Option<crate::stats::Sample> {
+        (!self.runs.is_empty()).then(|| {
+            crate::stats::Sample::from_values(self.runs.iter().map(|r| r.ttfb_ms).collect())
+        })
+    }
+
     /// Mean time-to-first-byte.
     #[must_use]
     pub fn mean_ttfb_ms(&self) -> f64 {

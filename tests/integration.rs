@@ -1214,3 +1214,34 @@ fn significance_verdict_distinguishes_signal_from_noise() {
     assert!(json.contains("p_value"), "{json}");
     assert!(json.contains("significant"), "{json}");
 }
+
+#[test]
+fn ttfb_percentiles_exposed_in_json() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "x".into(),
+        model: "m".into(),
+        runs: vec![
+            RunMetrics {
+                total_ms: 1000.0,
+                ttfb_ms: 100.0,
+                tokens: 5,
+                ..RunMetrics::default()
+            },
+            RunMetrics {
+                total_ms: 1000.0,
+                ttfb_ms: 300.0,
+                tokens: 5,
+                ..RunMetrics::default()
+            },
+        ],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    assert_eq!(summary.ttfb_p50_ms(), Some(200.0));
+    assert_eq!(summary.ttfb_p95_ms(), Some(290.0));
+    let json = llmrace::report::json_report(&[summary], "p", 2, 32);
+    assert!(json.contains("ttfb_p95_ms"), "{json}");
+}

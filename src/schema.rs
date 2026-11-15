@@ -62,6 +62,8 @@ pub fn race_report_schema() -> String {
             "minItems": 2, "maxItems": 2
           },
           "mean_ttfb_ms": {"type": "number"},
+          "ttfb_p50_ms": {"type": ["number", "null"]},
+          "ttfb_p95_ms": {"type": ["number", "null"]},
           "mean_tokens_per_sec": {"type": "number"},
           "outlier_runs": {"type": "array", "items": {"type": "integer"}},
           "cost_per_run_usd": {"type": ["number", "null"]},

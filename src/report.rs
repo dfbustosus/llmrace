@@ -211,6 +211,8 @@ pub fn json_report_with_region(
                 "p95_total_ms": s.p95_total_ms(),
                 "ci95_total_ms": s.ci95_total_ms(),
                 "mean_ttfb_ms": s.mean_ttfb_ms(),
+                "ttfb_p50_ms": s.ttfb_p50_ms(),
+                "ttfb_p95_ms": s.ttfb_p95_ms(),
                 "mean_tokens_per_sec": s.mean_tokens_per_sec(),
                 "outlier_runs": s.outlier_runs(),
                 "cost_per_run_usd": s.cost_per_run_usd(),
