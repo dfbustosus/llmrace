@@ -18,6 +18,9 @@ pub struct Weights {
     pub tps: f64,
     /// Weight of p95 latency (lower is better).
     pub p95: f64,
+    /// Weight of cost per run (lower is better). Applied only when every
+    /// scored lane has pricing data; otherwise the weight is ignored.
+    pub cost: f64,
 }
 
 impl Default for Weights {
@@ -26,6 +29,7 @@ impl Default for Weights {
             ttfb: 30.0,
             tps: 40.0,
             p95: 30.0,
+            cost: 0.0,
         }
     }
 }
@@ -61,23 +65,24 @@ impl Weights {
                 "ttfb" => w.ttfb = value,
                 "tps" => w.tps = value,
                 "p95" => w.p95 = value,
+                "cost" => w.cost = value,
                 other => {
                     return Err(Error::Config(format!(
-                        "unknown weight key '{other}' (expected ttfb, tps or p95)"
+                        "unknown weight key '{other}' (expected ttfb, tps, p95 or cost)"
                     )))
                 }
             }
         }
-        if w.ttfb + w.tps + w.p95 <= 0.0 {
-            return Err(Error::Config(
-                "all weights are zero — at least one must be positive".into(),
-            ));
+        if w.ttfb + w.tps + w.p95 + w.cost <= 0.0 {
+            return Err(Error::Config(format!(
+                "all weights are zero — at least one must be positive"
+            )));
         }
         Ok(w)
     }
 
     fn total(&self) -> f64 {
-        self.ttfb + self.tps + self.p95
+        self.ttfb + self.tps + self.p95 + self.cost
     }
 }
 
@@ -156,17 +161,29 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
         .iter()
         .map(|s| s.p95_total_ms())
         .fold(f64::MAX, f64::min);
+    // Cost applies only when every scored lane has pricing; otherwise the
+    // weight is dropped (and the effective total renormalized) so unpriced
+    // lanes are not silently favored.
+    let costs: Vec<Option<f64>> = lanes.iter().map(|s| s.cost_per_run_usd()).collect();
+    let all_priced = costs.iter().all(|c| c.is_some_and(|v| v > 0.0));
+    let cost_w = if all_priced { w.cost } else { 0.0 };
+    let best_cost = costs.iter().filter_map(|c| *c).fold(f64::MAX, f64::min);
+    let effective_total = w.total() - (w.cost - cost_w);
 
     let mut scored: Vec<Scored> = lanes
         .iter()
-        .map(|s| {
-            let penalty = w.ttfb * (s.mean_ttfb_ms() / best_ttfb)
+        .zip(&costs)
+        .map(|(s, cost)| {
+            let mut penalty = w.ttfb * (s.mean_ttfb_ms() / best_ttfb)
                 + w.tps * (best_tps / s.mean_tokens_per_sec())
                 + w.p95 * (s.p95_total_ms() / best_p95);
+            if cost_w > 0.0 {
+                penalty += cost_w * (cost.unwrap_or(best_cost) / best_cost);
+            }
             Scored {
                 name: s.name.clone(),
                 model: s.model.clone(),
-                score: 100.0 * w.total() / penalty,
+                score: 100.0 * effective_total / penalty,
             }
         })
         .collect();

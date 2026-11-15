@@ -467,13 +467,18 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
         println!("\n\u{23f9} interrupted — finishing current round, then writing reports…");
     });
 
-    let report = llmrace::watch::watch(
-        cfg.providers.clone(),
-        resolve_model(
-            &cfg.model_overrides,
-            &cfg.providers[0].id,
-            &cfg.providers[0].default_model,
-        ),
+    let watch_lanes: Vec<(llmrace::provider::ProviderSpec, String)> = cfg
+        .providers
+        .iter()
+        .map(|p| {
+            (
+                p.clone(),
+                resolve_model(&cfg.model_overrides, &p.id, &p.default_model),
+            )
+        })
+        .collect();
+    let report = llmrace::watch::watch_with_models(
+        watch_lanes,
         watch_config,
         cfg.client.clone(),
         |round, summaries, alerts| {

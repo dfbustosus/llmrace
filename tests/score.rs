@@ -112,3 +112,51 @@ fn score_lanes_groups_helper(
 ) -> Vec<(Option<String>, Vec<llmrace::score::Scored>)> {
     llmrace::score::score_groups(&lanes, &Weights::default())
 }
+
+/// A lane on a priced provider (pricing keys on provider name + model).
+fn priced_lane(name: &str, tps: f64, p95: f64) -> LaneSummary {
+    let (model, ttfb) = if name == "openai" {
+        ("gpt-4o-mini", 100.0)
+    } else {
+        ("gemini-2.0-flash", 50.0)
+    };
+    let gen_s = (p95 - ttfb) / 1000.0;
+    LaneSummary {
+        name: name.into(),
+        model: model.into(),
+        runs: vec![RunMetrics {
+            total_ms: p95,
+            ttfb_ms: ttfb,
+            tokens: (tps * gen_s).round().max(1.0) as u64,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    }
+}
+
+#[test]
+fn cost_weight_changes_ranking() {
+    // two priced providers with identical throughput: the cheaper must win
+    // when cost has weight.
+    let a = priced_lane("openai", 200.0, 1100.0);
+    let b = priced_lane("gemini", 200.0, 1050.0);
+    let with_cost = Weights {
+        ttfb: 0.0,
+        tps: 50.0,
+        p95: 0.0,
+        cost: 50.0,
+    };
+    let scored = score_lanes(&[a.clone(), b.clone()], &with_cost);
+    assert_eq!(
+        scored[0].name, "gemini",
+        "cheaper lane must lead: {scored:?}"
+    );
+
+    // weight parsing accepts cost and rejects junk
+    assert_eq!(Weights::parse("cost=40").unwrap().cost, 40.0);
+    assert!(Weights::parse("bogus=1").is_err());
+}

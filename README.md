@@ -129,9 +129,10 @@ llmrace openai groq --ramp 1,2,4,8 -n 3
 # CI gate: fail if any provider exceeds 500ms TTFB
 llmrace openai groq --max-ttfb 500 --quiet
 
-# Declare an overall winner (weighted ttfb/tps/p95 composite)
+# Declare an overall winner (weighted ttfb/tps/p95/cost composite)
 llmrace openai groq --winner
 llmrace openai groq --winner --weights ttfb=50,tps=50
+llmrace openai groq --winner --weights tps=60,cost=40   # price-aware podium
 
 # Retry failed rounds up to 3 times (flaky providers, CI runs)
 llmrace openai groq --retries 3

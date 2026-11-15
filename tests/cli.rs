@@ -697,3 +697,57 @@ fn baseline_gate_end_to_end_passes_on_stable_provider() {
     );
     assert!(stdout.contains("p="), "p-values rendered: {stdout}");
 }
+
+#[cfg(unix)]
+#[test]
+fn watch_resolves_model_per_lane() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let data_dir = std::env::temp_dir().join("llmrace-watch-models");
+    let _ = std::fs::remove_dir_all(&data_dir);
+    let out_path = std::env::temp_dir().join("llmrace-watch-models.md");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock=model-a")
+        .arg("mock=model-b")
+        .arg("--watch")
+        .arg("--every")
+        .arg("1")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--record")
+        .env("XDG_DATA_HOME", &data_dir)
+        .arg("--out")
+        .arg(&out_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn llmrace --watch");
+
+    std::thread::sleep(Duration::from_secs(3));
+    let _ = Command::new("kill")
+        .arg("-INT")
+        .arg(child.id().to_string())
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let out = loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break child.wait_with_output().expect("collect output");
+        }
+        assert!(Instant::now() < deadline, "watchdog: watch did not exit");
+        std::thread::sleep(Duration::from_millis(300));
+    };
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // both lanes must have raced (and recorded) their OWN model
+    let history = std::fs::read_to_string(data_dir.join("llmrace/history.jsonl")).unwrap();
+    assert!(history.contains("\"model\":\"model-a\""), "{history}");
+    assert!(history.contains("\"model\":\"model-b\""), "{history}");
+}

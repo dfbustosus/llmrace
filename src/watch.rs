@@ -97,6 +97,29 @@ pub async fn watch<F, F2>(
     model: String,
     config: WatchConfig,
     client: reqwest::Client,
+    on_round: F,
+    stop: F2,
+) -> WatchReport
+where
+    F: FnMut(usize, &[LaneSummary], &[Alert]) + Send + 'static,
+    F2: FnMut() -> bool + Send + 'static,
+{
+    let lanes: Vec<(ProviderSpec, String)> = specs
+        .into_iter()
+        .map(|spec| {
+            let model = model.clone();
+            (spec, model)
+        })
+        .collect();
+    watch_with_models(lanes, config, client, on_round, stop).await
+}
+
+/// Like [`watch`], but each provider races its own model — required for
+/// `provider=model` lanes and per-provider `-m` overrides.
+pub async fn watch_with_models<F, F2>(
+    lanes: Vec<(ProviderSpec, String)>,
+    config: WatchConfig,
+    client: reqwest::Client,
     mut on_round: F,
     mut stop: F2,
 ) -> WatchReport
@@ -116,7 +139,7 @@ where
         }
         round += 1;
         let mut handles = Vec::new();
-        for spec in &specs {
+        for (spec, model) in &lanes {
             let (handle, _progress) = spawn_lane(
                 client.clone(),
                 spec.clone(),
