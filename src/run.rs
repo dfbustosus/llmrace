@@ -711,6 +711,13 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     std::fs::write(&cfg.out, &md).with_context(|| format!("writing {}", cfg.out))?;
     println!("\u{1f4c4} ramp report saved to {}", cfg.out);
 
+    if cfg.html {
+        let h = ramp_html(&order, &phases);
+        let path = crate::report_sibling(&cfg.out, "html");
+        std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
+        println!("\u{1f310} ramp html saved to {path}");
+    }
+
     if cfg.json {
         let payload = serde_json::json!({
             "tool": "llmrace",
@@ -739,4 +746,125 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
         return Ok(1);
     }
     Ok(0)
+}
+
+/// Self-contained HTML page for a ramp: SVG throughput-by-concurrency
+/// series per provider plus the curve table.
+fn ramp_html(order: &[(String, String)], phases: &[RampLevel]) -> String {
+    const W: f64 = 760.0;
+    const H: f64 = 320.0;
+    const PAD: f64 = 44.0;
+    const COLORS: [&str; 6] = [
+        "#3390ff", "#3fb950", "#d29922", "#f778ba", "#a371f7", "#39c5cf",
+    ];
+
+    let levels: Vec<usize> = phases.iter().map(|p| p.concurrency).collect();
+    let tps = |name: &str, model: &str, level: usize| -> f64 {
+        phases
+            .iter()
+            .find(|p| p.concurrency == level)
+            .and_then(|p| {
+                p.summaries
+                    .iter()
+                    .find(|s| s.name == name && s.model == model)
+            })
+            .filter(|s| s.successful())
+            .map(|s| s.mean_tokens_per_sec())
+            .unwrap_or(0.0)
+    };
+    let max_tps = order
+        .iter()
+        .flat_map(|(n, m)| levels.iter().map(move |l| tps(n, m, *l)))
+        .fold(1.0, f64::max);
+    let max_level = *levels.last().unwrap_or(&1) as f64;
+    let x = |level: usize| PAD + (level as f64 / max_level) * (W - 2.0 * PAD);
+    let y = |v: f64| H - PAD - (v / max_tps) * (H - 2.0 * PAD);
+
+    let mut svg = format!(
+        "<svg viewBox='0 0 {W} {H}' xmlns='http://www.w3.org/2000/svg' role='img' aria-label='saturation curve'>"
+    );
+    // gridlines at 25% steps
+    for step in 1..=3 {
+        let gy = y(max_tps * step as f64 / 4.0);
+        svg.push_str(&format!(
+            "<line x1='{PAD}' y1='{gy:.1}' x2='{:.1}' y2='{gy:.1}' stroke='#21262d'/>",
+            W - PAD
+        ));
+        svg.push_str(&format!(
+            "<text x='{}' y='{gy:.1}'>{:.0}</text>",
+            PAD - 6.0,
+            max_tps * step as f64 / 4.0
+        ));
+    }
+    for level in &levels {
+        svg.push_str(&format!(
+            "<text x='{:.1}' y='{}' text-anchor='middle'>{level}</text>",
+            x(*level),
+            H - PAD + 14.0
+        ));
+    }
+    svg.push_str(&format!(
+        "<text x='{PAD}' y='{}'>c (concurrency)</text><text transform='rotate(-90)' x='{}' y='14'>tokens/s</text>",
+        H - 8.0,
+        -(H / 2.0),
+    ));
+
+    let mut legend = String::new();
+    for (i, (name, model)) in order.iter().enumerate() {
+        let color = COLORS[i % COLORS.len()];
+        let points: Vec<String> = levels
+            .iter()
+            .map(|l| format!("{:.1},{:.1}", x(*l), y(tps(name, model, *l))))
+            .collect();
+        svg.push_str(&format!(
+            "<polyline fill='none' stroke='{color}' stroke-width='2' points='{}'/>",
+            points.join(" ")
+        ));
+        for l in &levels {
+            svg.push_str(&format!(
+                "<circle cx='{:.1}' cy='{:.1}' r='3' fill='{color}'/>",
+                x(*l),
+                y(tps(name, model, *l))
+            ));
+        }
+        legend.push_str(&format!(
+            "<li><span style='color:{color}'>\u{25cf}</span> {} ({})</li>",
+            llmrace::util::html_escape(name),
+            llmrace::util::html_escape(model)
+        ));
+    }
+    svg.push_str("</svg>");
+
+    // reuse the markdown curve table, converted loosely: rebuild as HTML
+    let mut table = String::from("<table><tr><th>Provider</th>");
+    for level in &levels {
+        table.push_str(&format!("<th>c={level}</th>"));
+    }
+    table.push_str("<th>peak</th></tr>");
+    for (name, model) in order {
+        table.push_str(&format!(
+            "<tr><td>{} ({})</td>",
+            llmrace::util::html_escape(name),
+            llmrace::util::html_escape(model)
+        ));
+        let mut peak = (1usize, 0.0);
+        for level in &levels {
+            let v = tps(name, model, *level);
+            if v > peak.1 {
+                peak = (*level, v);
+            }
+            table.push_str(&format!("<td>{v:.1}</td>"));
+        }
+        table.push_str(&format!(
+            "<td><b>c={} ({:.1})</b></td></tr>",
+            peak.0, peak.1
+        ));
+    }
+    table.push_str("</table>");
+
+    format!(
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>llmrace ramp</title><style>:root {{ color-scheme: dark; }}body {{ font-family: ui-monospace, 'SF Mono', Menlo, monospace; background: #0d1117; color: #e6edf3; margin: 0 auto; max-width: 820px; padding: 2rem 1rem; }}h1 {{ color: #3390ff; }} svg {{ width: 100%; height: auto; background: #161b22; border: 1px solid #21262d; border-radius: 6px; }}text {{ fill: #8b949e; font-size: 10px; }} table {{ border-collapse: collapse; width: 100%; margin-top: 1rem; }}th, td {{ border: 1px solid #21262d; padding: .3rem .6rem; text-align: left; }} th {{ color: #8b949e; }}ul {{ list-style: none; padding: 0; }} footer {{ color: #484f58; margin-top: 3rem; }}
+</style></head><body><h1>\u{1f3c1} llmrace ramp</h1><p>throughput by concurrency — peak marks each provider's saturation point</p>{svg}<ul>{legend}</ul>{table}<footer>generated with <a style='color:#3390ff' href='https://github.com/dfbustosus/llmrace'>llmrace</a> v{} \u{1f980}</footer></body></html>",
+        env!("CARGO_PKG_VERSION"),
+    )
 }

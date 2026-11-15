@@ -288,7 +288,9 @@ The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) 
 
 ```bash
 llmrace openai groq --baseline llmrace-report.json --max-regression 15 --require-significance
-``` With `--sweep`, each variant lane compares against that provider's matching variant baseline entry, falling back to a plain (variant-less) entry. A run where **every** provider failed exits non-zero — a green pipeline over a total outage is never silent.
+```
+
+A ready-to-copy workflow lives in [`docs/example-latency-gate.yml`](docs/example-latency-gate.yml). With `--sweep`, each variant lane compares against that provider's matching variant baseline entry, falling back to a plain (variant-less) entry. A run where **every** provider failed exits non-zero — a green pipeline over a total outage is never silent.
 
 ## Real-world results
 
