@@ -102,3 +102,31 @@ async fn push_sends_put_with_text_body_and_handles_errors() {
     .await;
     assert!(err.is_err());
 }
+
+#[test]
+fn sweep_variants_get_their_own_series() {
+    use llmrace::bench::{LaneSummary, RunMetrics};
+    let mut lane = LaneSummary {
+        name: "groq".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: 100.0,
+            ttfb_ms: 20.0,
+            tokens: 10,
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: Some("short".into()),
+    };
+    let metrics = render_metrics(std::slice::from_ref(&lane));
+    assert!(
+        metrics.contains("variant=\"short\""),
+        "variant label missing: {metrics}"
+    );
+
+    lane.variant = None;
+    let plain = render_metrics(std::slice::from_ref(&lane));
+    assert!(!plain.contains("variant="), "{plain}");
+}

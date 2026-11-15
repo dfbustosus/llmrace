@@ -103,6 +103,20 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         println!("\u{1f6e0} tool-calling mode: weather task, argument validity tracked");
     }
 
+    // Reasoning models spend the token budget thinking first; a small cap
+    // yields almost no visible output (live-verified: gpt-5-nano returned 1
+    // visible token with --max-tokens 256).
+    let reasoning_capped = cfg
+        .providers
+        .iter()
+        .any(|p| llmrace::provider::is_reasoning_model(&p.default_model))
+        && cfg.bench.max_tokens < 512;
+    if reasoning_capped && !cfg.quiet {
+        println!(
+            "\u{1f9e0} note: reasoning models think before the first visible token — consider --max-tokens 512+ so the answer isn't starved"
+        );
+    }
+
     let variants: Vec<Option<llmrace::variants::Variant>> = match &cfg.sweep {
         Some(spec) => llmrace::variants::parse(spec)
             .map(|vs| vs.into_iter().map(Some).collect())

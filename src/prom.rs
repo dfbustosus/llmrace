@@ -4,12 +4,26 @@ use crate::bench::LaneSummary;
 
 /// Renders lane metrics in the Prometheus text exposition format.
 ///
-/// Every series is labeled with `provider` and `model`; gauges cover TTFB,
-/// mean/median/p95 latency, tokens/s, cost and tool-argument validity.
+/// Every series is labeled with `provider` and `model`, plus `variant`
+/// for sweep runs so lanes of different prompts never collide; gauges
+/// cover TTFB, mean/median/p95 latency, tokens/s, cost and tool-argument
+/// validity.
 pub fn render_metrics(summaries: &[LaneSummary]) -> String {
     let mut out = String::new();
     for s in summaries.iter().filter(|s| s.successful()) {
-        let labels = format!("provider=\"{}\",model=\"{}\"", s.name, escape(&s.model));
+        let labels = match &s.variant {
+            Some(v) => format!(
+                "provider=\"{}\",model=\"{}\",variant=\"{}\"",
+                escape(&s.name),
+                escape(&s.model),
+                escape(v)
+            ),
+            None => format!(
+                "provider=\"{}\",model=\"{}\"",
+                escape(&s.name),
+                escape(&s.model)
+            ),
+        };
         out.push_str(&format!(
             "llmrace_ttfb_ms{{{labels}}} {:.3}\n",
             s.mean_ttfb_ms()

@@ -108,7 +108,7 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
     ];
     table
         .iter()
-        .find(|(k, _, _)| *k == key)
+        .find(|(k, _, _)| k.eq_ignore_ascii_case(&key))
         .map(|(_, pin, pout)| (*pin, *pout))
 }
 

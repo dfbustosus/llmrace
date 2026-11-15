@@ -1108,3 +1108,19 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
     };
     assert!(classic.thinking_ms_estimate().is_none());
 }
+
+#[test]
+fn every_cloud_default_model_has_pricing() {
+    // Locks the pricing table against drift: adding a cloud provider
+    // without a default-model price row fails here.
+    for spec in llmrace::provider::ProviderSpec::registry() {
+        if spec.api_key_env.is_some() && *spec.id != *"azure" {
+            assert!(
+                llmrace::cost::pricing(&spec.id, &spec.default_model).is_some(),
+                "no pricing for default model {} / {}",
+                spec.id,
+                spec.default_model
+            );
+        }
+    }
+}

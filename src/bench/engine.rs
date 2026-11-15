@@ -9,6 +9,12 @@ use futures_util::StreamExt;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
+/// Linear retry backoff: 500ms for the first retry, then 1s, 1.5s…
+/// capped at 5s.
+fn backoff(attempt: usize) -> Duration {
+    Duration::from_millis((500 * attempt as u64).min(5_000))
+}
+
 /// Spawns a benchmark lane as an independent task.
 ///
 /// Returns the task handle yielding the final [`LaneSummary`] plus a receiver
@@ -54,6 +60,10 @@ pub fn spawn_lane(
                     Ok(metrics) => break Ok(metrics),
                     Err(e) if attempts_left > 0 => {
                         attempts_left -= 1;
+                        // Linear backoff: an erroring endpoint (e.g. a 429)
+                        // must not be hammered back-to-back.
+                        let attempt = config.retries - attempts_left;
+                        tokio::time::sleep(backoff(attempt)).await;
                         let _ = tx.send(LaneUpdate {
                             provider: Arc::clone(&spec.id),
                             variant: config.variant.clone(),

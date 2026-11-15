@@ -170,6 +170,14 @@ pub fn split_model_override(entry: &str) -> Option<(String, String)> {
     Some((provider.to_string(), model.to_string()))
 }
 
+/// `true` for reasoning models (gpt-5 family, o-series): they think before
+/// the first visible token and reject `max_tokens` in favor of
+/// `max_completion_tokens`.
+#[must_use]
+pub fn is_reasoning_model(model: &str) -> bool {
+    requires_completion_tokens(model)
+}
+
 /// OpenAI models that reject `max_tokens` and require
 /// `max_completion_tokens` (gpt-5 family and the o-series reasoning models).
 fn requires_completion_tokens(model: &str) -> bool {

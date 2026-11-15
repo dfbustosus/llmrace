@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (more)
 
+- Racing a reasoning model with `--max-tokens` under 512 prints a hint that the answer is starved by thinking (gpt-5-nano returns 1 visible token at 256); `provider::is_reasoning_model` is public
 - `thinking_ms_estimate` in JSON reports: server processing time scaled by the hidden-reasoning token share — an explicitly documented estimate of how long a reasoning model thought before its first visible token
 - History records capture `itl_p95_ms`; the dashboard renders an ITL p95 time series when recorded runs have it; the sqlite backend migrates existing databases additively (`ALTER TABLE`, duplicate-column safe)
 
@@ -33,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mid-stream timeout errors name the model, the timeout window and the tokens received so far (`openai (gpt-4o-mini): request timed out after 30s (120 tokens received)`); README methodology now documents that same-provider multi-model lanes share rate limits when racing concurrently
 
 ### Fixed
+
+- **Pricing lookups were case-sensitive**: the Together entry (`Llama-3.3-…`) never matched its lowercased lookup key, so its cost column has been empty since the table was added; matching is now case-insensitive and a coverage test locks every cloud default model to a pricing row
+- Prometheus export: sweep variants now carry a `variant` label (previously lanes of the same provider+model overwrote each other in the gateway) and provider names are label-escaped
+- Retries back off linearly (500ms, 1s, 1.5s… capped 5s) instead of hammering an erroring endpoint back-to-back
 
 - TUI header showed `100000 rounds` with `--duration` (the internal sentinel round count leaked into the display); it now shows `≤Ns`
 - `--sweep --winner`: podiums are now computed per prompt variant — variants race different prompts and must not compete head-to-head in one podium (terminal, markdown and HTML)
