@@ -7,19 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-15
+
+The breadth-and-reliability release: two more providers, price-aware podiums, watch hardening, and CI ergonomics end to end.
+
 ### Added
 
 - Providers: **DeepInfra** (`deepinfra`) and **Hyperbolic** (`hyperbolic`), OpenAI-compatible with default-model pricing locked by the coverage test
 - **Cost as a podium weight**: `--weights tps=60,cost=40` ranks price-aware; the cost axis applies only when every scored lane has pricing data (otherwise the weight is renormalized away, never silently favoring unpriced lanes)
 - `--out -` streams the markdown report to stdout (siblings keep conventional filenames) — pipe straight into `$GITHUB_STEP_SUMMARY`
 - **TTFB p50/p95** in JSON reports (`ttfb_p50_ms`, `ttfb_p95_ms`): tail first-token latency, not just the mean
-- `--trend` shows the median ITL p95 column for providers whose recorded history carries it
 - `--alert-rounds N` (with `--watch`): alerts fire only after N consecutive degraded rounds — one-off network blips no longer page you (default 1 keeps the immediate behavior)
+- Model-not-found HTTP errors append a `llmrace --models <provider>` hint pointing at live discovery
+- `--trend` shows the median ITL p95 column for providers whose recorded history carries it
 - **Non-terminal stdout runs headless automatically**: forgetting `--no-tui` in CI no longer garbles output — llmrace detects piped stdout, runs headless and prints a one-line note
 - History records reasoning data (`reasoning_tokens`, `thinking_ms_estimate`); the dashboard renders a thinking-time series for reasoning models; sqlite migrates additively
 - The `race.json` schema is committed at [`docs/schema.json`](docs/schema.json) with a CI drift check, so CI consumers can reference a stable URL
-- Model-not-found HTTP errors append a `llmrace --models <provider>` hint pointing at live discovery
 - End-to-end `--baseline --require-significance` gate test through the real binary (record → replay → pass with an explanatory verdict; platform jitter is absorbed by the significance requirement)
+- Maintainer release guide (`docs/release.md`) and a `cargo publish` dry-run before the real publish
 
 ### Fixed
 
