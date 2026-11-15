@@ -21,6 +21,9 @@ pub struct LaneSummary {
     pub concurrency: usize,
     /// Prompt variant label when running a sweep, otherwise `None`.
     pub variant: Option<String>,
+    /// Tool task name when run with `--tools`, used to pick the right
+    /// argument validator for `tool_validity`.
+    pub tool_task: Option<String>,
 }
 
 impl LaneSummary {
@@ -117,7 +120,8 @@ impl LaneSummary {
     }
 
     /// `(valid, total)` tool-argument validity across rounds that produced
-    /// arguments; `None` when no round produced tool arguments.
+    /// arguments; `None` when no round produced tool arguments. Validation
+    /// uses this lane's tool task when known, falling back to the default.
     #[must_use]
     pub fn tool_validity(&self) -> Option<(usize, usize)> {
         let with_args: Vec<&RunMetrics> = self
@@ -128,7 +132,11 @@ impl LaneSummary {
         if with_args.is_empty() {
             return None;
         }
-        let valid = with_args.iter().filter(|r| r.tool_args_valid()).count();
+        let validate = match self.tool_task.as_deref().and_then(crate::tools::find) {
+            Some(task) => task.validate,
+            None => crate::tools::validate_args,
+        };
+        let valid = with_args.iter().filter(|r| validate(&r.tool_args)).count();
         Some((valid, with_args.len()))
     }
 

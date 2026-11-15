@@ -102,6 +102,8 @@ pub struct BenchConfig {
     pub timeout_secs: u64,
     /// Enable the tool-calling task (attaches tool schemas to requests).
     pub tools: bool,
+    /// Which tool task to race (see `crate::tools::registry`).
+    pub tool_task: String,
     /// Prompt variant label when running a sweep.
     pub variant: Option<Arc<str>>,
     /// When set, measured rounds continue until this many seconds have
@@ -122,6 +124,7 @@ impl Default for BenchConfig {
             concurrency: 1,
             timeout_secs: 120,
             tools: false,
+            tool_task: "weather".to_string(),
             variant: None,
             duration_secs: None,
             retries: 0,

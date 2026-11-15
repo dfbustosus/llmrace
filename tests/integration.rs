@@ -151,6 +151,7 @@ async fn mock_stream_emits_tokens_and_usage() {
         prompt: "hello",
         max_tokens: 32,
         tools: false,
+        tool_task: None,
     };
     let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
     let mut tokens = 0u64;
@@ -285,6 +286,7 @@ fn regression_summary(
         prompt: "p".into(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     }
 }
 
@@ -476,6 +478,7 @@ async fn percentile_ladder_and_histogram_render() {
         prompt: "p".into(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
 
     let ladder = summary.latency_percentiles();
@@ -617,6 +620,7 @@ fn itl_metrics_aggregate_across_runs() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     assert_eq!(summary.stutters(), 1);
     let p50 = summary.itl_p50_ms().unwrap();
@@ -640,6 +644,7 @@ fn itl_absent_when_single_token() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     assert!(summary.itl_p50_ms().is_none());
     assert_eq!(summary.stutters(), 0);
@@ -703,6 +708,7 @@ fn lane_throughput_aggregates_effective_windows() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     let tps = summary.mean_tokens_per_sec();
     assert!((tps - 1000.0 / 2.798).abs() < 1.0, "got {tps}");
@@ -755,6 +761,7 @@ fn html_report_renders_lanes_and_bars() {
         prompt: "p".into(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     let html = llmrace::report::html_report(std::slice::from_ref(&summary), "demo", 1, 32, &[]);
     assert!(html.contains("<!DOCTYPE html>"));
@@ -789,6 +796,7 @@ fn reasoning_tokens_split_from_visible() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     assert_eq!(summary.reasoning_tokens(), 440);
     assert_eq!(summary.visible_tokens(), 60);
@@ -805,6 +813,7 @@ fn reasoning_tokens_split_from_visible() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     assert_eq!(classic.reasoning_tokens(), 0);
 }
@@ -826,6 +835,7 @@ fn terminal_table_marks_reasoning_lanes() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     let table = llmrace::report::terminal_table(&[summary]);
     assert!(table.contains("🧠440"), "{table}");
@@ -868,6 +878,7 @@ fn html_report_escapes_hostile_model_names() {
         prompt: "p <b>bold</b> & 'quotes'".into(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     let html =
         llmrace::report::html_report(std::slice::from_ref(&summary), "prompt <x>", 1, 32, &[]);
@@ -897,6 +908,7 @@ fn csv_escapes_commas_and_quotes() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     let csv = llmrace::report::csv(&[summary]);
     let line = csv.lines().nth(1).unwrap_or_default();
@@ -1010,6 +1022,7 @@ fn baseline_matches_sweep_variants() {
         prompt: String::new(),
         concurrency: 1,
         variant: variant.map(str::to_string),
+        tool_task: None,
     };
 
     // short lane regressed (100 -> 300 ms), json lane improved (200 -> 100 ms)
@@ -1047,6 +1060,7 @@ fn markdown_report_notes_unpriced_lanes() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     let md = llmrace::report::markdown(&[summary], "demo", 1, 32);
     assert!(md.contains("no pricing data for 1 lane(s)"), "{md}");
@@ -1083,6 +1097,7 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     let est = summary.thinking_ms_estimate().unwrap();
     assert!((est - 1398.0 * 255.0 / 256.0).abs() < 1e-6, "{est}");
@@ -1105,6 +1120,7 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     };
     assert!(classic.thinking_ms_estimate().is_none());
 }

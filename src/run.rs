@@ -100,7 +100,10 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         println!("   prompt: \"{}\"\n", cfg.prompt.replace('\n', " "));
     }
     if cfg.bench.tools {
-        println!("\u{1f6e0} tool-calling mode: weather task, argument validity tracked");
+        println!(
+            "\u{1f6e0} tool-calling mode: {} task, argument validity tracked",
+            cfg.bench.tool_task
+        );
     }
 
     // Reasoning models spend the token budget thinking first; a small cap

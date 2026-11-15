@@ -20,6 +20,7 @@ fn lane_with_model(name: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> La
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     }
 }
 

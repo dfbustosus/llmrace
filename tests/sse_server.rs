@@ -163,6 +163,7 @@ async fn irregular_chunk_boundaries_survive_the_full_stack() {
             prompt: "hi",
             max_tokens: 16,
             tools: false,
+            tool_task: None,
         },
     )
     .await
@@ -265,6 +266,7 @@ async fn azure_style_auth_sends_api_key_header_not_bearer() {
             prompt: "hi",
             max_tokens: 8,
             tools: false,
+            tool_task: None,
         },
     )
     .await
@@ -378,6 +380,7 @@ async fn gpt5_models_send_max_completion_tokens() {
                 prompt: "hi",
                 max_tokens: 8,
                 tools: false,
+                tool_task: None,
             },
         )
         .await

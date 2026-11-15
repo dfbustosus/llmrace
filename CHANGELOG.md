@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (more)
 
+- **Tool-task registry**: `--tools` now takes an optional task — `weather` (default), `math` (`calculate(expression)`), `lookup` (`search_docs(query)`) — each with per-wire schemas and its own argument validator; tool validity in reports is validated against the lane's own task
 - Racing a reasoning model with `--max-tokens` under 512 prints a hint that the answer is starved by thinking (gpt-5-nano returns 1 visible token at 256); `provider::is_reasoning_model` is public
 - `thinking_ms_estimate` in JSON reports: server processing time scaled by the hidden-reasoning token share — an explicitly documented estimate of how long a reasoning model thought before its first visible token
 - History records capture `itl_p95_ms`; the dashboard renders an ITL p95 time series when recorded runs have it; the sqlite backend migrates existing databases additively (`ALTER TABLE`, duplicate-column safe)

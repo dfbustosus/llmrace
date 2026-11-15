@@ -29,6 +29,7 @@ async fn openai_streams_real_tokens() {
             prompt: "Say exactly: hello from the live test",
             max_tokens: 16,
             tools: false,
+            tool_task: None,
         },
     )
     .await

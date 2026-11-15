@@ -157,3 +157,75 @@ async fn plain_runs_have_no_tool_validity() {
     let summary = handle.await.unwrap();
     assert_eq!(summary.tool_validity(), None);
 }
+
+#[test]
+fn tool_task_registry_has_three_tasks_with_valid_schemas() {
+    let tasks = llmrace::tools::registry();
+    let names: Vec<&str> = tasks.iter().map(|t| t.name).collect();
+    assert_eq!(names, vec!["weather", "math", "lookup"]);
+
+    for task in &tasks {
+        for wire in [
+            Wire::OpenAiCompat,
+            Wire::Anthropic,
+            Wire::Gemini,
+            Wire::Cohere,
+        ] {
+            let schema = llmrace::tools::tool_schema(task, wire);
+            let text = schema.to_string();
+            assert!(text.contains(task.function), "{} on {:?}", task.name, wire);
+        }
+        // validators accept the canonical argument shape
+        let valid = match task.name {
+            "weather" => r#"{"city":"Paris"}"#,
+            "math" => r#"{"expression":"17*23"}"#,
+            _ => r#"{"query":"rust 1.0"}"#,
+        };
+        assert!(
+            (task.validate)(valid),
+            "{} should accept {}",
+            task.name,
+            valid
+        );
+        assert!(
+            !(task.validate)("{} not json"),
+            "{} should reject junk",
+            task.name
+        );
+    }
+}
+
+#[test]
+fn math_validator_requires_a_digit() {
+    let math = llmrace::tools::find("math").unwrap();
+    assert!(
+        !(math.validate)(r#"{"expression":"seventeen"}"#),
+        "letters only must fail"
+    );
+    assert!((math.validate)(r#"{"expression":"17 * 23"}"#));
+}
+
+#[test]
+fn lane_validity_uses_its_own_task_validator() {
+    use llmrace::bench::{LaneSummary, RunMetrics};
+    let mut lane = LaneSummary {
+        name: "x".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: 100.0,
+            ttfb_ms: 10.0,
+            tool_args: r#"{"expression":"17*23"}"#.into(),
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: Some("math".into()),
+    };
+    assert_eq!(lane.tool_validity(), Some((1, 1)));
+
+    // same args under the weather task are invalid (no city)
+    lane.tool_task = Some("weather".into());
+    assert_eq!(lane.tool_validity(), Some((0, 1)));
+}

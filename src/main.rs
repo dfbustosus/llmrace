@@ -154,9 +154,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     histogram: bool,
 
-    /// Benchmark tool calling: send a weather-function task and measure argument validity.
-    #[arg(long)]
-    tools: bool,
+    /// Benchmark tool calling and measure argument validity. Optional task
+    /// name from the registry (weather, math, lookup); defaults to weather.
+    #[arg(long, num_args = 0..=1, default_missing_value = "weather")]
+    tools: Option<String>,
 
     /// Push race metrics to a Prometheus pushgateway job URL after the race.
     #[arg(long)]
@@ -294,17 +295,22 @@ fn build_run_config(cli: Cli) -> Result<RunConfig> {
         cli.runs
     };
     let bench = BenchConfig {
-        prompt: if cli.tools {
-            llmrace::tools::tool_task_prompt().to_string()
-        } else {
-            cli.prompt.clone()
+        prompt: match &cli.tools {
+            Some(task) => {
+                let t = llmrace::tools::find(task).with_context(|| {
+                    format!("unknown tool task '{task}' (weather, math, lookup)")
+                })?;
+                t.prompt.to_string()
+            }
+            None => cli.prompt.clone(),
         },
         max_tokens: cli.max_tokens,
         runs: runs.max(1),
         warmup: cli.warmup,
         concurrency: cli.concurrency.max(1),
         timeout_secs: cli.timeout,
-        tools: cli.tools,
+        tools: cli.tools.is_some(),
+        tool_task: cli.tools.clone().unwrap_or_else(|| "weather".to_string()),
         variant: None,
         duration_secs: cli.duration,
         retries: cli.retries,

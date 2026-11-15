@@ -119,6 +119,7 @@ fn sweep_variants_get_their_own_series() {
         prompt: String::new(),
         concurrency: 1,
         variant: Some("short".into()),
+        tool_task: None,
     };
     let metrics = render_metrics(std::slice::from_ref(&lane));
     assert!(

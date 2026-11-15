@@ -18,6 +18,8 @@ pub struct CompletionRequest<'a> {
     pub max_tokens: u64,
     /// Enable the tool-calling task and attach tool schemas.
     pub tools: bool,
+    /// Which tool task to attach (`crate::tools::registry` name).
+    pub tool_task: Option<&'a str>,
 }
 
 /// How a built wire request authenticates.
@@ -73,7 +75,11 @@ fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Resul
         }),
     };
     if req.tools {
-        body["tools"] = crate::tools::weather_tool(spec.wire);
+        let task = req
+            .tool_task
+            .and_then(crate::tools::find)
+            .unwrap_or_else(default_tool_task);
+        body["tools"] = crate::tools::tool_schema(&task, spec.wire);
     }
 
     let key = spec.api_key()?;
@@ -134,7 +140,7 @@ async fn send_wire_request(
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// let client = reqwest::Client::new();
 /// let spec = ProviderSpec::mock();
-/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8, tools: false };
+/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8, tools: false, tool_task: None };
 /// let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
 /// use futures_util::StreamExt;
 /// let mut tokens = 0;
@@ -168,6 +174,24 @@ pub fn split_model_override(entry: &str) -> Option<(String, String)> {
         return None;
     }
     Some((provider.to_string(), model.to_string()))
+}
+
+fn default_tool_task() -> crate::tools::ToolTask {
+    crate::tools::find("weather").unwrap_or_else(|| {
+        // unreachable while the registry contains "weather"; avoids
+        // panicking in builds where the registry is trimmed
+        crate::tools::registry()
+            .into_iter()
+            .next()
+            .unwrap_or(crate::tools::ToolTask {
+                name: "weather",
+                description: "",
+                function: "get_weather",
+                prompt: "",
+                parameters: || serde_json::json!(null),
+                validate: |_| false,
+            })
+    })
 }
 
 /// `true` for reasoning models (gpt-5 family, o-series): they think before

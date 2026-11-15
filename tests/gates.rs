@@ -23,6 +23,7 @@ fn lane(name: &str, ttfb: f64, successful: bool) -> LaneSummary {
         prompt: String::new(),
         concurrency: 1,
         variant: None,
+        tool_task: None,
     }
 }
 

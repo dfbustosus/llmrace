@@ -100,6 +100,11 @@ llmrace --init    # create a starter llmrace.toml with example profiles
 ```
 
 ```bash
+# Tool-calling: race argument validity (tasks: weather, math, lookup)
+llmrace openai groq --tools math
+```
+
+```bash
 # Race every provider you have configured (auto-detected from env vars)
 llmrace
 

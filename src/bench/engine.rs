@@ -42,6 +42,7 @@ pub fn spawn_lane(
             prompt: config.prompt.clone(),
             concurrency: config.concurrency,
             variant: config.variant.as_ref().map(|v| v.to_string()),
+            tool_task: Some(config.tool_task.clone()),
         };
         let total_rounds = config.warmup + config.runs;
         let deadline = config
@@ -156,6 +157,7 @@ async fn run_round(
             max_tokens: config.max_tokens,
             timeout: Duration::from_secs(config.timeout_secs),
             tools: config.tools,
+            tool_task: config.tool_task.clone(),
             variant_label: config.variant.clone(),
         };
         let progress = progress.clone();
@@ -224,6 +226,7 @@ struct RequestJob {
     max_tokens: u64,
     timeout: Duration,
     tools: bool,
+    tool_task: String,
     variant_label: Option<Arc<str>>,
 }
 
@@ -241,6 +244,7 @@ async fn single_request(
         max_tokens,
         timeout,
         tools,
+        tool_task,
         variant_label,
     } = job;
     let req = CompletionRequest {
@@ -248,6 +252,7 @@ async fn single_request(
         prompt: &prompt,
         max_tokens,
         tools,
+        tool_task: Some(&tool_task),
     };
     let start = Instant::now();
     let mut stream = stream_completion(&client, &spec, &req).await?;

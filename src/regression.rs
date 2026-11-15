@@ -153,6 +153,7 @@ impl BaselineReport {
 ///     prompt: "p".into(),
 ///     concurrency: 1,
 ///     variant: None,
+///     tool_task: None,
 /// };
 /// let report = evaluate(&[current], &baseline, 15.0);
 /// assert!(!report.any_regressed());
