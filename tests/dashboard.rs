@@ -12,6 +12,7 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64) -> HistoryReco
         p95_total_ms: ttfb * 9.0,
         mean_ttfb_ms: ttfb,
         mean_tokens_per_sec: tps,
+        itl_p95_ms: None,
     }
 }
 
@@ -70,9 +71,31 @@ fn dashboard_escapes_hostile_names() {
         p95_total_ms: 120.0,
         mean_ttfb_ms: 20.0,
         mean_tokens_per_sec: 80.0,
+        itl_p95_ms: None,
     };
     let html = llmrace::dashboard::render_html(std::slice::from_ref(&record), 30, 1_700_000_060);
     assert!(!html.contains("<script>p"), "unescaped provider: {html}");
     assert!(!html.contains("<img src=x"), "unescaped model: {html}");
     assert!(html.contains("&lt;script&gt;"), "{html}");
+}
+
+#[test]
+fn dashboard_renders_itl_series_when_recorded() {
+    let base = 1_700_000_000u64;
+    let records: Vec<llmrace::history::HistoryRecord> = (0..3)
+        .map(|i| {
+            let mut r = rec(base + i * 3_600, "mock", "m1", 10.0, 50.0);
+            r.itl_p95_ms = Some(12.0 + i as f64);
+            r
+        })
+        .collect();
+    let html = llmrace::dashboard::render_html(&records, 30, base + 7_200);
+    assert!(html.contains("ITL p95 (ms)"), "{html}");
+
+    // records without ITL data keep the dashboard unchanged
+    let plain: Vec<llmrace::history::HistoryRecord> = (0..3)
+        .map(|i| rec(base + i * 3_600, "mock", "m1", 10.0, 50.0))
+        .collect();
+    let html2 = llmrace::dashboard::render_html(&plain, 30, base + 7_200);
+    assert!(!html2.contains("ITL p95"), "{html2}");
 }

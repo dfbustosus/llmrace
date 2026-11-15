@@ -210,6 +210,7 @@ pub fn json_report_with_region(
                 "stutters": s.stutters(),
                 "visible_tokens": s.visible_tokens(),
                 "reasoning_tokens": s.reasoning_tokens(),
+                "thinking_ms_estimate": s.thinking_ms_estimate(),
                 "request_id": s.last_request_id(),
                 "tool_validity": s.tool_validity(),
             })

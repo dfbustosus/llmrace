@@ -1065,3 +1065,46 @@ fn merge_missing_file_reports_which_file() {
         "{err}"
     );
 }
+
+#[test]
+fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "openai".into(),
+        model: "gpt-5-nano".into(),
+        runs: vec![RunMetrics {
+            total_ms: 1665.0,
+            ttfb_ms: 1652.0,
+            tokens: 256,       // usage: reasoning + visible
+            visible_tokens: 1, // almost everything was hidden
+            server_ms: Some(1398.0),
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    let est = summary.thinking_ms_estimate().unwrap();
+    assert!((est - 1398.0 * 255.0 / 256.0).abs() < 1e-6, "{est}");
+    let json = llmrace::report::json_report(&[summary], "p", 1, 256);
+    assert!(json.contains("thinking_ms_estimate"), "{json}");
+
+    // classic models: no estimate
+    let classic = llmrace::bench::LaneSummary {
+        name: "x".into(),
+        model: "m".into(),
+        runs: vec![RunMetrics {
+            total_ms: 100.0,
+            ttfb_ms: 10.0,
+            tokens: 50,
+            visible_tokens: 50,
+            server_ms: Some(90.0),
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+    };
+    assert!(classic.thinking_ms_estimate().is_none());
+}

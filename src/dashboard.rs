@@ -42,6 +42,20 @@ pub fn render_html(records: &[HistoryRecord], days: u64, now_unix: u64) -> Strin
         if lanes.len() >= 2 {
             body.push_str(&chart("TTFB (ms)", &lanes, |r| r.mean_ttfb_ms, true));
             body.push_str(&chart("tokens/s", &lanes, |r| r.mean_tokens_per_sec, false));
+            // ITL series only for records that measured inter-token gaps
+            let itl_lanes: Vec<&&HistoryRecord> = lanes
+                .iter()
+                .filter(|r| r.itl_p95_ms.is_some())
+                .copied()
+                .collect();
+            if itl_lanes.len() >= 2 {
+                body.push_str(&chart(
+                    "ITL p95 (ms)",
+                    &itl_lanes,
+                    |r| r.itl_p95_ms.unwrap_or(0.0),
+                    true,
+                ));
+            }
         } else {
             body.push_str("<p class='empty'>needs at least two recorded runs for a chart</p>");
         }

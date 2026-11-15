@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--doctor` probes keyed provider endpoints concurrently instead of sequentially — several blocked endpoints no longer stall diagnostics behind back-to-back 3s timeouts
 - Profiles accept `retries` (`llmrace.toml`), included in the `--init` starter
 
+### Added (more)
+
+- `thinking_ms_estimate` in JSON reports: server processing time scaled by the hidden-reasoning token share — an explicitly documented estimate of how long a reasoning model thought before its first visible token
+- History records capture `itl_p95_ms`; the dashboard renders an ITL p95 time series when recorded runs have it; the sqlite backend migrates existing databases additively (`ALTER TABLE`, duplicate-column safe)
+
 ### Changed (more)
 
 - Mid-stream timeout errors name the model, the timeout window and the tokens received so far (`openai (gpt-4o-mini): request timed out after 30s (120 tokens received)`); README methodology now documents that same-provider multi-model lanes share rate limits when racing concurrently

@@ -30,6 +30,9 @@ pub struct HistoryRecord {
     pub mean_ttfb_ms: f64,
     /// Aggregate throughput in tokens per second.
     pub mean_tokens_per_sec: f64,
+    /// p95 inter-token gap in milliseconds, when the run measured one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub itl_p95_ms: Option<f64>,
 }
 
 /// Default history file location: `$XDG_DATA_HOME/llmrace/history.jsonl`,
@@ -59,6 +62,7 @@ pub fn history_path() -> PathBuf {
 ///     p95_total_ms: 295.0,
 ///     mean_ttfb_ms: 14.0,
 ///     mean_tokens_per_sec: 87.0,
+///     itl_p95_ms: None,
 /// };
 /// append(&path, &[record.clone()]).unwrap();
 /// assert_eq!(load(&path), vec![record]);
@@ -260,5 +264,6 @@ pub fn record_from_summary(s: &crate::bench::LaneSummary, timestamp_unix: u64) -
         p95_total_ms: s.p95_total_ms(),
         mean_ttfb_ms: s.mean_ttfb_ms(),
         mean_tokens_per_sec: s.mean_tokens_per_sec(),
+        itl_p95_ms: s.itl_p95_ms(),
     }
 }

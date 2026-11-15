@@ -182,6 +182,25 @@ impl LaneSummary {
         self.runs.iter().map(|r| r.tokens).sum()
     }
 
+    /// Estimated server-side thinking time for reasoning models: the
+    /// provider-reported processing window scaled by the hidden-reasoning
+    /// token share. `None` without server timing or for classic models.
+    ///
+    /// This is an estimate, not a measurement — providers do not report
+    /// the reasoning/visible split of their processing time. Assuming a
+    /// uniform server-side token rate, the reasoning share of the window
+    /// is `reasoning_tokens / total_tokens`.
+    #[must_use]
+    pub fn thinking_ms_estimate(&self) -> Option<f64> {
+        let server = self.median_server_ms()?;
+        let total = self.total_tokens();
+        let hidden = self.reasoning_tokens();
+        if total == 0 || hidden == 0 {
+            return None;
+        }
+        Some(server * hidden as f64 / total as f64)
+    }
+
     fn itl_sample(&self) -> Option<Sample> {
         let gaps: Vec<f64> = self
             .runs
