@@ -126,6 +126,11 @@ pub(crate) struct Cli {
     #[arg(long, default_value_t = 15.0)]
     max_regression: f64,
 
+    /// With --baseline: only fail the gate on statistically significant
+    /// regressions (Welch p < 0.05 on per-run data) — flake-resistant CI.
+    #[arg(long)]
+    require_significance: bool,
+
     /// Exit 1 if any provider's mean TTFB exceeds this many milliseconds.
     #[arg(long)]
     max_ttfb: Option<f64>,
@@ -400,6 +405,7 @@ fn build_run_config(
         max_ttfb: cli.max_ttfb,
         baseline: cli.baseline,
         max_regression: cli.max_regression,
+        require_significance: cli.require_significance,
         watch: cli.watch,
         every_secs: cli.every,
     })

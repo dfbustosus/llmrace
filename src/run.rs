@@ -61,6 +61,8 @@ pub(crate) struct RunConfig {
     pub baseline: Option<String>,
     /// Regression threshold in percent.
     pub max_regression: f64,
+    /// Only fail the regression gate on statistically significant breaches.
+    pub require_significance: bool,
     /// Continuous monitoring mode.
     pub watch: bool,
     /// Seconds between watch rounds.
@@ -397,7 +399,14 @@ fn regression_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<bool> {
         .with_context(|| format!("parsing baseline {baseline_path}"))?;
     let regression = llmrace::regression::evaluate(summaries, &baseline, cfg.max_regression);
     println!("\n{}", regression.terminal_table(cfg.max_regression));
-    Ok(!regression.any_regressed())
+    if cfg.require_significance {
+        if regression.any_regressed() && !regression.any_regressed_significant() {
+            println!("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
+        }
+        Ok(!regression.any_regressed_significant())
+    } else {
+        Ok(!regression.any_regressed())
+    }
 }
 
 fn print_lane_progress(s: &LaneSummary) {

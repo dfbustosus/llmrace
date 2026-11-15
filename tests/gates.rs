@@ -67,3 +67,54 @@ fn all_lanes_failed_detects_total_outage() {
     let mixed = vec![lane("a", 1.0, false), lane("b", 10.0, true)];
     assert!(!all_lanes_failed(&mixed));
 }
+
+#[test]
+fn significance_gate_separates_noise_from_real_regressions() {
+    // Baseline and current with per-run data: means breach the threshold
+    // but with heavy overlap (noise).
+    let noisy = r#"{"providers":[{
+        "provider":"mock","mean_total_ms":200.0,"p95_total_ms":220.0,
+        "mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,
+        "runs":[
+          {"total_ms":150.0,"ttfb_ms":20.0,"tokens_per_sec":80.0},
+          {"total_ms":250.0,"ttfb_ms":20.0,"tokens_per_sec":80.0},
+          {"total_ms":180.0,"ttfb_ms":20.0,"tokens_per_sec":80.0},
+          {"total_ms":230.0,"ttfb_ms":20.0,"tokens_per_sec":80.0}]}]}"#;
+    let current_noisy = r#"{"providers":[{
+        "provider":"mock","mean_total_ms":260.0,"p95_total_ms":280.0,
+        "mean_ttfb_ms":20.0,"mean_tokens_per_sec":79.0,
+        "runs":[
+          {"total_ms":250.0,"ttfb_ms":20.0,"tokens_per_sec":79.0},
+          {"total_ms":190.0,"ttfb_ms":20.0,"tokens_per_sec":79.0},
+          {"total_ms":300.0,"ttfb_ms":20.0,"tokens_per_sec":79.0},
+          {"total_ms":210.0,"ttfb_ms":20.0,"tokens_per_sec":79.0}]}]}"#;
+    let base = llmrace::regression::BaselineReport::from_json_str(noisy).unwrap();
+    let cur = llmrace::regression::BaselineReport::from_json_str(current_noisy).unwrap();
+    let report = llmrace::regression::compare_baselines(&cur, &base, 20.0);
+    assert!(
+        report.any_regressed(),
+        "threshold breached: mean 200 -> 260 is +30%"
+    );
+    assert!(
+        !report.any_regressed_significant(),
+        "overlapping samples must not count as significant"
+    );
+    // p-values present and rendered
+    let table = report.terminal_table(20.0);
+    assert!(table.contains("p="), "{table}");
+
+    // a clear regression stays significant
+    let clear_current = r#"{"providers":[{
+        "provider":"mock","mean_total_ms":400.0,"p95_total_ms":420.0,
+        "mean_ttfb_ms":20.0,"mean_tokens_per_sec":79.0,
+        "runs":[
+          {"total_ms":395.0,"ttfb_ms":20.0,"tokens_per_sec":79.0},
+          {"total_ms":405.0,"ttfb_ms":20.0,"tokens_per_sec":79.0},
+          {"total_ms":400.0,"ttfb_ms":20.0,"tokens_per_sec":79.0}]}]}"#;
+    let cur2 = llmrace::regression::BaselineReport::from_json_str(clear_current).unwrap();
+    let report2 = llmrace::regression::compare_baselines(&cur2, &base, 20.0);
+    assert!(
+        report2.any_regressed_significant(),
+        "clean 200 -> 400 shift is real"
+    );
+}

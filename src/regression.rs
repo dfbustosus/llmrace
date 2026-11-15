@@ -33,6 +33,9 @@ pub struct MetricComparison {
     pub delta_pct: f64,
     /// Whether this metric regressed beyond the threshold.
     pub regressed: bool,
+    /// Welch p-value for the difference, when both sides carry per-run
+    /// samples (`None` for reports saved without per-run data).
+    pub p_value: Option<f64>,
 }
 
 /// Outcome of a full baseline comparison.
@@ -55,6 +58,20 @@ impl RegressionReport {
             .any(|c| c.metrics.iter().any(|m| m.regressed))
     }
 
+    /// `true` when at least one metric regressed beyond the threshold
+    /// **and** the difference is statistically significant (Welch
+    /// p < 0.05, when per-run data allows the test). Threshold breaches
+    /// without a significant p-value are treated as noise — the
+    /// flake-resistant gate for CI.
+    #[must_use]
+    pub fn any_regressed_significant(&self) -> bool {
+        self.comparisons.iter().any(|c| {
+            c.metrics
+                .iter()
+                .any(|m| m.regressed && m.p_value.is_some_and(|p| p < 0.05))
+        })
+    }
+
     /// Renders the comparison as a terminal table.
     pub fn terminal_table(&self, max_regression_pct: f64) -> String {
         let mut out = format!(
@@ -66,9 +83,14 @@ impl RegressionReport {
         for c in &self.comparisons {
             for m in &c.metrics {
                 let mark = if m.regressed { " ✗" } else { "" };
+                let p_note = match m.p_value {
+                    Some(p) if p < 0.05 => format!(" p={p:.3}"),
+                    Some(p) => format!(" p={p:.2} n.s."),
+                    None => String::new(),
+                };
                 out.push_str(&format!(
-                    "{:<14} {:<16} {:>16.1} → {:<16.1} {:>+8.1}%{}\n",
-                    c.name, m.label, m.baseline, m.current, m.delta_pct, mark
+                    "{:<14} {:<16} {:>16.1} \u{2192} {:<16.1} {:>+8.1}%{}{}\n",
+                    c.name, m.label, m.baseline, m.current, m.delta_pct, p_note, mark
                 ));
             }
         }
@@ -94,6 +116,20 @@ pub struct BaselineReport {
     pub providers: Vec<BaselineProvider>,
 }
 
+/// One per-run measurement of a baseline (the report's `runs` array).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BaselineRun {
+    /// Round latency in milliseconds.
+    #[serde(default)]
+    pub total_ms: f64,
+    /// Round time-to-first-byte in milliseconds.
+    #[serde(default)]
+    pub ttfb_ms: f64,
+    /// Round throughput in tokens per second.
+    #[serde(default)]
+    pub tokens_per_sec: f64,
+}
+
 /// One provider entry of a baseline report.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BaselineProvider {
@@ -117,6 +153,9 @@ pub struct BaselineProvider {
     /// Aggregate throughput in tokens per second.
     #[serde(default)]
     pub mean_tokens_per_sec: f64,
+    /// Per-run measurements, when the report was saved with them.
+    #[serde(default)]
+    pub runs: Vec<BaselineRun>,
 }
 
 impl BaselineReport {
@@ -181,6 +220,15 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                 p95_total_ms: s.p95_total_ms(),
                 mean_ttfb_ms: s.mean_ttfb_ms(),
                 mean_tokens_per_sec: s.mean_tokens_per_sec(),
+                runs: s
+                    .runs
+                    .iter()
+                    .map(|r| BaselineRun {
+                        total_ms: r.total_ms,
+                        ttfb_ms: r.ttfb_ms,
+                        tokens_per_sec: r.tokens_per_sec(),
+                    })
+                    .collect(),
             })
             .collect(),
     }
@@ -244,24 +292,28 @@ pub fn compare_baselines(
                 base.mean_total_ms,
                 current.mean_total_ms,
                 max_regression_pct,
+                metric_p_value(&base.runs, &current.runs, |r| r.total_ms),
             ),
             latency_metric(
                 "p95 latency",
                 base.p95_total_ms,
                 current.p95_total_ms,
                 max_regression_pct,
+                None, // p95 is derived, not per-run
             ),
             latency_metric(
                 "ttfb",
                 base.mean_ttfb_ms,
                 current.mean_ttfb_ms,
                 max_regression_pct,
+                metric_p_value(&base.runs, &current.runs, |r| r.ttfb_ms),
             ),
             throughput_metric(
                 "tokens/s",
                 base.mean_tokens_per_sec,
                 current.mean_tokens_per_sec,
                 max_regression_pct,
+                metric_p_value(&base.runs, &current.runs, |r| r.tokens_per_sec),
             ),
         ];
         report.comparisons.push(ProviderComparison {
@@ -289,6 +341,7 @@ fn latency_metric(
     baseline: f64,
     current: f64,
     threshold: f64,
+    p_value: Option<f64>,
 ) -> MetricComparison {
     let delta_pct = if baseline.abs() < f64::EPSILON {
         0.0
@@ -301,6 +354,7 @@ fn latency_metric(
         current,
         delta_pct,
         regressed: delta_pct > threshold,
+        p_value,
     }
 }
 
@@ -309,6 +363,7 @@ fn throughput_metric(
     baseline: f64,
     current: f64,
     threshold: f64,
+    p_value: Option<f64>,
 ) -> MetricComparison {
     let delta_pct = if baseline.abs() < f64::EPSILON {
         0.0
@@ -321,5 +376,22 @@ fn throughput_metric(
         current,
         delta_pct,
         regressed: delta_pct < -threshold,
+        p_value,
     }
+}
+
+/// Welch p-value for a metric across two per-run series, when both sides
+/// carry at least two samples.
+fn metric_p_value(
+    base_runs: &[BaselineRun],
+    current_runs: &[BaselineRun],
+    pick: fn(&BaselineRun) -> f64,
+) -> Option<f64> {
+    if base_runs.len() < 2 || current_runs.len() < 2 {
+        return None;
+    }
+    let a: Vec<f64> = base_runs.iter().map(pick).collect();
+    let b: Vec<f64> = current_runs.iter().map(pick).collect();
+    let (t, df) = crate::stats::welch_t(&a, &b)?;
+    Some(crate::stats::t_two_sided_p(t, df))
 }
