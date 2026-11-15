@@ -10,9 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Providers: **DeepInfra** (`deepinfra`) and **Hyperbolic** (`hyperbolic`), OpenAI-compatible with default-model pricing locked by the coverage test
+- **Cost as a podium weight**: `--weights tps=60,cost=40` ranks price-aware; the cost axis applies only when every scored lane has pricing data (otherwise the weight is renormalized away, never silently favoring unpriced lanes)
+- `--out -` streams the markdown report to stdout (siblings keep conventional filenames) — pipe straight into `$GITHUB_STEP_SUMMARY`
+- **TTFB p50/p95** in JSON reports (`ttfb_p50_ms`, `ttfb_p95_ms`): tail first-token latency, not just the mean
 - `--trend` shows the median ITL p95 column for providers whose recorded history carries it
-- End-to-end `--baseline --require-significance` gate test through the real binary (record → replay → pass with p-values rendered)
+- End-to-end `--baseline --require-significance` gate test through the real binary (record → replay → pass with an explanatory verdict; platform jitter is absorbed by the significance requirement)
 
+### Fixed
+
+- **`--watch` resolved one model from the first provider and raced every lane with it** — `openai=gpt-4o-mini ollama=llama3.2:1b --watch` asked Ollama for `gpt-4o-mini` and 404'd. New additive `watch_with_models` API races each lane with its own resolved model (regression-tested end-to-end)
 
 ## [1.2.0] - 2026-11-15
 
