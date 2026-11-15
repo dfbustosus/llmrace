@@ -5,7 +5,7 @@
 //! (dependency inversion at the binary edge).
 
 use anyhow::{Context, Result};
-use llmrace::bench::{spawn_lane, BenchConfig, LaneSummary};
+use llmrace::bench::{BenchConfig, LaneSummary};
 use llmrace::provider::ProviderSpec;
 use llmrace::score::Weights;
 use llmrace::{report, tui};
@@ -104,6 +104,7 @@ async fn race_collect(
     cfg: &RunConfig,
     bench_override: Option<BenchConfig>,
     headless_progress: bool,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<LaneSummary>> {
     let bench = bench_override.unwrap_or_else(|| cfg.bench.clone());
     let variants: Vec<Option<llmrace::variants::VariantDef>> = match &cfg.sweep {
@@ -130,7 +131,7 @@ async fn race_collect(
         };
         for p in &cfg.providers {
             let model = resolve_model(&cfg.model_overrides, &p.id, &p.default_model);
-            let (handle, rx) = spawn_lane(
+            let (handle, rx) = llmrace::bench::spawn_lane_stoppable(
                 cfg.client.clone(),
                 p.clone(),
                 model,
@@ -139,6 +140,7 @@ async fn race_collect(
                     variant: variant.as_ref().map(|v| Arc::from(v.name.as_str())),
                     ..bench.clone()
                 },
+                std::sync::Arc::clone(&stop),
             );
             handles.push(async move { handle.await.map_err(anyhow::Error::from) });
             receivers.push(rx);
@@ -148,6 +150,16 @@ async fn race_collect(
     if headless_progress || cfg.no_tui || !std::io::stdout().is_terminal() {
         if !cfg.no_tui && !headless_progress {
             eprintln!("note: stdout is not a terminal — running headless (pass --no-tui to silence this note)");
+        }
+        // graceful interrupt: SIGINT stops new rounds; in-flight rounds
+        // finish and partial results still reach the reports
+        {
+            let stop = std::sync::Arc::clone(&stop);
+            tokio::spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                eprintln!("\n\u{23f9} interrupt received — finishing in-flight rounds, then writing reports…");
+            });
         }
         drop(receivers);
         let mut all = Vec::new();
@@ -206,7 +218,11 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         );
     }
 
-    let summaries = race_collect(&cfg, None, false).await?;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let summaries = race_collect(&cfg, None, false, std::sync::Arc::clone(&stop)).await?;
+    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("\u{23f9} interrupted — writing partial results");
+    }
 
     if !cfg.quiet {
         let table = report::terminal_table(&summaries);
@@ -620,7 +636,13 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
         }
         let mut bench = cfg.bench.clone();
         bench.concurrency = *level;
-        let summaries = race_collect(&cfg, Some(bench), true).await?;
+        let summaries = race_collect(
+            &cfg,
+            Some(bench),
+            true,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?;
         phases.push(RampLevel {
             concurrency: *level,
             summaries,

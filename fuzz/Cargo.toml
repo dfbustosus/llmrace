@@ -21,3 +21,7 @@ doc = false
 bench = false
 
 [workspace]
+
+[[bin]]
+name = "decode_payload"
+path = "fuzz_targets/decode_payload.rs"

@@ -10,14 +10,17 @@ env:
 
 jobs:
   fuzz:
-    name: cargo-fuzz sse_parser
+    name: cargo-fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [sse_parser, decode_payload]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - uses: taiki-e/install-action@cargo-fuzz
       - name: Short fuzz burst
-        run: cargo fuzz run sse_parser -- -max_total_time=120 -rss_limit_mb=2048
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=120 -rss_limit_mb=2048
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v7

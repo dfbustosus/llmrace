@@ -31,6 +31,28 @@ pub fn spawn_lane(
     tokio::task::JoinHandle<LaneSummary>,
     mpsc::Receiver<LaneUpdate>,
 ) {
+    spawn_lane_stoppable(
+        client,
+        spec,
+        model,
+        config,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+}
+
+/// Like [`spawn_lane`], but stops starting new rounds once `stop` is set;
+/// the round in flight completes and partial results are returned — the
+/// graceful-interrupt path for headless races.
+pub fn spawn_lane_stoppable(
+    client: reqwest::Client,
+    spec: ProviderSpec,
+    model: String,
+    config: BenchConfig,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> (
+    tokio::task::JoinHandle<LaneSummary>,
+    mpsc::Receiver<LaneUpdate>,
+) {
     let (tx, rx) = mpsc::channel();
     let model_label: Arc<str> = Arc::from(model.as_str());
     let handle = tokio::spawn(async move {
@@ -49,6 +71,9 @@ pub fn spawn_lane(
             .duration_secs
             .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
         for round in 0..total_rounds {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) && round >= config.warmup {
+                break;
+            }
             let counted = round >= config.warmup;
             if let Some(dl) = deadline {
                 if counted && round > config.warmup && std::time::Instant::now() >= dl {

@@ -206,6 +206,7 @@ Methodology notes:
 - One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes
 - Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other. Exception: `provider=model` lanes of the *same* provider race concurrently — the provider's rate limits and capacity are then shared between those lanes, which is exactly what a mixed-model race measures in practice
 - Rounds with 3σ latency outliers are flagged with `†`
+- **ITL caveat**: inter-token gaps are timestamped when the runtime polls the event, so they include local scheduling jitter (sub-millisecond on a quiet machine, more under heavy concurrent load) — compare ITL across providers measured in the *same* race, not across machines
 - Token counts prefer **provider-reported usage** (`include_usage` on OpenAI-compatible APIs, `message_delta` on Anthropic) and fall back to stream-event counting
 - All requests use the same prompt, `max_tokens` and sampling defaults per run
 - Per-request timeouts (`--timeout`) are enforced mid-stream; panics in a single request never abort the race

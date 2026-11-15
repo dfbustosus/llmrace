@@ -179,16 +179,31 @@ pub async fn list_models(client: &reqwest::Client, spec: &ProviderSpec) -> Resul
         )));
     }
     let key = spec.api_key()?;
+    // URL derivation via Url::join — proper RFC 3986 semantics instead of
+    // string surgery, so custom endpoints with query strings, ports or
+    // trailing paths resolve correctly.
+    let models_url = |suffix: &str, replace_last: bool| -> Result<String> {
+        let base = reqwest::Url::parse(&spec.endpoint)
+            .map_err(|e| Error::Config(format!("invalid endpoint for {}: {e}", spec.id)))?;
+        let mut url = base.clone();
+        if replace_last {
+            // ".../chat/completions" -> ".../chat/models"
+            let mut segments = base.path_segments().map(Iterator::collect::<Vec<_>>);
+            if let Some(segs) = segments.as_mut() {
+                if segs.last() == Some(&"completions") || segs.last() == Some(&"messages") {
+                    segs.pop();
+                }
+                url.set_path(&segs.join("/"));
+            }
+        }
+        url.join(suffix)
+            .map(|u| u.to_string())
+            .map_err(|e| Error::Config(format!("cannot join models path for {}: {e}", spec.id)))
+    };
     let (url, auth) = match spec.wire {
-        Wire::OpenAiCompat => (
-            spec.endpoint
-                .trim_end_matches("/chat/completions")
-                .to_string()
-                + "/models",
-            bearer_or_none(key),
-        ),
+        Wire::OpenAiCompat => (models_url("models", true)?, bearer_or_none(key)),
         Wire::Anthropic => (
-            spec.endpoint.trim_end_matches("/messages").to_string() + "/models",
+            models_url("models", true)?,
             RequestAuth::Headers(vec![
                 ("x-api-key", key.clone().unwrap_or_default()),
                 ("anthropic-version", "2023-06-01".to_string()),
