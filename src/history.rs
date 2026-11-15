@@ -121,6 +121,9 @@ pub struct ProviderTrend {
     pub tps_latest: f64,
     /// Median p95 latency in the window, ms.
     pub p95_median: f64,
+    /// Median p95 inter-token gap in the window, ms; `None` when no
+    /// recorded run measured ITL.
+    pub itl_p95_median: Option<f64>,
 }
 
 impl ProviderTrend {
@@ -196,6 +199,9 @@ pub fn build_trends(
             Sample::from_values(window.iter().map(|r| r.mean_tokens_per_sec).collect()).median();
         let p95_median =
             Sample::from_values(window.iter().map(|r| r.p95_total_ms).collect()).median();
+        let itl_values: Vec<f64> = window.iter().filter_map(|r| r.itl_p95_ms).collect();
+        let itl_p95_median =
+            (!itl_values.is_empty()).then(|| Sample::from_values(itl_values).median());
         let last = window.last().cloned().unwrap_or_else(|| window[0].clone());
         trends.push(ProviderTrend {
             name,
@@ -207,6 +213,7 @@ pub fn build_trends(
             tps_median,
             tps_latest: last.mean_tokens_per_sec,
             p95_median,
+            itl_p95_median,
         });
     }
     trends
@@ -215,8 +222,8 @@ pub fn build_trends(
 /// Renders trends as a terminal table.
 pub fn render_trend_table(trends: &[ProviderTrend], days: u64) -> String {
     let mut out = format!(
-        "📈 llmrace trend — last {days} days\n{:<14} {:<24} {:>12} {:>10} {:>10} {:>10} {}\n",
-        "Provider", "Model", "TTFB med→now", "Δ%", "Tok/s", "Δp95%", "Notes"
+        "📈 llmrace trend — last {days} days\n{:<14} {:<24} {:>12} {:>10} {:>10} {:>10} {:>9} {}\n",
+        "Provider", "Model", "TTFB med→now", "Δ%", "Tok/s", "Δp95%", "ITLp95", "Notes"
     );
     out.push_str(&"-".repeat(out.len()));
     out.push('\n');
@@ -235,8 +242,12 @@ pub fn render_trend_table(trends: &[ProviderTrend], days: u64) -> String {
             crate::stats::fmt_ms(t.ttfb_median),
             crate::stats::fmt_ms(t.ttfb_latest)
         );
+        let itl = t
+            .itl_p95_median
+            .map(|v| format!("{v:.0}ms"))
+            .unwrap_or_else(|| "—".into());
         out.push_str(&format!(
-            "{:<14} {:<24} {:>9} {:>+9.1} {:>10.1} {:>+9.1} {}\n",
+            "{:<14} {:<24} {:>9} {:>+9.1} {:>10.1} {:>+9.1} {:>9} {}\n",
             t.name,
             crate::util::truncate(&t.current_model, 24),
             ttfb,
@@ -246,6 +257,7 @@ pub fn render_trend_table(trends: &[ProviderTrend], days: u64) -> String {
                 t.p95_median,
                 t.records.last().map(|r| r.p95_total_ms).unwrap_or(0.0)
             ),
+            itl,
             notes
         ));
     }

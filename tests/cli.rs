@@ -645,3 +645,55 @@ fn ramp_conflicts_and_validation() {
         assert!(!out.status.success(), "--ramp {bad} must be rejected");
     }
 }
+
+#[test]
+fn baseline_gate_end_to_end_passes_on_stable_provider() {
+    // mock is deterministic: a baseline recorded now gates a replay cleanly
+    let baseline_path = std::env::temp_dir().join("llmrace-baseline-e2e.json");
+    let md_path = std::env::temp_dir().join("llmrace-baseline-e2e.md");
+
+    let record = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("3")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--json")
+        .arg("--out")
+        .arg(md_path.to_string_lossy().into_owned())
+        .output()
+        .unwrap();
+    assert!(record.status.success());
+    let baseline_json = std::env::temp_dir().join("llmrace-baseline-e2e.json");
+    std::fs::rename(&baseline_json, &baseline_path).unwrap();
+
+    let gate = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("3")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--baseline")
+        .arg(baseline_path.to_string_lossy().into_owned())
+        .arg("--max-regression")
+        .arg("15")
+        .arg("--require-significance")
+        .arg("--quiet")
+        .arg("--out")
+        .arg(md_path.to_string_lossy().into_owned())
+        .output()
+        .unwrap();
+    assert!(
+        gate.status.success(),
+        "stable provider must pass its own baseline: {}",
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&gate.stdout);
+    assert!(
+        stdout.contains("no regressions beyond threshold"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("p="), "p-values rendered: {stdout}");
+}

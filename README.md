@@ -168,6 +168,8 @@ Every provider with a matching env var races automatically — no config file:
 | `together` | `TOGETHER_API_KEY` | `Llama-3.3-70B-Instruct-Turbo` |
 | `fireworks` | `FIREWORKS_API_KEY` | `llama-v3p3-70b-instruct` |
 | `cerebras` | `CEREBRAS_API_KEY` | `llama-3.3-70b` |
+| `deepinfra` | `DEEPINFRA_API_KEY` | `meta-llama/Meta-Llama-3.1-8B-Instruct` |
+| `hyperbolic` | `HYPERBOLIC_API_KEY` | `meta-llama/Meta-Llama-3.1-70B-Instruct` |
 | `xai` | `XAI_API_KEY` | `grok-3-mini` |
 | `perplexity` | `PERPLEXITY_API_KEY` | `sonar` |
 | `cohere` | `CO_API_KEY` | `command-a-03-2025` |
@@ -315,7 +317,7 @@ PRs with results from other regions are welcome — record with `--json` and ext
 
 | | llmrace | provider CLIs | load testers (k6/vegeta) | router dashboards |
 |---|---|---|---|---|
-| Multi-provider streaming race | ✅ 12 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
+| Multi-provider streaming race | ✅ 14 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
 | TTFB / tokens/s / p95 / t-CI | ✅ built-in | varies | ✝ you build it | ✅ but only routed traffic |
 | Live terminal race view | ✅ | ❌ | ❌ | ❌ |
 | CI regression gate (`--baseline`) | ✅ | ❌ | ✝ heavy scripting | ❌ |

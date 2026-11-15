@@ -106,3 +106,33 @@ async fn record_from_summary_maps_all_fields() {
     assert!(record.mean_tokens_per_sec > 0.0);
     assert!(record.p95_total_ms >= record.mean_total_ms * 0.99);
 }
+
+#[test]
+fn trend_renders_itl_when_recorded() {
+    let base = 1_700_000_000u64;
+    let records: Vec<llmrace::history::HistoryRecord> = (0..3)
+        .map(|i| {
+            let mut r = rec(base + i * 3_600, "mock", "m1", 10.0, 50.0, 100.0);
+            r.itl_p95_ms = Some(15.0 + i as f64);
+            r
+        })
+        .collect();
+    let trends = llmrace::history::build_trends(&records, 30, base + 7_200, &[]);
+    assert_eq!(trends.len(), 1);
+    assert!(trends[0].itl_p95_median.is_some());
+    let table = llmrace::history::render_trend_table(&trends, 30);
+    assert!(table.contains("ITLp95"), "{table}");
+    assert!(table.contains("16ms"), "{table}");
+
+    // records without ITL show the em dash
+    let plain: Vec<llmrace::history::HistoryRecord> = (0..3)
+        .map(|i| rec(base + i * 3_600, "mock", "m1", 10.0, 50.0, 100.0))
+        .collect();
+    let plain_trends = llmrace::history::build_trends(&plain, 30, base + 7_200, &[]);
+    let plain_table = llmrace::history::render_trend_table(&plain_trends, 30);
+    assert!(plain_table.contains("ITLp95"), "{plain_table}");
+    assert!(
+        !plain_table.contains("ms\n".to_string().trim()),
+        "no itl value expected"
+    );
+}

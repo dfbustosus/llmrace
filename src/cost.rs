@@ -105,6 +105,16 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
         ("cohere/command-a-03-2025", 2.50, 10.00),
         ("cohere/command-r-plus-08-2024", 2.50, 10.00),
         ("openrouter/openai/gpt-4o-mini", 0.15, 0.60),
+        (
+            "deepinfra/meta-llama/Meta-Llama-3.1-8B-Instruct",
+            0.03,
+            0.04,
+        ),
+        (
+            "hyperbolic/meta-llama/Meta-Llama-3.1-70B-Instruct",
+            0.10,
+            0.40,
+        ),
     ];
     table
         .iter()

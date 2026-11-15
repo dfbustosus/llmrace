@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Providers: **DeepInfra** (`deepinfra`) and **Hyperbolic** (`hyperbolic`), OpenAI-compatible with default-model pricing locked by the coverage test
+- `--trend` shows the median ITL p95 column for providers whose recorded history carries it
+- End-to-end `--baseline --require-significance` gate test through the real binary (record → replay → pass with p-values rendered)
+
+
 ## [1.2.0] - 2026-11-15
 
 The statistics release: race rankings carry error bars, CI gates distinguish real regressions from noise, and `--ramp` finds each provider's saturation point.

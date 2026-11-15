@@ -207,6 +207,28 @@ impl ProviderSpec {
         )
     }
 
+    /// DeepInfra inference cloud.
+    pub fn deepinfra() -> Self {
+        spec(
+            "deepinfra",
+            "https://api.deepinfra.com/v1/openai/chat/completions",
+            Some("DEEPINFRA_API_KEY"),
+            "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            Wire::OpenAiCompat,
+        )
+    }
+
+    /// Hyperbolic inference cloud.
+    pub fn hyperbolic() -> Self {
+        spec(
+            "hyperbolic",
+            "https://api.hyperbolic.xyz/v1/chat/completions",
+            Some("HYPERBOLIC_API_KEY"),
+            "meta-llama/Meta-Llama-3.1-70B-Instruct",
+            Wire::OpenAiCompat,
+        )
+    }
+
     /// Local LM Studio server (default port 1234).
     pub fn lmstudio() -> Self {
         let mut p = spec(
@@ -278,6 +300,8 @@ impl ProviderSpec {
             ProviderSpec::together(),
             ProviderSpec::fireworks(),
             ProviderSpec::cerebras(),
+            ProviderSpec::deepinfra(),
+            ProviderSpec::hyperbolic(),
             ProviderSpec::openrouter(),
             ProviderSpec::ollama(),
             ProviderSpec::lmstudio(),
