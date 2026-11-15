@@ -252,6 +252,7 @@ llmrace --doctor            # keys, endpoint egress, Ollama, config, history
 llmrace --doctor --json     # structured output for CI
 llmrace --list --json       # full provider registry with availability
 llmrace --models groq       # models the provider currently offers
+llmrace --models myvllm --endpoint http://localhost:8000/v1/chat/completions --provider-name myvllm
 llmrace --schema > schema.json   # JSON Schema for race.json (CI validation)
 ```
 

@@ -294,11 +294,29 @@ async fn dispatch(
         return modes::list(cli.json).map(|_| 0);
     }
     if let Some(target) = &cli.models {
+        // a custom endpoint takes precedence when named explicitly or
+        // when listing "everything available"
+        let custom_spec = match (&cli.endpoint, &cli.provider_name) {
+            (Some(endpoint), Some(name)) => {
+                let model = resolve_model(&cli.model, "custom", "default");
+                Some(ProviderSpec::custom(
+                    name,
+                    endpoint,
+                    cli.api_key_env.as_deref(),
+                    &model,
+                ))
+            }
+            _ => None,
+        };
         let providers = if target == "*" {
-            ProviderSpec::registry()
+            let mut list: Vec<ProviderSpec> = ProviderSpec::registry()
                 .into_iter()
                 .filter(|p| *p.id != *"mock" && p.is_available() && !p.opt_in)
-                .collect::<Vec<_>>()
+                .collect();
+            list.extend(custom_spec);
+            list
+        } else if custom_spec.as_ref().is_some_and(|c| *c.id == *target) {
+            vec![custom_spec.expect("checked above")]
         } else {
             vec![ProviderSpec::find(target)
                 .with_context(|| format!("unknown provider '{target}' (try --list)"))?]

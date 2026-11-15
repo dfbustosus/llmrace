@@ -49,7 +49,21 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     }
 
     let mut phases: Vec<RampLevel> = Vec::new();
+    // graceful interrupt across phases: SIGINT finishes the in-flight
+    // phase's rounds and skips the remaining levels
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let stop = std::sync::Arc::clone(&stop);
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("\n\u{23f9} interrupt received — finishing in-flight rounds, writing the curve so far…");
+        });
+    }
     for (idx, level) in levels.iter().enumerate() {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) && idx > 0 {
+            break;
+        }
         if !cfg.quiet {
             println!(
                 "\u{25b8} phase {}/{} — concurrency {level}",
@@ -59,13 +73,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
         }
         let mut bench = cfg.bench.clone();
         bench.concurrency = *level;
-        let summaries = race_collect(
-            &cfg,
-            Some(bench),
-            true,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        )
-        .await?;
+        let summaries = race_collect(&cfg, Some(bench), true, std::sync::Arc::clone(&stop)).await?;
         phases.push(RampLevel {
             concurrency: *level,
             summaries,
