@@ -1320,7 +1320,7 @@ fn significance_labels_disambiguate_same_provider_models() {
 fn duration_mode_reports_actual_round_count() {
     // the internal 100_000-round sentinel must not leak into metadata
     let json = serde_json::from_str::<serde_json::Value>(&{
-        let mut summary = llmrace::bench::LaneSummary {
+        let summary = llmrace::bench::LaneSummary {
             name: "mock".into(),
             model: "m".into(),
             runs: (0..7)
