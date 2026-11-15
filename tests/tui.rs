@@ -130,3 +130,33 @@ fn long_prompt_is_truncated_in_header() {
     let buf = draw(&tui, 90, 10);
     assert!(buf.contains('…'), "ellipsis expected: {buf}");
 }
+
+#[test]
+fn long_ttfb_shows_thinking_state() {
+    let lanes = vec![(Arc::from("gpt5"), None, "gpt-5-nano".to_string())];
+    let mut tui = Tui::new(lanes, "p".into(), 2);
+    // 2s elapsed, no first token yet
+    tui.update(llmrace::bench::LaneUpdate {
+        provider: Arc::from("gpt5"),
+        variant: None,
+        model: Some(Arc::from("gpt-5-nano")),
+        tokens: 0,
+        elapsed_ms: 2_000.0,
+        ttfb_ms: None,
+        finished: false,
+        error: None,
+        server_ms: None,
+        last_token: None,
+        ratelimit: None,
+    });
+    let buf = draw(&tui, 100, 12);
+    assert!(buf.contains("thinking"), "{buf}");
+    assert!(buf.contains("2.0s"), "{buf}");
+    assert!(!buf.contains("streaming"), "{buf}");
+
+    // short waits and tokened lanes keep the streaming label
+    let mut early = Tui::new(vec![(Arc::from("m"), None, "m".into())], "p".into(), 2);
+    early.update(upd("m", "m", 0, false, None)); // elapsed 250ms
+    let buf2 = draw(&early, 100, 12);
+    assert!(buf2.contains("streaming"), "{buf2}");
+}

@@ -39,6 +39,7 @@ pub(crate) async fn doctor(json: bool) -> Result<()> {
         llmrace::doctor::check_providers(&client, &llmrace::provider::ProviderSpec::registry())
             .await,
     );
+    checks.push(llmrace::doctor::check_version(&client).await);
     if json {
         let payload: Vec<serde_json::Value> = checks
             .iter()

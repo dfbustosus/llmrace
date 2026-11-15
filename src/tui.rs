@@ -352,6 +352,11 @@ impl Tui {
                     Some(ms) => format!(" 🏁 {:.0} ms", ms),
                     None => " 🏁 done".to_string(),
                 }
+            } else if lane.ttfb_ms.is_none() && lane.elapsed_ms > 800.0 {
+                // No first token yet after a noticeable wait: the model is
+                // thinking or the request is queueing — "streaming" would
+                // be a lie.
+                format!(" ⏳ thinking… {:.1}s", lane.elapsed_ms / 1000.0)
             } else {
                 " ▶ streaming…".to_string()
             };

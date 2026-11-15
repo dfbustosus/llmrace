@@ -111,7 +111,7 @@ fn variant_table(lanes: &[&LaneSummary]) -> String {
             .map(|v| format!("{v:.0} ms"))
             .unwrap_or_else(|| "—".into());
         out.push_str(&format!(
-            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | **{:.1}** | {} |\n",
+            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | {} | {} |\n",
             i + 1,
             s.name,
             outlier_mark,

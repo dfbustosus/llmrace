@@ -7,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-15
+
+### Fixed
+
+- **Markdown reasoning lanes rendered `*****` instead of tokens/s**: the 🧠-annotated value was passed pre-formatted into the template's `{:.1}` slot, where precision truncated the string to one character; the value and marker now render (`**131.0** 🧠510`), regression-tested on the markdown path
+
 ### Added
 
 - `llmrace --models [provider]`: lists the models a provider currently offers (OpenAI-compat `/v1/models`, Anthropic, Gemini and Cohere shapes); bare `--models` queries every auto-detected provider — no more guessing `-m` values
 - `llmrace --schema`: prints the JSON Schema (draft 2020-12) for `race.json`, so CI consumers can validate reports with standard tooling; a test keeps the schema and real reports in sync
 - `--tools` now conflicts with `--sweep` (both control the prompt; the tool prompt was silently discarded before)
+- TUI lanes past 800 ms without a first token show `⏳ thinking… 1.9s` instead of the misleading `▶ streaming…` (reasoning models think before the first visible token)
+- `--doctor` reports available llmrace upgrades from crates.io (one user-initiated GET; the race path never phones home)
 
 ## [1.1.0] - 2026-11-15
 

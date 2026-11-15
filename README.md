@@ -34,7 +34,7 @@ Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tai
 
 ![llmrace demo](docs/demo.gif)
 
-*A multi-model race — two OpenAI models (`gpt-4o-mini` vs `gpt-4.1`) against local Ollama and the instant mock lane — finishing in the ranked table (with inter-token latency) and the `--winner` podium, then `llmrace --doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs); needs `OPENAI_API_KEY` in the environment).*
+*A multi-model race — classic `gpt-4o-mini` vs the reasoning `gpt-5-nano` (🧠 hidden-reasoning tokens, honest throughput) against local Ollama and the instant mock lane — finishing in the ranked table and the `--winner` podium, then live model discovery (`--models`) and `--doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs); needs `OPENAI_API_KEY` in the environment).*
 
 ## Why
 

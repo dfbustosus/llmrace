@@ -124,6 +124,64 @@ pub async fn check_ollama(client: &reqwest::Client) -> Check {
     }
 }
 
+/// Checks for a newer llmrace release on crates.io.
+///
+/// One user-initiated GET from `--doctor`; the race path never phones
+/// home. `Warn` when a newer version exists or the check is offline.
+pub async fn check_version(client: &reqwest::Client) -> Check {
+    const CURRENT: &str = env!("CARGO_PKG_VERSION");
+    let resp = client
+        .get("https://crates.io/api/v1/crates/llmrace")
+        // crates.io requires a user agent
+        .header("user-agent", format!("llmrace/{CURRENT} (doctor check)"))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await;
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            let latest = r
+                .text()
+                .await
+                .ok()
+                .and_then(|body| {
+                    serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| {
+                            v.pointer("/crate/max_stable_version")
+                                .and_then(|s| s.as_str())
+                                .map(str::to_string)
+                        })
+                })
+                .unwrap_or_default();
+            if latest.is_empty() {
+                return Check {
+                    name: "version".into(),
+                    status: Status::Warn,
+                    detail: "could not parse crates.io response".into(),
+                };
+            }
+            if latest == CURRENT {
+                Check {
+                    name: "version".into(),
+                    status: Status::Pass,
+                    detail: format!("up to date ({CURRENT})"),
+                }
+            } else {
+                Check {
+                    name: "version".into(),
+                    status: Status::Warn,
+                    detail: format!("llmrace {latest} is available (you are on {CURRENT})"),
+                }
+            }
+        }
+        _ => Check {
+            name: "version".into(),
+            status: Status::Warn,
+            detail: "could not reach crates.io (offline?)".into(),
+        },
+    }
+}
+
 /// Checks an opt-in local OpenAI-compatible daemon (LM Studio, llama.cpp
 /// llama-server): a `Warn` when it is not running is expected — these
 /// providers only race when named explicitly. The endpoint comes from the

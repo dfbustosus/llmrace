@@ -10,14 +10,17 @@ Set Padding 18
 Set TypingSpeed 10ms
 Set CursorBlink true
 
-# Multi-model race — two OpenAI models head-to-head vs local Ollama vs the instant mock
-Type "llmrace openai=gpt-4o-mini openai=gpt-4.1 ollama=llama3.2:1b mock -n 2 --warmup 0 --winner"
+# Multi-model race — reasoning model vs classic vs local, winner podium
+Type "llmrace openai=gpt-4o-mini openai=gpt-5-nano ollama=llama3.2:1b mock -n 2 --warmup 0 --winner"
 Enter
-Sleep 9s
+Sleep 14s
 Enter
 Sleep 3s
 
-# Environment diagnostics
+# Live model discovery + diagnostics
+Type "llmrace --models ollama"
+Enter
+Sleep 2s
 Type "llmrace --doctor"
 Enter
-Sleep 4s
+Sleep 5s

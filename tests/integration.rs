@@ -1140,3 +1140,32 @@ fn every_cloud_default_model_has_pricing() {
         }
     }
 }
+
+#[test]
+fn markdown_reasoning_lane_keeps_tokens_per_sec() {
+    // Regression: the reasoning marker used to be passed pre-formatted into
+    // the template's `{:.1}` slot, where precision truncated the string to
+    // one character — the cell rendered as `*****` and swallowed the value.
+    let summary = llmrace::bench::LaneSummary {
+        name: "openai".into(),
+        model: "gpt-5-nano".into(),
+        runs: vec![RunMetrics {
+            total_ms: 3177.0,
+            ttfb_ms: 3170.0,
+            tokens: 511,
+            visible_tokens: 1,
+            server_ms: Some(1444.0),
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: "p".into(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    let md = llmrace::report::markdown(&[summary], "demo", 2, 256);
+    let row = md.lines().find(|l| l.contains("gpt-5-nano")).unwrap();
+    assert!(row.contains("**353.9**"), "value must render: {row}");
+    assert!(row.contains("🧠510"), "marker must render: {row}");
+    assert!(!row.contains("*****"), "truncation artifact: {row}");
+}
