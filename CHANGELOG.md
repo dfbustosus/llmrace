@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Reports state the rounds actually measured**: `--duration` previously wrote its internal 100,000-round sentinel into markdown/JSON metadata (and a graceful interrupt would overstate too); metadata now reflects reality
+- **Tool-mode reasoning attribution fixed** (live-found): streamed tool-argument tokens never counted toward the visible estimate, so classic models showed phantom `🧠` annotations in `--tools` mode (gpt-4o-mini: 🧠45); argument fragments and their characters now count, and the 🧠 annotation only renders for known reasoning models — live-verified: gpt-4o-mini clean at 53 tok/s, gpt-5-nano honestly 🧠499 in the same race
 - TUI lanes flag reasoning models (🧠) when finished, matching the tables; `--histogram` gains a TTFB distribution ladder alongside the latency ladder
 - `--models` works with custom endpoints: `--models myvllm --endpoint … --provider-name myvllm` lists any OpenAI-compatible server's models (bare `--models` includes the custom endpoint too)
 - `--ramp` handles SIGINT gracefully: the in-flight phase finishes, remaining levels are skipped, and the partial curve is still reported

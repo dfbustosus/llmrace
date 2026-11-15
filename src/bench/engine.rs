@@ -291,6 +291,7 @@ async fn single_request(
     let mut last_token_at: Option<Instant> = None;
     let mut itl_gaps_ms: Vec<f64> = Vec::new();
     let mut stutters = 0u64;
+    let mut arg_fragments: u64 = 0;
 
     loop {
         let next = tokio::select! {
@@ -314,6 +315,12 @@ async fn single_request(
         }
         if let Some(fragment) = &event.tool_args {
             tool_args.push_str(fragment);
+            // streamed argument fragments are delivered content: each
+            // fragment is roughly one token on OpenAI-style streams, and
+            // the characters back the estimate — without this, classic
+            // models in `--tools` mode appear to have hidden "reasoning"
+            arg_fragments += 1;
+            chars += fragment.len() as u64;
         }
         if let Some(t) = &event.token {
             if let Some(last) = last_token_at {
@@ -350,7 +357,7 @@ async fn single_request(
         ttfb.ok_or_else(|| Error::Protocol(format!("{}: empty response stream", spec.id)))?;
     // Visible streamed tokens: event count floored by a chars/4 estimate,
     // so coalesced multi-token deltas are not undercounted (#125).
-    let visible_tokens = tokens.max((chars / 4).max(1));
+    let visible_tokens = (tokens + arg_fragments).max((chars / 4).max(1));
     if let Some(n) = usage {
         tokens = n;
     } else {

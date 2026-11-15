@@ -350,7 +350,8 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
                 format!("{v:.0}{st}")
             })
             .unwrap_or_else(|| "—".into());
-        let reasoning = if s.reasoning_tokens() > 0 {
+        let reasoning = if s.reasoning_tokens() > 0 && crate::provider::is_reasoning_model(&s.model)
+        {
             format!(" 🧠{}", s.reasoning_tokens())
         } else {
             String::new()

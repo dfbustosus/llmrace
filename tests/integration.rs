@@ -822,7 +822,7 @@ fn reasoning_tokens_split_from_visible() {
 fn terminal_table_marks_reasoning_lanes() {
     let summary = llmrace::bench::LaneSummary {
         name: "gpt5".into(),
-        model: "m".into(),
+        model: "gpt-5-nano".into(),
         runs: vec![RunMetrics {
             total_ms: 1500.0,
             ttfb_ms: 1400.0,
@@ -1367,4 +1367,31 @@ fn histogram_section_includes_ttfb_ladder() {
     let md = llmrace::report::histogram_section(&[summary]);
     assert!(md.contains("## TTFB distribution"), "{md}");
     assert!(md.contains("12 ms"), "p99 of 10..14 = 14ms? check: {md}");
+}
+
+#[test]
+fn brain_annotation_hidden_for_classic_models_in_tool_mode() {
+    // live-found: tool-argument tokens inflated the "reasoning" estimate
+    // for classic models — the annotation is now gated on reasoning models
+    let lane = |model: &str| llmrace::bench::LaneSummary {
+        name: "openai".into(),
+        model: model.into(),
+        runs: vec![RunMetrics {
+            total_ms: 600.0,
+            ttfb_ms: 500.0,
+            tokens: 16,
+            visible_tokens: 8, // estimation gap: 8 "reasoning"
+            ..RunMetrics::default()
+        }],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: Some("math".into()),
+    };
+    let table = llmrace::report::terminal_table(&[lane("gpt-4o-mini"), lane("gpt-5-nano")]);
+    let classic_row = table.lines().find(|l| l.contains("gpt-4o-mini")).unwrap();
+    assert!(!classic_row.contains('🧠'), "{classic_row}");
+    let reasoning_row = table.lines().find(|l| l.contains("gpt-5-nano")).unwrap();
+    assert!(reasoning_row.contains('🧠'), "{reasoning_row}");
 }
