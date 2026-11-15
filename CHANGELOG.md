@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-15
+
+The statistics release: race rankings carry error bars, CI gates distinguish real regressions from noise, and `--ramp` finds each provider's saturation point.
+
+### Added
+
+- **Statistical significance verdicts**: reports run Welch's t-test on per-run latencies between the top two lanes — `⚖ groq vs openai: Δ -172 ms, significant (p=0.012)` in the terminal and markdown, structured in JSON (`significance.p_value`) — so rankings based on noise are called out as such
+- **Significance-aware CI gates**: `--baseline`/`--compare` compute per-metric Welch p-values from per-run data (rendered inline: `p=0.012` / `p=0.61 n.s.`); `--require-significance` fails the gate only on statistically significant breaches — flaky thresholds over noise no longer fail pipelines
+- **`--ramp 1,2,4,8` saturation-curve mode**: races every provider at each concurrency level and reports throughput per level with each provider's peak marked (⬇ on >10% degradation past it). Markdown curve, structured JSON (`mode: "ramp"`) and `--html` with an SVG per-provider saturation chart; conflicts with `-c`/`--sweep`/`--watch`
+- **Custom prompt variants**: `[variants] sql = "…"` in `llmrace.toml` defines sweep shapes of your own; `--sweep sql,short` mixes them with built-ins (customs override built-ins by name)
+- `--prompt-file <path>` (or `-` for stdin) for long prompts
+- `docs/example-latency-gate.yml`: ready-to-copy GitHub Actions workflow for the significance-aware CI gate
+
+### Changed
+
+- Lane orchestration extracted into a shared `race_collect` core used by both the standard race and ramp phases
+
 ## [1.1.1] - 2026-11-15
 
 ### Fixed
