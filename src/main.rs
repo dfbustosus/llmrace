@@ -52,6 +52,11 @@ pub(crate) struct Cli {
     #[arg(short = 'c', long, default_value_t = 1)]
     concurrency: usize,
 
+    /// Saturation curve: race at each concurrency level (e.g. 1,2,4,8) and
+    /// report throughput per level; conflicts with -c, --sweep and --watch.
+    #[arg(long, conflicts_with_all = ["concurrency", "sweep", "watch"])]
+    ramp: Option<String>,
+
     /// Model override: plain (`gpt-4o-mini`) applies to every provider,
     /// `provider=model` (e.g. `ollama=llama3.2:1b`) targets one. Repeatable.
     #[arg(short, long)]
@@ -327,7 +332,10 @@ async fn dispatch(
     }
 
     let cfg = build_run_config(cli, custom_variants)?;
-    if cfg_watch(&cfg) {
+    if let Some(spec) = &cfg.ramp {
+        let levels = run::parse_ramp_levels(spec)?;
+        run::ramp_race(cfg, &levels).await
+    } else if cfg_watch(&cfg) {
         run::watch_race(cfg).await
     } else {
         run::run_race(cfg).await
@@ -389,6 +397,7 @@ fn build_run_config(
         prompt: cli.prompt,
         sweep: cli.sweep,
         custom_variants,
+        ramp: cli.ramp,
         quiet: cli.quiet,
         no_tui: cli.no_tui,
         winner: cli.winner,

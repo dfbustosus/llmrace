@@ -29,6 +29,8 @@ pub(crate) struct RunConfig {
     pub sweep: Option<String>,
     /// Custom prompt variants from `llmrace.toml` (name → prompt).
     pub custom_variants: std::collections::BTreeMap<String, String>,
+    /// `--ramp` level spec (saturation-curve mode).
+    pub ramp: Option<String>,
     /// Suppress informational output.
     pub quiet: bool,
     /// Disable the live TUI.
@@ -90,6 +92,80 @@ pub(crate) fn resolve_model(
         .unwrap_or_else(|| default_model.to_string())
 }
 
+/// Spawns every lane (variants × providers) and collects the summaries.
+///
+/// `bench_override` replaces the base `BenchConfig` (used by `--ramp` to
+/// race the same lanes at several concurrency levels); `headless_progress`
+/// prints per-lane progress lines instead of spawning a TUI (ramp phases).
+async fn race_collect(
+    cfg: &RunConfig,
+    bench_override: Option<BenchConfig>,
+    headless_progress: bool,
+) -> Result<Vec<LaneSummary>> {
+    let bench = bench_override.unwrap_or_else(|| cfg.bench.clone());
+    let variants: Vec<Option<llmrace::variants::VariantDef>> = match &cfg.sweep {
+        Some(spec) => llmrace::variants::parse_with_custom(spec, &cfg.custom_variants)
+            .map(|vs| vs.into_iter().map(Some).collect())
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => vec![None],
+    };
+
+    let mut lanes: Vec<(Arc<str>, Option<Arc<str>>, String)> = Vec::new();
+    let mut handles = Vec::new();
+    let mut receivers = Vec::new();
+    for variant in &variants {
+        for p in &cfg.providers {
+            lanes.push((
+                Arc::clone(&p.id),
+                variant.as_ref().map(|v| Arc::from(v.name.as_str())),
+                resolve_model(&cfg.model_overrides, &p.id, &p.default_model),
+            ));
+        }
+        let prompt = match variant {
+            Some(v) => v.prompt.to_string(),
+            None => bench.prompt.clone(),
+        };
+        for p in &cfg.providers {
+            let model = resolve_model(&cfg.model_overrides, &p.id, &p.default_model);
+            let (handle, rx) = spawn_lane(
+                cfg.client.clone(),
+                p.clone(),
+                model,
+                BenchConfig {
+                    prompt: prompt.clone(),
+                    variant: variant.as_ref().map(|v| Arc::from(v.name.as_str())),
+                    ..bench.clone()
+                },
+            );
+            handles.push(async move { handle.await.map_err(anyhow::Error::from) });
+            receivers.push(rx);
+        }
+    }
+
+    if headless_progress || cfg.no_tui {
+        drop(receivers);
+        let mut all = Vec::new();
+        for h in handles {
+            match h.await {
+                Ok(s) => {
+                    if headless_progress && !cfg.quiet {
+                        print_lane_progress(&s);
+                    }
+                    all.push(s);
+                }
+                Err(e) => eprintln!("lane failed: {e}"),
+            }
+        }
+        Ok(all)
+    } else {
+        let rounds_label = match bench.duration_secs {
+            Some(secs) => format!("\u{2264}{secs}s"),
+            None => format!("{} rounds", bench.runs),
+        };
+        collect_with_tui(lanes, handles, receivers, &cfg.prompt, &rounds_label).await
+    }
+}
+
 /// Runs one full race (or sweep) and returns the process exit code.
 pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
     if !cfg.quiet {
@@ -124,67 +200,7 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         );
     }
 
-    let variants: Vec<Option<llmrace::variants::VariantDef>> = match &cfg.sweep {
-        Some(spec) => llmrace::variants::parse_with_custom(spec, &cfg.custom_variants)
-            .map(|vs| vs.into_iter().map(Some).collect())
-            .map_err(|e| anyhow::anyhow!("{e}"))?,
-        None => vec![None],
-    };
-
-    let mut lanes: Vec<(Arc<str>, Option<Arc<str>>, String)> = Vec::new();
-    let mut handles = Vec::new();
-    let mut receivers = Vec::new();
-    for variant in &variants {
-        for p in &cfg.providers {
-            lanes.push((
-                Arc::clone(&p.id),
-                variant.as_ref().map(|v| Arc::from(v.name.as_str())),
-                resolve_model(&cfg.model_overrides, &p.id, &p.default_model),
-            ));
-        }
-        let prompt = match variant {
-            Some(v) => v.prompt.to_string(),
-            None => cfg.bench.prompt.clone(),
-        };
-        for p in &cfg.providers {
-            let model = resolve_model(&cfg.model_overrides, &p.id, &p.default_model);
-            let (handle, rx) = spawn_lane(
-                cfg.client.clone(),
-                p.clone(),
-                model,
-                BenchConfig {
-                    prompt: prompt.clone(),
-                    variant: variant.as_ref().map(|v| Arc::from(v.name.as_str())),
-                    ..cfg.bench.clone()
-                },
-            );
-            handles.push(async move { handle.await.map_err(anyhow::Error::from) });
-            receivers.push(rx);
-        }
-    }
-
-    let summaries: Vec<LaneSummary> = if cfg.no_tui {
-        drop(receivers);
-        let mut all = Vec::new();
-        for h in handles {
-            match h.await {
-                Ok(s) => {
-                    if !cfg.quiet {
-                        print_lane_progress(&s);
-                    }
-                    all.push(s);
-                }
-                Err(e) => eprintln!("lane failed: {e}"),
-            }
-        }
-        all
-    } else {
-        let rounds_label = match cfg.bench.duration_secs {
-            Some(secs) => format!("\u{2264}{secs}s"),
-            None => format!("{} rounds", cfg.bench.runs),
-        };
-        collect_with_tui(lanes, handles, receivers, &cfg.prompt, &rounds_label).await?
-    };
+    let summaries = race_collect(&cfg, None, false).await?;
 
     if !cfg.quiet {
         let table = report::terminal_table(&summaries);
@@ -522,6 +538,205 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
         let md = report::markdown(last, &cfg.prompt, cfg.bench.runs, cfg.bench.max_tokens);
         std::fs::write(&cfg.out, md).with_context(|| format!("writing {}", cfg.out))?;
         println!("\u{1f4c4} report saved to {}", cfg.out);
+    }
+    Ok(0)
+}
+
+/// One `--ramp` level and its lane summaries.
+pub(crate) struct RampLevel {
+    /// Concurrency raced at this level.
+    pub concurrency: usize,
+    /// Lane results at this level.
+    pub summaries: Vec<LaneSummary>,
+}
+
+/// Parses a `--ramp` level list (`1,2,4,8`): values must be \u{2265} 1 and
+/// at least two distinct levels must remain after sorting and deduplication.
+pub(crate) fn parse_ramp_levels(spec: &str) -> anyhow::Result<Vec<usize>> {
+    let mut levels: Vec<usize> = Vec::new();
+    for part in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let level: usize = part.parse().map_err(|_| {
+            anyhow::anyhow!("invalid --ramp level '{part}' (expected integers like 1,2,4,8)")
+        })?;
+        if level == 0 {
+            anyhow::bail!("--ramp levels must be >= 1");
+        }
+        levels.push(level);
+    }
+    levels.sort_unstable();
+    levels.dedup();
+    if levels.len() < 2 {
+        anyhow::bail!("--ramp needs at least two distinct concurrency levels");
+    }
+    Ok(levels)
+}
+
+/// `--ramp`: races every provider at each concurrency level and renders the
+/// saturation curve. Returns the process exit code.
+pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
+    use std::fmt::Write as _;
+
+    if !cfg.quiet {
+        println!(
+            "\u{1f3c1} llmrace v{} ramp — {} providers \u{d7} levels {:?} ({} rounds each)",
+            env!("CARGO_PKG_VERSION"),
+            cfg.providers.len(),
+            levels,
+            cfg.bench.runs
+        );
+        println!("   prompt: \"{}\"\n", cfg.prompt.replace('\n', " "));
+    }
+
+    let mut phases: Vec<RampLevel> = Vec::new();
+    for (idx, level) in levels.iter().enumerate() {
+        if !cfg.quiet {
+            println!(
+                "\u{25b8} phase {}/{} — concurrency {level}",
+                idx + 1,
+                levels.len()
+            );
+        }
+        let mut bench = cfg.bench.clone();
+        bench.concurrency = *level;
+        let summaries = race_collect(&cfg, Some(bench), true).await?;
+        phases.push(RampLevel {
+            concurrency: *level,
+            summaries,
+        });
+    }
+
+    // curve table (terminal + markdown)
+    let mut curve = String::from("| Provider |");
+    let mut header = String::new();
+    for level in levels {
+        let _ = write!(header, " c={level} |");
+    }
+    curve.push_str(&header);
+    curve.push_str(" peak |\n|---|");
+    for _ in levels {
+        curve.push_str("---:|");
+    }
+    curve.push_str("---:|\n");
+
+    let mut curve_term = format!("{:<20}", "Provider");
+    for level in levels {
+        let _ = write!(curve_term, " {:>10}", format!("c={level}"));
+    }
+    curve_term.push_str("      peak\n");
+    curve_term.push_str(&"-".repeat(curve_term.len()));
+    curve_term.push('\n');
+
+    // stable lane order from the first phase
+    let order: Vec<(String, String)> = phases
+        .first()
+        .map(|p| {
+            p.summaries
+                .iter()
+                .map(|s| (s.name.clone(), s.model.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut ramp_json: Vec<serde_json::Value> = Vec::new();
+    for (name, model) in &order {
+        let mut md_row = format!("| {name} |");
+        let mut term_row = format!("{:<20}", name);
+        let mut best: Option<(usize, f64)> = None;
+        let mut per_level = serde_json::Map::new();
+        for phase in &phases {
+            let lane = phase
+                .summaries
+                .iter()
+                .find(|s| s.name == *name && s.model == *model);
+            let tps = lane
+                .filter(|s| s.successful())
+                .map(|s| s.mean_tokens_per_sec())
+                .unwrap_or(0.0);
+            if best.is_none_or(|(_, b)| tps > b) {
+                best = Some((phase.concurrency, tps));
+            }
+            per_level.insert(
+                phase.concurrency.to_string(),
+                serde_json::json!((tps * 10.0).round() / 10.0),
+            );
+            let _ = write!(md_row, " {tps:.1} |");
+            let _ = write!(term_row, " {tps:>10.1}");
+        }
+        let peak = best.unwrap_or((1, 0.0));
+        // flag degradation: any later level >10% below peak
+        let degraded = phases.iter().any(|ph| {
+            ph.concurrency > peak.0
+                && ph
+                    .summaries
+                    .iter()
+                    .find(|s| s.name == *name && s.model == *model)
+                    .filter(|s| s.successful())
+                    .map(|s| s.mean_tokens_per_sec())
+                    .is_some_and(|tps| tps < peak.1 * 0.9)
+        });
+        let peak_note = if degraded {
+            format!("c={} ({:.1}) \u{2b07}", peak.0, peak.1)
+        } else {
+            format!("c={} ({:.1})", peak.0, peak.1)
+        };
+        let _ = writeln!(md_row, " {peak_note} |");
+        let _ = writeln!(term_row, "  {peak_note}");
+        curve.push_str(&md_row);
+        curve_term.push_str(&term_row);
+        ramp_json.push(serde_json::json!({
+            "provider": name,
+            "model": model,
+            "tokens_per_sec_by_concurrency": per_level,
+            "peak_concurrency": peak.0,
+            "peak_tokens_per_sec": (peak.1 * 10.0).round() / 10.0,
+            "degrades_past_peak": degraded,
+        }));
+    }
+
+    if !cfg.quiet {
+        println!("\n{curve_term}");
+    }
+
+    // reports: markdown curve section + structured json
+    let mut md = String::from("# \u{1f3c1} llmrace ramp\n\n");
+    md.push_str(&format!(
+        "- **Prompt**: `\"{}\"`\n- **Levels**: {:?}\n- **Rounds per level**: {}\n",
+        cfg.prompt.replace('\n', " "),
+        levels,
+        cfg.bench.runs
+    ));
+    md.push_str("\n## Saturation curve (tokens/s by concurrency)\n\n");
+    md.push_str(&curve);
+    md.push_str("\n> Peak marks each provider's highest measured throughput; \u{2b07} flags degradation (>10% drop) beyond the peak.\n");
+    std::fs::write(&cfg.out, &md).with_context(|| format!("writing {}", cfg.out))?;
+    println!("\u{1f4c4} ramp report saved to {}", cfg.out);
+
+    if cfg.json {
+        let payload = serde_json::json!({
+            "tool": "llmrace",
+            "version": env!("CARGO_PKG_VERSION"),
+            "mode": "ramp",
+            "region": cfg.region,
+            "prompt": cfg.prompt,
+            "runs": cfg.bench.runs,
+            "max_tokens": cfg.bench.max_tokens,
+            "levels": levels,
+            "ramp": ramp_json,
+        });
+        let path = crate::report_sibling(&cfg.out, "json");
+        std::fs::write(&path, serde_json::to_string_pretty(&payload)?)
+            .with_context(|| format!("writing {path}"))?;
+        println!("\u{1f4ca} ramp json saved to {path}");
+    }
+
+    if llmrace::gates::all_lanes_failed(
+        &phases
+            .last()
+            .map(|p| p.summaries.clone())
+            .unwrap_or_default(),
+    ) {
+        eprintln!("\n\u{2717} every provider failed at the highest level");
+        return Ok(1);
     }
     Ok(0)
 }

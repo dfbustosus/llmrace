@@ -579,3 +579,69 @@ fn schema_is_valid_json_and_matches_reports() {
         );
     }
 }
+
+#[test]
+fn ramp_runs_phases_and_writes_curve() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--ramp")
+        .arg("1,2")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--json")
+        .arg("--out")
+        .arg(tmppath("ramp"))
+        .output()
+        .expect("spawn llmrace");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let md = std::fs::read_to_string(tmppath("ramp")).unwrap();
+    assert!(md.contains("Saturation curve"), "{md}");
+    assert!(md.contains("c=1"), "{md}");
+    let json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(std::env::temp_dir().join("llmrace-ramp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(json["mode"], "ramp");
+    let ramp = json["ramp"].as_array().unwrap();
+    assert_eq!(ramp[0]["provider"], "mock");
+    // mock concurrency scales linearly: c=2 roughly doubles c=1
+    let tps = ramp[0]["tokens_per_sec_by_concurrency"]
+        .as_object()
+        .unwrap();
+    let one = tps["1"].as_f64().unwrap();
+    let two = tps["2"].as_f64().unwrap();
+    assert!(two > one * 1.8, "expected ~2x scaling: {one} -> {two}");
+    assert_eq!(ramp[0]["peak_concurrency"], 2);
+}
+
+#[test]
+fn ramp_conflicts_and_validation() {
+    let conflict = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--ramp")
+        .arg("1,2")
+        .arg("-c")
+        .arg("4")
+        .arg("--no-tui")
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+
+    for bad in ["0,2", "1", "1,x"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+            .arg("mock")
+            .arg("--ramp")
+            .arg(bad)
+            .arg("--no-tui")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "--ramp {bad} must be rejected");
+    }
+}

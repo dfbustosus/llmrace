@@ -123,6 +123,9 @@ llmrace openai=gpt-4o-mini openai=gpt-4.1 ollama=llama3.2:1b --winner
 # Saturation throughput: 8 parallel requests per provider
 llmrace openai groq -c 8 -n 5
 
+# Saturation curve: race at each concurrency level, find the throughput knee
+llmrace openai groq --ramp 1,2,4,8 -n 3
+
 # CI gate: fail if any provider exceeds 500ms TTFB
 llmrace openai groq --max-ttfb 500 --quiet
 
@@ -182,6 +185,7 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 | Metric | Definition |
 |--------|------------|
 | **TTFB** | Time from just before the request is sent to the first streamed token (includes connection, TLS and queueing) |
+| **Saturation peak** | `--ramp` races at each concurrency level and marks each provider's peak throughput (⬇ flags >10% degradation past it) |
 | **Tokens/s** | Completion tokens divided by the *effective generation window* (total − TTFB, widened to the provider-reported server processing time when longer); with `--concurrency N`, total tokens of all N parallel requests over the round window — i.e. saturation throughput |
 | **ITL p50 / p95** | Distribution of inter-token gaps while streaming — how *smooth* the stream feels, not just how fast it finishes |
 | **Stutters** | Inter-token gaps over 250 ms — visible streaming hiccups, counted per lane |
