@@ -1169,3 +1169,48 @@ fn markdown_reasoning_lane_keeps_tokens_per_sec() {
     assert!(row.contains("🧠510"), "marker must render: {row}");
     assert!(!row.contains("*****"), "truncation artifact: {row}");
 }
+
+#[test]
+fn significance_verdict_distinguishes_signal_from_noise() {
+    let lane = |name: &str, latencies: &[f64]| llmrace::bench::LaneSummary {
+        name: name.into(),
+        model: "m".into(),
+        runs: latencies
+            .iter()
+            .map(|ms| RunMetrics {
+                total_ms: *ms,
+                ttfb_ms: 10.0,
+                tokens: 10,
+                ..RunMetrics::default()
+            })
+            .collect(),
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    // clear separation: 100 vs 300
+    let clear = llmrace::report::terminal_table(&[
+        lane("fast", &[100.0, 102.0, 98.0, 101.0]),
+        lane("slow", &[300.0, 302.0, 298.0, 301.0]),
+    ]);
+    assert!(clear.contains("significant (p=0.000)"), "{clear}");
+
+    // heavy overlap: both ~200ms with spread
+    let noise = llmrace::report::terminal_table(&[
+        lane("a", &[150.0, 250.0, 190.0, 210.0]),
+        lane("b", &[140.0, 260.0, 200.0, 205.0]),
+    ]);
+    assert!(noise.contains("NOT significant"), "{noise}");
+
+    // json carries the structured verdict
+    let json = llmrace::report::json_report(
+        &[lane("fast", &[100.0, 101.0]), lane("slow", &[300.0, 302.0])],
+        "p",
+        2,
+        32,
+    );
+    assert!(json.contains("p_value"), "{json}");
+    assert!(json.contains("significant"), "{json}");
+}

@@ -139,13 +139,17 @@ llmrace --compare old.json,new.json
 # Prompt-variant sweep: same race across prompt shapes
 llmrace openai groq --sweep short,long,code,json,reasoning
 
+# Custom variants (define your own prompts in llmrace.toml)
+llmrace openai groq --sweep sql, summarizes
+
 # Race ANY OpenAI-compatible endpoint (vLLM, LiteLLM, Together…)
 llmrace --endpoint http://localhost:8000/v1/chat/completions \
         --provider-name vllm --api-key-env VLLM_API_KEY \
         openai groq
 
-# Custom prompt, JSON + CSV output for CI
+# Custom prompt (inline or from a file), JSON + CSV output for CI
 llmrace openai groq -p "Explain transformer attention in 3 sentences." -n 5 --json --csv
+llmrace openai groq --prompt-file prompts/attention.txt
 ```
 
 Every provider with a matching env var races automatically — no config file:
@@ -183,6 +187,7 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 | **Stutters** | Inter-token gaps over 250 ms — visible streaming hiccups, counted per lane |
 | **Latency p50 / p95** | Distribution of round time-to-last-token (linear-interpolation percentiles) |
 | **Mean ± 95% CI** | Student-t confidence interval on the mean latency |
+| **Significance** | Welch's t-test on per-run latencies between the top two lanes — the report states whether the gap is real or could be noise (p < 0.05) |
 | **Cost/run** | Provider-reported token counts × public per-model prices (editable in `src/cost.rs`) |
 
 Methodology notes:

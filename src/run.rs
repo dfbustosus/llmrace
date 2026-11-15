@@ -27,6 +27,8 @@ pub(crate) struct RunConfig {
     pub prompt: String,
     /// Prompt-variant sweep spec.
     pub sweep: Option<String>,
+    /// Custom prompt variants from `llmrace.toml` (name → prompt).
+    pub custom_variants: std::collections::BTreeMap<String, String>,
     /// Suppress informational output.
     pub quiet: bool,
     /// Disable the live TUI.
@@ -120,8 +122,8 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         );
     }
 
-    let variants: Vec<Option<llmrace::variants::Variant>> = match &cfg.sweep {
-        Some(spec) => llmrace::variants::parse(spec)
+    let variants: Vec<Option<llmrace::variants::VariantDef>> = match &cfg.sweep {
+        Some(spec) => llmrace::variants::parse_with_custom(spec, &cfg.custom_variants)
             .map(|vs| vs.into_iter().map(Some).collect())
             .map_err(|e| anyhow::anyhow!("{e}"))?,
         None => vec![None],
@@ -134,7 +136,7 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         for p in &cfg.providers {
             lanes.push((
                 Arc::clone(&p.id),
-                variant.as_ref().map(|v| Arc::from(v.name)),
+                variant.as_ref().map(|v| Arc::from(v.name.as_str())),
                 resolve_model(&cfg.model_overrides, &p.id, &p.default_model),
             ));
         }
@@ -150,7 +152,7 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
                 model,
                 BenchConfig {
                     prompt: prompt.clone(),
-                    variant: variant.as_ref().map(|v| Arc::from(v.name)),
+                    variant: variant.as_ref().map(|v| Arc::from(v.name.as_str())),
                     ..cfg.bench.clone()
                 },
             );

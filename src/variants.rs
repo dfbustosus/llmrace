@@ -103,3 +103,81 @@ pub fn parse(spec: &str) -> Result<Vec<Variant>> {
     }
     Ok(out)
 }
+
+/// An owned prompt variant: built-ins converted, plus user-defined ones
+/// from `llmrace.toml`. Used by the race path; the `&'static`
+/// [`Variant`] type above remains the frozen public shape for `parse`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantDef {
+    /// Stable identifier used on the CLI and in reports.
+    pub name: String,
+    /// One-line description of what the variant stresses.
+    pub description: String,
+    /// The prompt sent to every provider.
+    pub prompt: String,
+}
+
+impl From<&Variant> for VariantDef {
+    fn from(v: &Variant) -> Self {
+        VariantDef {
+            name: v.name.to_string(),
+            description: v.description.to_string(),
+            prompt: v.prompt.to_string(),
+        }
+    }
+}
+
+/// Parses a `--sweep` list against built-in **and** custom variants
+/// (customs defined in `llmrace.toml` override built-ins by name).
+///
+/// ```
+/// use llmrace::variants::parse_with_custom;
+///
+/// let mut custom = std::collections::BTreeMap::new();
+/// custom.insert("sql".to_string(), "Write a SQL join.".to_string());
+/// let vs = parse_with_custom("short,sql", &custom).unwrap();
+/// assert_eq!(vs.len(), 2);
+/// assert_eq!(vs[1].name, "sql");
+/// assert!(vs[1].prompt.contains("SQL"));
+/// // custom overrides builtin by name
+/// custom.insert("short".to_string(), "Say hi.".to_string());
+/// let vs = parse_with_custom("short", &custom).unwrap();
+/// assert_eq!(vs[0].prompt, "Say hi.");
+/// ```
+pub fn parse_with_custom(
+    spec: &str,
+    custom: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<VariantDef>> {
+    let mut out: Vec<VariantDef> = Vec::new();
+    for name in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if out.iter().any(|v| v.name == name) {
+            continue;
+        }
+        if let Some(prompt) = custom.get(name) {
+            out.push(VariantDef {
+                name: name.to_string(),
+                description: "custom variant (llmrace.toml)".to_string(),
+                prompt: prompt.clone(),
+            });
+            continue;
+        }
+        match builtins().iter().find(|v| v.name == name) {
+            Some(v) => out.push(VariantDef::from(v)),
+            None => {
+                let mut available: Vec<String> =
+                    builtins().iter().map(|v| v.name.to_string()).collect();
+                available.extend(custom.keys().cloned());
+                return Err(Error::Config(format!(
+                    "unknown variant '{name}'; available: {}",
+                    available.join(", ")
+                )));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err(Error::Config(
+            "empty --sweep list; expected comma-separated variant names".into(),
+        ));
+    }
+    Ok(out)
+}

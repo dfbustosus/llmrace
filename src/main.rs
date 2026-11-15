@@ -32,6 +32,10 @@ pub(crate) struct Cli {
     )]
     prompt: String,
 
+    /// Read the prompt from a file (use `-` for stdin).
+    #[arg(long)]
+    prompt_file: Option<String>,
+
     /// Measured rounds per provider.
     #[arg(short = 'n', long, default_value_t = 3)]
     runs: usize,
@@ -226,9 +230,25 @@ async fn main() -> Result<()> {
     let matches = <Cli as clap::CommandFactory>::command().get_matches();
     let explicit =
         |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
-    let cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches)?;
-    let (cli, _profile) = apply_profile(cli, &explicit)?;
-    let code = dispatch(cli).await?;
+    let mut cli = <Cli as clap::FromArgMatches>::from_arg_matches(&matches)?;
+    if let Some(source) = &cli.prompt_file {
+        let content = if source == "-" {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        } else {
+            std::fs::read_to_string(source)
+                .with_context(|| format!("reading prompt file {source}"))?
+        };
+        cli.prompt = content;
+    }
+    let (cli, config) = apply_profile(cli, &explicit)?;
+    let custom_variants = config
+        .as_ref()
+        .map(|c| c.variants.clone())
+        .unwrap_or_default();
+    let code = dispatch(cli, custom_variants).await?;
     if code != 0 {
         std::process::exit(code);
     }
@@ -236,7 +256,10 @@ async fn main() -> Result<()> {
 }
 
 /// Routes to a standalone mode or the race; returns the process exit code.
-async fn dispatch(cli: Cli) -> Result<i32> {
+async fn dispatch(
+    cli: Cli,
+    custom_variants: std::collections::BTreeMap<String, String>,
+) -> Result<i32> {
     if cli.init {
         return modes::init().map(|_| 0);
     }
@@ -298,7 +321,7 @@ async fn dispatch(cli: Cli) -> Result<i32> {
         llmrace::cost::set_overrides(parsed);
     }
 
-    let cfg = build_run_config(cli)?;
+    let cfg = build_run_config(cli, custom_variants)?;
     if cfg_watch(&cfg) {
         run::watch_race(cfg).await
     } else {
@@ -311,7 +334,10 @@ fn cfg_watch(cfg: &RunConfig) -> bool {
 }
 
 /// Resolves the CLI into the plain data the race path needs.
-fn build_run_config(cli: Cli) -> Result<RunConfig> {
+fn build_run_config(
+    cli: Cli,
+    custom_variants: std::collections::BTreeMap<String, String>,
+) -> Result<RunConfig> {
     let selected = resolve_providers(&cli)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
@@ -357,6 +383,7 @@ fn build_run_config(cli: Cli) -> Result<RunConfig> {
         bench,
         prompt: cli.prompt,
         sweep: cli.sweep,
+        custom_variants,
         quiet: cli.quiet,
         no_tui: cli.no_tui,
         winner: cli.winner,
@@ -453,7 +480,7 @@ fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
 fn apply_profile(
     mut cli: Cli,
     explicit: &dyn Fn(&str) -> bool,
-) -> Result<(Cli, Option<llmrace::config::Profile>)> {
+) -> Result<(Cli, Option<llmrace::config::Config>)> {
     let Some(name) = cli.profile.clone() else {
         return Ok((cli, None));
     };
@@ -507,5 +534,5 @@ fn apply_profile(
         }
     }
     println!("\u{2699}  profile '{name}' loaded");
-    Ok((cli, Some(profile)))
+    Ok((cli, Some(config)))
 }

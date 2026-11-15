@@ -17,6 +17,16 @@ pub fn race_report_schema() -> String {
     "prompt": {"type": "string"},
     "runs": {"type": "integer", "minimum": 1},
     "max_tokens": {"type": "integer", "minimum": 1},
+    "significance": {
+      "type": ["object", "null"],
+      "properties": {
+        "a": {"type": "string"},
+        "b": {"type": "string"},
+        "delta_ms": {"type": "number"},
+        "p_value": {"type": "number", "minimum": 0, "maximum": 1},
+        "significant": {"type": "boolean"}
+      }
+    },
     "providers": {
       "type": "array",
       "items": {

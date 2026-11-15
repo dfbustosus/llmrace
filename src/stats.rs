@@ -241,3 +241,150 @@ fn t_critical_95(df: usize) -> f64 {
     let w = (df - lo_df) as f64 / (hi_df - lo_df) as f64;
     lo_t + w * (hi_t - lo_t)
 }
+
+/// Welch's t statistic and degrees of freedom for two independent samples
+/// with unequal variances.
+///
+/// Returns `(t, df)`; `None` when either sample has fewer than two
+/// observations or a zero variance sum.
+#[must_use]
+pub fn welch_t(sample_a: &[f64], sample_b: &[f64]) -> Option<(f64, f64)> {
+    let a = Sample::from_values(sample_a.to_vec());
+    let b = Sample::from_values(sample_b.to_vec());
+    if a.len() < 2 || b.len() < 2 {
+        return None;
+    }
+    let (va, vb) = (a.variance(), b.variance());
+    let (na, nb) = (a.len() as f64, b.len() as f64);
+    let sea = va / na;
+    let seb = vb / nb;
+    let denom = sea + seb;
+    if denom <= f64::EPSILON {
+        return None;
+    }
+    let t = (a.mean() - b.mean()) / denom.sqrt();
+    let df = denom * denom / (sea * sea / (na - 1.0) + seb * seb / (nb - 1.0));
+    Some((t, df))
+}
+
+/// Two-sided p-value of Student's t under the null hypothesis, via the
+/// regularized incomplete beta function `I_x(df/2, 1/2)`.
+///
+/// ```
+/// use llmrace::stats::t_two_sided_p;
+///
+/// // textbook values: t=2.776 with df=4 → p ≈ 0.05
+/// let p = t_two_sided_p(2.776, 4.0);
+/// assert!((p - 0.05).abs() < 0.001, "{p}");
+/// // t=12.706 with df=1 → p ≈ 0.05
+/// let p1 = t_two_sided_p(12.706, 1.0);
+/// assert!((p1 - 0.05).abs() < 0.001, "{p1}");
+/// ```
+#[must_use]
+pub fn t_two_sided_p(t: f64, df: f64) -> f64 {
+    if df <= 0.0 {
+        return 1.0;
+    }
+    let x = df / (df + t * t);
+    let p = betai(df / 2.0, 0.5, x);
+    p.clamp(0.0, 1.0)
+}
+
+/// Regularized incomplete beta function `I_x(a, b)` via the continued
+/// fraction expansion (Lentz's method) — the standard Numerical Recipes
+/// formulation, accurate to roughly 1e-10 for the ranges used here.
+fn betai(a: f64, b: f64, x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let lbeta = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln();
+    let front = lbeta.exp();
+    // the continued fraction converges quickly for x < (a+1)/(a+b+2);
+    // use the symmetry I_x(a,b) = 1 - I_{1-x}(b,a) otherwise
+    if x < (a + 1.0) / (a + b + 2.0) {
+        front * beta_cf(a, b, x) / a
+    } else {
+        1.0 - front * beta_cf(b, a, 1.0 - x) / b
+    }
+}
+
+/// Incomplete beta continued fraction (modified Lentz).
+fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
+    const MAX_ITERS: usize = 200;
+    const EPS: f64 = 1e-12;
+    const FPMIN: f64 = 1e-300;
+    let qab = a + b;
+    let qap = a + 1.0;
+    let qam = a - 1.0;
+    let mut c = 1.0;
+    let mut d = 1.0 - qab * x / qap;
+    if d.abs() < FPMIN {
+        d = FPMIN;
+    }
+    d = 1.0 / d;
+    let mut h = d;
+    for m in 1..=MAX_ITERS {
+        let m = m as f64;
+        let m2 = 2.0 * m;
+        // even step
+        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < FPMIN {
+            d = FPMIN;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < FPMIN {
+            c = FPMIN;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        // odd step
+        let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if d.abs() < FPMIN {
+            d = FPMIN;
+        }
+        c = 1.0 + aa / c;
+        if c.abs() < FPMIN {
+            c = FPMIN;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < EPS {
+            break;
+        }
+    }
+    h
+}
+
+/// Lanczos approximation of `ln Γ(x)`.
+#[allow(clippy::excessive_precision)] // the g coefficients are canonical
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    if x < 0.5 {
+        // reflection formula
+        std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * ln_gamma(1.0 - x))
+    } else {
+        let x = x - 1.0;
+        let mut ag = G[0];
+        let t = x + 7.5;
+        for (i, g) in G.iter().enumerate().skip(1) {
+            ag += g / (x + i as f64);
+        }
+        0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + ag.ln()
+    }
+}

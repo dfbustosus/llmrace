@@ -169,3 +169,45 @@ fn explicit_max_tokens_wins_over_profile() {
     let json = std::fs::read_to_string(dir.join("llmrace-report.json")).unwrap();
     assert!(json.contains("\"max_tokens\": 32"), "{json}");
 }
+
+#[test]
+fn custom_variants_run_in_sweeps() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join("llmrace-custom-variants");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("llmrace.toml"),
+        r#"
+        [variants]
+        sql = "Write one SQL join between users and orders."
+
+        [profiles.p]
+        providers = ["mock"]
+        runs = 1
+        warmup = 0
+        "#,
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .current_dir(&dir)
+        .arg("--profile")
+        .arg("p")
+        .arg("--no-tui")
+        .arg("--quiet")
+        .arg("--sweep")
+        .arg("sql")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = std::fs::read_to_string(dir.join("llmrace-report.json")).unwrap();
+    assert!(json.contains("\"variant\": \"sql\""), "{json}");
+    let md = std::fs::read_to_string(dir.join("llmrace-report.md")).unwrap();
+    assert!(md.contains("variant: `sql`"), "{md}");
+    assert!(md.contains("custom variant"), "{md}");
+}

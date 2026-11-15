@@ -51,6 +51,10 @@ pub struct Config {
     /// Named profiles.
     #[serde(default)]
     pub profiles: std::collections::BTreeMap<String, Profile>,
+    /// Custom prompt variants for `--sweep` (name → prompt; override
+    /// built-ins by name).
+    #[serde(default)]
+    pub variants: std::collections::BTreeMap<String, String>,
 }
 
 impl Config {

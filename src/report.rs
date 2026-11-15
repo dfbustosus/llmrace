@@ -25,10 +25,21 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
                 .into_iter()
                 .find(|v| v.name == *name)
                 .map(|v| v.description)
-                .unwrap_or("");
+                .unwrap_or("custom variant (llmrace.toml)");
             out.push_str(&format!("\n## variant: `{name}` — {desc}\n"));
         }
         out.push_str(&variant_table(&lanes));
+    }
+
+    if let Some((a, b, delta, p, significant)) = top_two_significance(summaries) {
+        let verdict = if significant {
+            format!("statistically significant (p = {p:.3})")
+        } else {
+            format!("**not** statistically significant (p = {p:.2}) — the gap could be noise")
+        };
+        out.push_str(&format!(
+            "\n*Significance*: {a} vs {b} — Δ {delta:+.0} ms mean latency, {verdict} (Welch's t-test on per-run latencies).\n"
+        ));
     }
 
     let unpriced: Vec<&LaneSummary> = summaries
@@ -223,6 +234,17 @@ pub fn json_report_with_region(
         "prompt": prompt,
         "runs": runs,
         "max_tokens": max_tokens,
+        "significance": top_two_significance(summaries).map(
+            |(a, b, delta_ms, p, significant)| {
+                serde_json::json!({
+                    "a": a,
+                    "b": b,
+                    "delta_ms": delta_ms,
+                    "p_value": p,
+                    "significant": significant,
+                })
+            },
+        ),
         "providers": providers,
     }))
     .unwrap_or_default()
@@ -246,6 +268,37 @@ pub fn csv(summaries: &[LaneSummary]) -> String {
         }
     }
     out
+}
+
+/// Welch significance between the top two successful lanes of the same
+/// variant group: `(leader, runner_up, delta_ms, p, significant)`.
+///
+/// `None` when fewer than two comparable lanes or samples exist — the
+/// ranking then carries no statistical claim.
+fn top_two_significance(summaries: &[LaneSummary]) -> Option<(String, String, f64, f64, bool)> {
+    let ranked = rank(summaries);
+    // compare within the leader's variant group: different prompts must
+    // not be statistically compared
+    let leader = ranked.first()?;
+    let runner_up = ranked
+        .iter()
+        .skip(1)
+        .find(|s| s.variant == leader.variant && s.runs.len() >= 2)?;
+    if leader.runs.len() < 2 {
+        return None;
+    }
+    let a: Vec<f64> = leader.runs.iter().map(|r| r.total_ms).collect();
+    let b: Vec<f64> = runner_up.runs.iter().map(|r| r.total_ms).collect();
+    let (t, df) = crate::stats::welch_t(&a, &b)?;
+    let p = crate::stats::t_two_sided_p(t, df);
+    let delta = leader.mean_total_ms() - runner_up.mean_total_ms();
+    Some((
+        leader.name.clone(),
+        runner_up.name.clone(),
+        delta,
+        p,
+        p < 0.05,
+    ))
 }
 
 /// Renders the compact terminal ranking table.
@@ -320,6 +373,14 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
             s.name,
             s.error.as_deref().unwrap_or("no successful rounds")
         ));
+    }
+    if let Some((a, b, delta, p, significant)) = top_two_significance(summaries) {
+        let verdict = if significant {
+            format!("significant (p={p:.3})")
+        } else {
+            format!("NOT significant (p={p:.2}) — the gap could be noise")
+        };
+        out.push_str(&format!("⚖ {a} vs {b}: Δ {delta:+.0} ms, {verdict}\n"));
     }
     out
 }
