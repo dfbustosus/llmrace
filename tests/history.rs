@@ -15,6 +15,8 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> H
         mean_ttfb_ms: ttfb,
         mean_tokens_per_sec: tps,
         itl_p95_ms: None,
+        reasoning_tokens: None,
+        thinking_ms_estimate: None,
     }
 }
 

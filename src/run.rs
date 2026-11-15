@@ -9,6 +9,7 @@ use llmrace::bench::{spawn_lane, BenchConfig, LaneSummary};
 use llmrace::provider::ProviderSpec;
 use llmrace::score::Weights;
 use llmrace::{report, tui};
+use std::io::IsTerminal as _;
 use std::sync::Arc;
 
 /// Everything the race path needs, resolved from the CLI.
@@ -144,7 +145,10 @@ async fn race_collect(
         }
     }
 
-    if headless_progress || cfg.no_tui {
+    if headless_progress || cfg.no_tui || !std::io::stdout().is_terminal() {
+        if !cfg.no_tui && !headless_progress {
+            eprintln!("note: stdout is not a terminal — running headless (pass --no-tui to silence this note)");
+        }
         drop(receivers);
         let mut all = Vec::new();
         for h in handles {

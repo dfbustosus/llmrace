@@ -24,6 +24,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
+      - name: Schema drift check
+        run: |
+          cargo run --quiet -- --schema > /tmp/schema.json
+          diff -u docs/schema.json /tmp/schema.json
       - run: cargo test --all-targets
   sqlite:
     name: sqlite feature (${{ matrix.os }})

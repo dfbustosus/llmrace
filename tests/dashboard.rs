@@ -13,6 +13,8 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64) -> HistoryReco
         mean_ttfb_ms: ttfb,
         mean_tokens_per_sec: tps,
         itl_p95_ms: None,
+        reasoning_tokens: None,
+        thinking_ms_estimate: None,
     }
 }
 
@@ -72,6 +74,8 @@ fn dashboard_escapes_hostile_names() {
         mean_ttfb_ms: 20.0,
         mean_tokens_per_sec: 80.0,
         itl_p95_ms: None,
+        reasoning_tokens: None,
+        thinking_ms_estimate: None,
     };
     let html = llmrace::dashboard::render_html(std::slice::from_ref(&record), 30, 1_700_000_060);
     assert!(!html.contains("<script>p"), "unescaped provider: {html}");
@@ -98,4 +102,25 @@ fn dashboard_renders_itl_series_when_recorded() {
         .collect();
     let html2 = llmrace::dashboard::render_html(&plain, 30, base + 7_200);
     assert!(!html2.contains("ITL p95"), "{html2}");
+}
+
+#[test]
+fn dashboard_renders_thinking_series_for_reasoning_history() {
+    let base = 1_700_000_000u64;
+    let records: Vec<llmrace::history::HistoryRecord> = (0..3)
+        .map(|i| {
+            let mut r = rec(base + i * 3_600, "gpt5", "gpt-5-nano", 10.0, 50.0);
+            r.thinking_ms_estimate = Some(1200.0 + i as f64 * 100.0);
+            r.reasoning_tokens = Some(300 + i);
+            r
+        })
+        .collect();
+    let html = llmrace::dashboard::render_html(&records, 30, base + 7_200);
+    assert!(html.contains("thinking (ms, est.)"), "{html}");
+
+    let plain: Vec<llmrace::history::HistoryRecord> = (0..3)
+        .map(|i| rec(base + i * 3_600, "mock", "m1", 10.0, 50.0))
+        .collect();
+    let plain_html = llmrace::dashboard::render_html(&plain, 30, base + 7_200);
+    assert!(!plain_html.contains("thinking"), "{plain_html}");
 }

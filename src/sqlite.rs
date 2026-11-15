@@ -24,7 +24,9 @@ pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
             p95_total_ms      REAL NOT NULL,
             mean_ttfb_ms      REAL NOT NULL,
             mean_tokens_per_sec REAL NOT NULL,
-            itl_p95_ms        REAL
+            itl_p95_ms        REAL,
+            reasoning_tokens  INTEGER,
+            thinking_ms       REAL
         );
         CREATE INDEX IF NOT EXISTS idx_runs_provider_time
             ON runs (provider, timestamp_unix);",
@@ -32,6 +34,8 @@ pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
     // Additive migration for databases created before ITL tracking:
     // a duplicate-column error means the column already exists.
     let _ = conn.execute("ALTER TABLE runs ADD COLUMN itl_p95_ms REAL", []);
+    let _ = conn.execute("ALTER TABLE runs ADD COLUMN reasoning_tokens INTEGER", []);
+    let _ = conn.execute("ALTER TABLE runs ADD COLUMN thinking_ms REAL", []);
     Ok(conn)
 }
 
@@ -42,8 +46,8 @@ pub fn save(conn: &Connection, records: &[HistoryRecord]) -> rusqlite::Result<()
         let mut stmt = conn.prepare(
             "INSERT INTO runs (timestamp_unix, provider, model, variant, concurrency,
                                mean_total_ms, p95_total_ms, mean_ttfb_ms, mean_tokens_per_sec,
-                               itl_p95_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                               itl_p95_ms, reasoning_tokens, thinking_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?;
         for r in records {
             stmt.execute(rusqlite::params![
@@ -57,6 +61,8 @@ pub fn save(conn: &Connection, records: &[HistoryRecord]) -> rusqlite::Result<()
                 r.mean_ttfb_ms,
                 r.mean_tokens_per_sec,
                 r.itl_p95_ms,
+                r.reasoning_tokens.map(|v| v as i64),
+                r.thinking_ms_estimate,
             ])?;
         }
         Ok(())
@@ -75,7 +81,7 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<HistoryRecord>> {
     let mut stmt = conn.prepare(
         "SELECT timestamp_unix, provider, model, variant, concurrency,
                 mean_total_ms, p95_total_ms, mean_ttfb_ms, mean_tokens_per_sec,
-                itl_p95_ms
+                itl_p95_ms, reasoning_tokens, thinking_ms
          FROM runs ORDER BY timestamp_unix, provider",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -90,6 +96,8 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<HistoryRecord>> {
             mean_ttfb_ms: row.get(7)?,
             mean_tokens_per_sec: row.get(8)?,
             itl_p95_ms: row.get(9)?,
+            reasoning_tokens: row.get::<_, Option<i64>>(10)?.map(|v| v.max(0) as u64),
+            thinking_ms_estimate: row.get(11)?,
         })
     })?;
     rows.collect()

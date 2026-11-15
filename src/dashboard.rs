@@ -56,6 +56,20 @@ pub fn render_html(records: &[HistoryRecord], days: u64, now_unix: u64) -> Strin
                     true,
                 ));
             }
+            // thinking-time series for reasoning models
+            let think_lanes: Vec<&&HistoryRecord> = lanes
+                .iter()
+                .filter(|r| r.thinking_ms_estimate.is_some())
+                .copied()
+                .collect();
+            if think_lanes.len() >= 2 {
+                body.push_str(&chart(
+                    "thinking (ms, est.)",
+                    &think_lanes,
+                    |r| r.thinking_ms_estimate.unwrap_or(0.0),
+                    true,
+                ));
+            }
         } else {
             body.push_str("<p class='empty'>needs at least two recorded runs for a chart</p>");
         }

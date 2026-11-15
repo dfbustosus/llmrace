@@ -15,6 +15,8 @@ fn rec(ts: u64, provider: &str, model: &str) -> HistoryRecord {
         mean_ttfb_ms: 14.0,
         mean_tokens_per_sec: 87.0,
         itl_p95_ms: None,
+        reasoning_tokens: None,
+        thinking_ms_estimate: None,
     }
 }
 

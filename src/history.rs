@@ -33,6 +33,12 @@ pub struct HistoryRecord {
     /// p95 inter-token gap in milliseconds, when the run measured one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub itl_p95_ms: Option<f64>,
+    /// Hidden reasoning tokens (usage minus visible), when usage was reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    /// Estimated server-side thinking time in ms, when measurable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_ms_estimate: Option<f64>,
 }
 
 /// Default history file location: `$XDG_DATA_HOME/llmrace/history.jsonl`,
@@ -63,6 +69,8 @@ pub fn history_path() -> PathBuf {
 ///     mean_ttfb_ms: 14.0,
 ///     mean_tokens_per_sec: 87.0,
 ///     itl_p95_ms: None,
+///     reasoning_tokens: None,
+///     thinking_ms_estimate: None,
 /// };
 /// append(&path, &[record.clone()]).unwrap();
 /// assert_eq!(load(&path), vec![record]);
@@ -277,5 +285,7 @@ pub fn record_from_summary(s: &crate::bench::LaneSummary, timestamp_unix: u64) -
         mean_ttfb_ms: s.mean_ttfb_ms(),
         mean_tokens_per_sec: s.mean_tokens_per_sec(),
         itl_p95_ms: s.itl_p95_ms(),
+        reasoning_tokens: (s.reasoning_tokens() > 0).then_some(s.reasoning_tokens()),
+        thinking_ms_estimate: s.thinking_ms_estimate(),
     }
 }

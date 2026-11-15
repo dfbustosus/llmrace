@@ -775,3 +775,26 @@ fn out_dash_streams_markdown_to_stdout() {
     // no report file named '-' left behind
     assert!(!std::path::Path::new("-").exists());
 }
+
+#[test]
+fn non_tty_stdout_falls_back_to_headless() {
+    // cargo test pipes stdout, so the TUI is impossible here: without the
+    // fallback this invocation used to garble or fail on a pipe
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--out")
+        .arg(tmppath("tty"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "piped stdout must run headless: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("headless"), "note expected: {stderr}");
+}
