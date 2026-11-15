@@ -26,8 +26,9 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - name: Schema drift check
         run: |
-          cargo run --quiet -- --schema > /tmp/schema.json
-          diff -u docs/schema.json /tmp/schema.json
+          cargo run --quiet -- --schema > schema-check.json
+          diff -u docs/schema.json schema-check.json
+          rm schema-check.json
       - run: cargo test --all-targets
   sqlite:
     name: sqlite feature (${{ matrix.os }})
