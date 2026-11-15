@@ -7,64 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-15
+
+The metrics-honesty and hardening release: reasoning models measured truthfully end-to-end, distributed probes completed with cross-region merging, three security fixes, and six correctness fixes — including two where the tool silently reported wrong data (a pricing row that never matched, Prometheus series that overwrote each other).
+
 ### Added
 
-- Library module `llmrace::gates`: `--max-ttfb` gate logic (`ttfb_offenders`, `render_ttfb_verdict`) is now reusable and unit-tested from CI pipelines
-- `Tui::render` is public — the race view can be drawn against any ratatui backend (used by the new TestBackend render tests)
+- **Reasoning metrics end-to-end**: reports split `visible_tokens` from hidden `reasoning_tokens` (🧠n annotations in tables), tokens/s uses the effective generation window so burst delivery cannot inflate throughput (live-verified: gpt-5-nano 19,000 → 200 tok/s), and `thinking_ms_estimate` scales server time by the reasoning-token share
+- **Cross-region merge**: `llmrace --merge a.json,b.json,…` renders a per-provider region table with ⚡ (best TTFB) and 🚀 (best throughput); `--region` stamps reports (probe workflow updated), `--merge --json` writes machine-readable output
+- **Tool-task registry**: `--tools [weather|math|lookup]` — per-wire schemas and per-task argument validators; tool validity is scored against the lane's own task
+- Providers: **LM Studio** (`lmstudio`, :1234) and **llama.cpp llama-server** (`llamacpp`, :8080) — opt-in locals excluded from auto-detect, with `--doctor` checks
+- `provider=model` positional lanes race several models of one provider head-to-head (podium and tables disambiguate with `provider/model` labels)
+- Inter-token latency (ITL p50/p95, stutter count >250ms) in tables and JSON; history records `itl_p95_ms`; dashboard renders an ITL series; sqlite migrates additively
+- `--retries N` with linear backoff; `--winner` + `--weights`; `--compare a.json,b.json`; `--html` shareable report; `--region`
+- `--watch --record`: watch sessions feed the trend history
+- Library: `llmrace::gates` (TTFB gate, outage detection), `Sample::percentiles`, `provider::is_reasoning_model`, public `Tui::render`
+- Racing a reasoning model with `--max-tokens` under 512 prints a starvation hint
 
 ### Changed
 
-- `provider` module split into `spec` / `request` / `stream` (public API unchanged); `--record` now skips failed lanes (matching `--watch`), so zero-metric records no longer pollute history files
-- Markdown reports note lanes without pricing data instead of silently showing an empty cost column
-
-- Profile application uses clap's `ValueSource` instead of raw `std::env::args` scanning — every form of an explicit flag (`-n 1`, `--runs 1`, `--runs=1`) now reliably wins over profile values (e2e-tested)
-- `--doctor` derives local-daemon checks from the provider specs (ports live in one place) and no longer reports opt-in locals as *failed* when they are simply not running
-- `--list --json` includes `opt_in` per provider
-- `--doctor` probes keyed provider endpoints concurrently instead of sequentially — several blocked endpoints no longer stall diagnostics behind back-to-back 3s timeouts
-- Profiles accept `retries` (`llmrace.toml`), included in the `--init` starter
-
-### Added (more)
-
-- **Tool-task registry**: `--tools` now takes an optional task — `weather` (default), `math` (`calculate(expression)`), `lookup` (`search_docs(query)`) — each with per-wire schemas and its own argument validator; tool validity in reports is validated against the lane's own task
-- Racing a reasoning model with `--max-tokens` under 512 prints a hint that the answer is starved by thinking (gpt-5-nano returns 1 visible token at 256); `provider::is_reasoning_model` is public
-- `thinking_ms_estimate` in JSON reports: server processing time scaled by the hidden-reasoning token share — an explicitly documented estimate of how long a reasoning model thought before its first visible token
-- History records capture `itl_p95_ms`; the dashboard renders an ITL p95 time series when recorded runs have it; the sqlite backend migrates existing databases additively (`ALTER TABLE`, duplicate-column safe)
-
-### Changed (more)
-
-- Mid-stream timeout errors name the model, the timeout window and the tokens received so far (`openai (gpt-4o-mini): request timed out after 30s (120 tokens received)`); README methodology now documents that same-provider multi-model lanes share rate limits when racing concurrently
+- **Honest throughput for reasoning models** (#125): tokens/s divides usage tokens by the effective generation window (observed window widened to provider-reported server time when longer); no-usage token fallback estimates from delivered characters instead of SSE event count
+- Profile precedence uses clap `ValueSource` (no argv scanning; `-n 1`, `--runs 1`, `--runs=1` all reliably win); profiles accept `retries`
+- `--doctor`: concurrent endpoint probes, spec-derived local-daemon checks, opt-in locals no longer report as failed when not running; `--list --json` includes `opt_in`
+- SSE parser O(n) per block (bench-proven); percentile ladders single-sort (7× on 10k samples)
+- `provider` split into `spec`/`request`/`stream`, `bench` into `metrics`/`summary`/`engine` — public API unchanged
+- `--record` skips failed lanes (matching `--watch`); markdown notes lanes without pricing data
+- Mid-stream timeouts name model, window and tokens received; README documents same-provider multi-model rate-limit sharing
 
 ### Fixed
 
-- **Pricing lookups were case-sensitive**: the Together entry (`Llama-3.3-…`) never matched its lowercased lookup key, so its cost column has been empty since the table was added; matching is now case-insensitive and a coverage test locks every cloud default model to a pricing row
-- Prometheus export: sweep variants now carry a `variant` label (previously lanes of the same provider+model overwrote each other in the gateway) and provider names are label-escaped
-- Retries back off linearly (500ms, 1s, 1.5s… capped 5s) instead of hammering an erroring endpoint back-to-back
-
-- TUI header showed `100000 rounds` with `--duration` (the internal sentinel round count leaked into the display); it now shows `≤Ns`
-- `--sweep --winner`: podiums are now computed per prompt variant — variants race different prompts and must not compete head-to-head in one podium (terminal, markdown and HTML)
-
-- **Total-outage runs now exit non-zero**: when every lane fails, `--max-ttfb` and `--baseline` previously passed (failed lanes never gate) — a green CI pipeline over a complete outage. `llmrace` now prints `every provider failed` and exits 1
-- `--baseline` with `--sweep`: variant lanes now compare against the provider's matching variant baseline entry (falling back to a plain entry) instead of all variants matching the first entry; skipped providers are reported per variant
+- **Pricing lookups were case-sensitive**: the Together row never matched its lowercased key — its cost column has been empty since the table was added; a coverage test now locks every cloud default model to a pricing row
+- **Total-outage runs exit non-zero**: `--max-ttfb`/`--baseline` previously passed when every provider failed (a green pipeline over a complete outage)
+- Prometheus export: sweep variants carry a `variant` label (series no longer overwrite each other); provider names are label-escaped
+- `--baseline` + `--sweep`: variant lanes match their variant baseline entry (fallback to plain) instead of all matching the first entry
+- `--sweep --winner`: per-variant podiums — variants race different prompts and must not compete head-to-head
+- TUI header showed `100000 rounds` with `--duration`; CSV injection (RFC-4180 quoting); `--json --out x.json` no longer writes `x.json.json`
+- SSE parser accepts bare-CR separators per spec
 
 ### Security
 
-- **HTML report and dashboard escape user input** (provider, model, prompt, error text): a model id like `<script>` previously landed raw in `--html` output — stored XSS in any shared report. Regression-tested with hostile inputs
-- CSV report fields containing commas, quotes or newlines are now RFC-4180 quoted (custom provider/model names could previously corrupt row structure)
-
-- **Reasoning-token visibility**: reports now split `visible_tokens` from hidden `reasoning_tokens` (provider usage minus the streamed estimate); reasoning lanes are annotated `🧠n` in terminal and markdown tables. Live-verified against gpt-5-nano (255 hidden reasoning tokens on a 256-token budget)
-- **Cross-region merge**: `llmrace --merge a.json,b.json,…` renders a per-provider region table with ⚡ (best TTFB) and 🚀 (best throughput) markers, completing the distributed-probes story; `--region <tag>` stamps reports (also used by the probe workflow), and `--merge --json` writes a machine-readable merged report
-- Providers: **LM Studio** (`lmstudio`, port 1234) and **llama.cpp llama-server** (`llamacpp`, port 8080) — opt-in locals excluded from auto-detect, with `--doctor` reachability checks
-- `--watch --record`: watch sessions now append every round to the persistent history
-
-### Changed
-
-- SSE parser buffers are O(n) per block (rolling consumption window with compaction instead of an O(n) drain per event) — bench: −3% on the 200-event chunked feed, structurally linear for pathological chunking
-- Percentile ladders sort once instead of per percentile — bench: 968µs → 138µs (7×) for the p10–p99 ladder on 10k samples
-- `Sample::percentiles(&[f64])` added; single-percentile `percentile()` is unchanged
-
-### Fixed
-
-- `--json --out name.json` wrote `name.json.json` — the sibling-extension logic now replaces the extension instead of appending (also fixes double-suffixed probe artifacts)
+- **Stored XSS in `--html` reports and the dashboard**: provider/model/prompt/error text landed raw in HTML; a model id like `<script>` executed in any shared report. All interpolations escaped, regression-tested with hostile inputs
+- API keys never appear in any output — enforced by a leak-guard test over stdout/stderr/md/json/csv/html
+- CSV fields with commas/quotes/newlines are RFC-4180 quoted
 
 ## [1.0.0] - 2026-11-14
 
