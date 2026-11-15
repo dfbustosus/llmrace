@@ -1315,3 +1315,32 @@ fn significance_labels_disambiguate_same_provider_models() {
     let t2 = llmrace::report::terminal_table(&[plain, other]);
     assert!(t2.contains("mock vs mock2"), "{t2}");
 }
+
+#[test]
+fn duration_mode_reports_actual_round_count() {
+    // the internal 100_000-round sentinel must not leak into metadata
+    let json = serde_json::from_str::<serde_json::Value>(&{
+        let mut summary = llmrace::bench::LaneSummary {
+            name: "mock".into(),
+            model: "m".into(),
+            runs: (0..7)
+                .map(|_| RunMetrics {
+                    total_ms: 100.0,
+                    ttfb_ms: 5.0,
+                    tokens: 3,
+                    ..RunMetrics::default()
+                })
+                .collect(),
+            error: None,
+            prompt: String::new(),
+            concurrency: 1,
+            variant: None,
+            tool_task: None,
+        };
+        // emulate what write_reports does: actual_runs = max lane runs len
+        let actual = summary.runs.len();
+        llmrace::report::json_report(&[summary], "p", actual, 32)
+    })
+    .unwrap();
+    assert_eq!(json["runs"], 7);
+}

@@ -37,7 +37,8 @@ Include the provider, model, OS, and the output of `llmrace --version` plus the 
 | `src/regression.rs` | baseline comparison and A/B evaluation |
 | `src/score.rs` | composite winner scoring and podiums |
 | `src/merge.rs` | cross-region probe merging |
-| `src/main.rs` / `src/run.rs` / `src/modes.rs` | binary: CLI + dispatch / race execution / standalone modes |
+| `src/main.rs` / `src/modes.rs` | binary: CLI definition + dispatch / standalone modes |
+| `src/run/` | race execution: `config`, `collect` (lanes), `race`, `ramp`, `watch`, `reports` (writing + gates) |
 
 ## Releasing
 

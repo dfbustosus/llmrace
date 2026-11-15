@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reports state the rounds actually measured**: `--duration` previously wrote its internal 100,000-round sentinel into markdown/JSON metadata (and a graceful interrupt would overstate too); metadata now reflects reality
 - **Graceful interrupt for headless races**: SIGINT during `--no-tui` (or piped-output) races now finishes in-flight rounds and writes partial reports instead of losing everything — previously only `--watch` handled Ctrl-C; additive `spawn_lane_stoppable` API
 - `list_models` derives its URL with RFC 3986 `Url::join` semantics instead of string surgery — custom endpoints with ports, query strings or unusual paths resolve correctly (live-verified against OpenAI and Ollama)
 - New `decode_payload` fuzz target: the provider-JSON decoder (an untrusted parser boundary) is now fuzzed alongside the SSE parser in CI
