@@ -182,3 +182,24 @@ fn unix_now() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+/// `llmrace --models [provider]`
+pub(crate) async fn models(providers: Vec<llmrace::provider::ProviderSpec>) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("failed to build http client")?;
+    for spec in providers {
+        match llmrace::provider::list_models(&client, &spec).await {
+            Ok(ids) if ids.is_empty() => println!("{}: no models reported", spec.id),
+            Ok(ids) => {
+                println!("{} ({}):", spec.id, ids.len());
+                for id in ids {
+                    println!("  {id}");
+                }
+            }
+            Err(e) => println!("{}: {e}", spec.id),
+        }
+    }
+    Ok(())
+}

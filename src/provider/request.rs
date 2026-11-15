@@ -164,6 +164,104 @@ pub async fn stream_completion(
     send_wire_request(client, spec, build_wire_request(spec, req)?).await
 }
 
+/// Lists the models a provider currently offers, via its models endpoint.
+///
+/// OpenAI-compatible providers answer `GET …/models` with
+/// `{"data":[{"id":…}]}`; Anthropic uses the same shape, Gemini returns
+/// `{"models":[{"name":"models/<id>"}]}` and Cohere an array of
+/// `{"name":…}`. The mock wire has no models endpoint.
+pub async fn list_models(client: &reqwest::Client, spec: &ProviderSpec) -> Result<Vec<String>> {
+    use serde_json::Value;
+    if spec.wire == Wire::Mock {
+        return Err(Error::Config(format!(
+            "{}: mock provider has no model listing",
+            spec.id
+        )));
+    }
+    let key = spec.api_key()?;
+    let (url, auth) = match spec.wire {
+        Wire::OpenAiCompat => (
+            spec.endpoint
+                .trim_end_matches("/chat/completions")
+                .to_string()
+                + "/models",
+            bearer_or_none(key),
+        ),
+        Wire::Anthropic => (
+            spec.endpoint.trim_end_matches("/messages").to_string() + "/models",
+            RequestAuth::Headers(vec![
+                ("x-api-key", key.clone().unwrap_or_default()),
+                ("anthropic-version", "2023-06-01".to_string()),
+            ]),
+        ),
+        Wire::Gemini => (
+            spec.endpoint
+                .split("/models")
+                .next()
+                .unwrap_or(spec.endpoint.as_ref())
+                .trim_end_matches('/')
+                .to_string()
+                + "/models",
+            RequestAuth::Headers(vec![("x-goog-api-key", key.clone().unwrap_or_default())]),
+        ),
+        Wire::Cohere => (
+            spec.endpoint.trim_end_matches("/chat").to_string() + "/models",
+            bearer_or_none(key),
+        ),
+        Wire::Mock => unreachable!("handled above"),
+    };
+    let mut request = client.get(&url);
+    match &auth {
+        RequestAuth::None => {}
+        RequestAuth::Bearer(k) => request = request.bearer_auth(k),
+        RequestAuth::Headers(headers) => {
+            for (name, value) in headers {
+                request = request.header(*name, value);
+            }
+        }
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+    let resp = check_status(spec, resp).await?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Stream(format!("{}: invalid models response: {e}", spec.id)))?;
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(data) = body.get("data").and_then(Value::as_array) {
+        for m in data {
+            if let Some(id) = m.get("id").and_then(Value::as_str) {
+                ids.push(id.to_string());
+            }
+        }
+    } else if let Some(models) = body.get("models").and_then(Value::as_array) {
+        for m in models {
+            if let Some(name) = m.get("name").and_then(Value::as_str) {
+                // Gemini names look like "models/gemini-2.0-flash"
+                ids.push(name.rsplit('/').next().unwrap_or(name).to_string());
+            }
+        }
+    } else if let Some(arr) = body.as_array() {
+        for m in arr {
+            if let Some(name) = m.get("name").and_then(Value::as_str) {
+                ids.push(name.to_string());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn bearer_or_none(key: Option<String>) -> RequestAuth {
+    match key {
+        Some(k) => RequestAuth::Bearer(k),
+        None => RequestAuth::None,
+    }
+}
+
 /// Splits a `--model` entry into a provider-specific override when written
 /// as `provider=model`; plain entries (no `=`) are global and yield `None`.
 pub fn split_model_override(entry: &str) -> Option<(String, String)> {

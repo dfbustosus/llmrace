@@ -12,6 +12,7 @@
 //! - [`config`]: named profiles from `llmrace.toml`
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
+//! - [`schema`]: JSON Schema for `race.json` reports
 //! - [`regression`]: baseline comparison for CI quality gates
 //! - [`gates`]: TTFB quality gates over race results
 //! - [`score`]: composite winner scoring and the podium
@@ -65,6 +66,7 @@ pub mod prom;
 pub mod provider;
 pub mod regression;
 pub mod report;
+pub mod schema;
 pub mod score;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;

@@ -234,6 +234,8 @@ Add `--json` to also write a machine-readable merged report.
 llmrace --doctor            # keys, endpoint egress, Ollama, config, history
 llmrace --doctor --json     # structured output for CI
 llmrace --list --json       # full provider registry with availability
+llmrace --models groq       # models the provider currently offers
+llmrace --schema > schema.json   # JSON Schema for race.json (CI validation)
 ```
 
 Any HTTP response counts as endpoint reachability — even a 401 proves DNS, TLS and routing work, so `--doctor` distinguishes "missing key" from "network blocked".

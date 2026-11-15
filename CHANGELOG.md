@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `llmrace --models [provider]`: lists the models a provider currently offers (OpenAI-compat `/v1/models`, Anthropic, Gemini and Cohere shapes); bare `--models` queries every auto-detected provider — no more guessing `-m` values
+- `llmrace --schema`: prints the JSON Schema (draft 2020-12) for `race.json`, so CI consumers can validate reports with standard tooling; a test keeps the schema and real reports in sync
+- `--tools` now conflicts with `--sweep` (both control the prompt; the tool prompt was silently discarded before)
+
 ## [1.1.0] - 2026-11-15
 
 The metrics-honesty and hardening release: reasoning models measured truthfully end-to-end, distributed probes completed with cross-region merging, three security fixes, and six correctness fixes — including two where the tool silently reported wrong data (a pricing row that never matched, Prometheus series that overwrote each other).

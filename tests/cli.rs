@@ -524,3 +524,58 @@ fn tools_conflicts_with_sweep() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cannot be used with"), "{stderr}");
 }
+
+#[test]
+fn schema_is_valid_json_and_matches_reports() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--schema")
+        .output()
+        .expect("spawn llmrace");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let schema: serde_json::Value = serde_json::from_str(&stdout).expect("schema is valid JSON");
+    assert_eq!(
+        schema["$schema"],
+        "https://json-schema.org/draft/2020-12/schema"
+    );
+
+    // every top-level required property exists in the schema, and every
+    // top-level key a real report emits is described by it
+    let report = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--json")
+        .arg("--out")
+        .arg(
+            std::env::temp_dir()
+                .join("llmrace-schema.md")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .output()
+        .unwrap();
+    assert!(report.status.success());
+    let json_path = std::env::temp_dir().join("llmrace-schema.json");
+    let generated: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+    for key in generated.as_object().unwrap().keys() {
+        assert!(
+            schema["properties"].as_object().unwrap().contains_key(key),
+            "schema is missing report key '{key}'"
+        );
+    }
+    for key in schema["required"].as_array().unwrap() {
+        assert!(
+            generated
+                .as_object()
+                .unwrap()
+                .contains_key(key.as_str().unwrap()),
+            "report is missing required key '{}'",
+            key
+        );
+    }
+}

@@ -184,6 +184,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     list: bool,
 
+    /// List the models a provider currently offers (e.g. `--models groq`).
+    /// Bare `--models` lists models for every auto-detected provider.
+    #[arg(long, num_args = 0..=1, default_missing_value = "*")]
+    models: Option<String>,
+
     /// Run environment diagnostics (keys, endpoints, Ollama, config, history).
     #[arg(long)]
     doctor: bool,
@@ -207,6 +212,10 @@ pub(crate) struct Cli {
     /// Print the man page (roff) and exit.
     #[arg(long)]
     man: bool,
+
+    /// Print the JSON Schema for race.json reports and exit.
+    #[arg(long)]
+    schema: bool,
 }
 
 #[tokio::main]
@@ -240,8 +249,27 @@ async fn dispatch(cli: Cli) -> Result<i32> {
     if cli.man {
         return modes::man().map(|_| 0);
     }
+    if cli.schema {
+        print!("{}", llmrace::schema::race_report_schema());
+        return Ok(0);
+    }
     if cli.list {
         return modes::list(cli.json).map(|_| 0);
+    }
+    if let Some(target) = &cli.models {
+        let providers = if target == "*" {
+            ProviderSpec::registry()
+                .into_iter()
+                .filter(|p| *p.id != *"mock" && p.is_available() && !p.opt_in)
+                .collect::<Vec<_>>()
+        } else {
+            vec![ProviderSpec::find(target)
+                .with_context(|| format!("unknown provider '{target}' (try --list)"))?]
+        };
+        if providers.is_empty() {
+            anyhow::bail!("no providers available; set an API key or name one explicitly");
+        }
+        return modes::models(providers).await.map(|_| 0);
     }
     if cli.dashboard {
         return modes::dashboard(cli.days, &cli.out, &cli.storage).map(|_| 0);

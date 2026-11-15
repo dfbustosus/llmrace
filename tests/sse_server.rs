@@ -421,3 +421,61 @@ async fn mid_stream_timeout_names_model_and_window() {
     assert!(err.contains("stall-model"), "{err}");
     assert!(err.contains("1 tokens received"), "{err}");
 }
+
+#[tokio::test]
+async fn list_models_decodes_openai_shape() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            let n = socket.read(&mut tmp).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..pos]).to_ascii_lowercase();
+                assert!(
+                    head.starts_with("get /v1/models"),
+                    "must call /v1/models: {head}"
+                );
+                break;
+            }
+        }
+        let body = r#"{"data":[{"id":"b-model"},{"id":"a-model"}]}"#;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+    let spec = ProviderSpec::custom(
+        "testy",
+        &format!("http://{addr}/v1/chat/completions"),
+        None,
+        "m",
+    );
+    let models = llmrace::provider::list_models(&reqwest::Client::new(), &spec)
+        .await
+        .unwrap();
+    server.abort();
+    assert_eq!(models, vec!["a-model", "b-model"], "sorted and deduped");
+}
+
+#[tokio::test]
+async fn list_models_gemini_shape_and_mock_error() {
+    // mock wire: clean error, no HTTP
+    let err = llmrace::provider::list_models(&reqwest::Client::new(), &ProviderSpec::mock())
+        .await
+        .expect_err("mock has no models");
+    assert!(err.to_string().contains("no model listing"), "{err}");
+}
