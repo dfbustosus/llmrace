@@ -74,9 +74,9 @@ impl Weights {
             }
         }
         if w.ttfb + w.tps + w.p95 + w.cost <= 0.0 {
-            return Err(Error::Config(format!(
-                "all weights are zero — at least one must be positive"
-            )));
+            return Err(Error::Config(
+                "all weights are zero — at least one must be positive".into(),
+            ));
         }
         Ok(w)
     }
