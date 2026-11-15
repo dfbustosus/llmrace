@@ -160,3 +160,20 @@ fn long_ttfb_shows_thinking_state() {
     let buf2 = draw(&early, 100, 12);
     assert!(buf2.contains("streaming"), "{buf2}");
 }
+
+#[test]
+fn finished_reasoning_lane_shows_brain() {
+    let lanes = vec![(Arc::from("openai"), None, "gpt-5-nano".to_string())];
+    let mut tui = Tui::new(lanes, "p".into(), 2);
+    tui.update(upd("openai", "gpt-5-nano", 24, true, None));
+    let buf = draw(&tui, 100, 12);
+    assert!(buf.contains('🧠'), "reasoning lane must flag: {buf}");
+
+    let classic = Tui::new(
+        vec![(Arc::from("openai"), None, "gpt-4o-mini".to_string())],
+        "p".into(),
+        2,
+    );
+    let buf2 = draw(&classic, 100, 12);
+    assert!(!buf2.contains('🧠'), "{buf2}");
+}

@@ -1,6 +1,7 @@
 //! Live terminal race view.
 
 use crate::bench::LaneUpdate;
+use crate::provider;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode},
     style::{Color, Modifier, Style},
@@ -348,9 +349,16 @@ impl Tui {
             let status = if let Some(e) = &lane.error {
                 format!(" ✗ {}", crate::util::truncate(e, 42))
             } else if lane.finished {
+                // reasoning models flag their hidden thinking, matching
+                // the 🧠 annotation in the result tables
+                let brain = if provider::is_reasoning_model(&lane.model) {
+                    " 🧠"
+                } else {
+                    ""
+                };
                 match lane.best_ms {
-                    Some(ms) => format!(" 🏁 {:.0} ms", ms),
-                    None => " 🏁 done".to_string(),
+                    Some(ms) => format!(" 🏁 {:.0} ms{brain}", ms),
+                    None => format!(" 🏁 done{brain}"),
                 }
             } else if lane.ttfb_ms.is_none() && lane.elapsed_ms > 800.0 {
                 // No first token yet after a noticeable wait: the model is

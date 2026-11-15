@@ -1344,3 +1344,27 @@ fn duration_mode_reports_actual_round_count() {
     .unwrap();
     assert_eq!(json["runs"], 7);
 }
+
+#[test]
+fn histogram_section_includes_ttfb_ladder() {
+    let summary = llmrace::bench::LaneSummary {
+        name: "mock".into(),
+        model: "m".into(),
+        runs: (0..5)
+            .map(|i| RunMetrics {
+                total_ms: 100.0 + i as f64,
+                ttfb_ms: 10.0 + i as f64,
+                tokens: 3,
+                ..RunMetrics::default()
+            })
+            .collect(),
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    let md = llmrace::report::histogram_section(&[summary]);
+    assert!(md.contains("## TTFB distribution"), "{md}");
+    assert!(md.contains("12 ms"), "p99 of 10..14 = 14ms? check: {md}");
+}

@@ -416,12 +416,28 @@ pub fn histogram_section(summaries: &[LaneSummary]) -> String {
 
     let mut out = String::from("\n## Latency distribution\n\n");
     out.push_str("| Provider | p10 | p25 | p50 | p75 | p90 | p95 | p99 |\n");
-    out.push_str("|--|--:|--:|--:|--:|--:|--:|--:|\n");
+    out.push_str("|--|--:|--:|--:|--:|--:|--:|--:|--:|\n");
     for s in &lanes {
         let cells: Vec<String> = s
             .latency_percentiles()
             .iter()
             .map(|(_, v)| format!("{v:.0} ms"))
+            .collect();
+        out.push_str(&format!("| {} | {} |\n", s.name, cells.join(" | ")));
+    }
+
+    // TTFB ladder: first-token latency distribution, distinct from the
+    // time-to-last-token ladder above
+    let ps = [10.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.0];
+    out.push_str("\n## TTFB distribution\n\n");
+    out.push_str("| Provider | p10 | p25 | p50 | p75 | p90 | p95 | p99 |\n");
+    out.push_str("|--|--:|--:|--:|--:|--:|--:|--:|\n");
+    for s in &lanes {
+        let sample = crate::stats::Sample::from_values(s.runs.iter().map(|r| r.ttfb_ms).collect());
+        let cells: Vec<String> = sample
+            .percentiles(&ps)
+            .iter()
+            .map(|v| format!("{v:.0} ms"))
             .collect();
         out.push_str(&format!("| {} | {} |\n", s.name, cells.join(" | ")));
     }
