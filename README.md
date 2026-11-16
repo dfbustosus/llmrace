@@ -127,6 +127,11 @@ llmrace openai groq -c 8 -n 5
 # Saturation curve: race at each concurrency level, find the throughput knee
 llmrace openai groq --ramp 1,2,4,8 -n 3
 
+# Time-bounded runs keep every round in memory for statistics
+# (~2 KB/round/lane: inter-token gaps dominate). A 24 h --duration run at
+# one round per lane every ~2 s holds roughly 100 MB per lane — for
+# horizon monitoring prefer --watch, which aggregates each round instead.
+
 # CI gate: fail if any provider exceeds 500ms TTFB
 llmrace openai groq --max-ttfb 500 --quiet
 
@@ -303,16 +308,16 @@ A ready-to-copy workflow lives in [`docs/example-latency-gate.yml`](docs/example
 
 ## Real-world results
 
-Measured 2026-11-14 from South America — three OpenAI models head-to-head (`openai=model` lanes) vs local inference (Ollama on Apple M5 Pro / 48 GB), 5 rounds each, warmup excluded:
+Measured 2026-11-15 from South America — three OpenAI models head-to-head vs local inference (Ollama on Apple M5 Pro / 48 GB), 5 rounds each, warmup excluded:
 
-| Provider | Model | TTFB | Latency (mean ± 95% CI) | Tokens/s | Notes |
-|---|---|---:|---:|---:|---|
-| openai | `gpt-4o-mini` | 567 ms | 1351 ± 78 ms | **215.3** | best all-rounder |
-| openai | `gpt-4.1` | 602 ms | 1323 ± 191 ms | 191.8 | |
-| openai | `gpt-5-nano` | 1911 ms | 1922 ± 359 ms | 163.0 | 🧠 1275 hidden reasoning tokens |
-| ollama | `llama3.2:1b` | 130 ms | 2989 ± 90 ms | 65.3 | local, ~0 network |
+| Provider | Model | TTFB | p95 | Tokens/s | ITL p95 | Notes |
+|---|---|---:|---:|---:|---:|---|
+| openai | `gpt-4o-mini` | 625 ms | 1647 ms | **209.9** | 14 ms | fastest all-round |
+| openai | `gpt-5-nano` | 1778 ms | 1870 ms | 163.2 | — | 🧠 1275 hidden reasoning tokens |
+| openai | `gpt-4.1` | 548 ms | 2416 ms | 122.4 | 29 ms | long generations, spikier ITL |
+| ollama | `llama3.2:1b` | 109 ms | 2697 ms | 75.6 | 18 ms | local, ~0 network |
 
-The reasoning story, honestly measured: gpt-5-nano spends **1.9 s thinking** before its first visible token (TTFB includes reasoning — see the 🧠 count), then delivers everything in a burst. Once streaming, the cloud lanes sustain 2.5–3.3× local throughput, while the local lane prefills in 130 ms. Tokens/s for reasoning models is computed over the server-side window, not the burst, so the numbers are comparable. In tool-calling mode (`--tools`), gpt-4o-mini returns valid JSON tool arguments 3/3 rounds at ~600 ms round trip, while local `llama3.2:1b` complies only ~80% of the time — validity rate is a real metric, not noise. Reproduce:
+And the statistic llmrace exists to surface: **`⚖ gpt-4o-mini vs gpt-5-nano: Δ −351 ms, significant (p=0.010)`** — the classic model really is faster end-to-end, while gpt-5-nano spends 1.8 s thinking before its first visible token (🧠 1275 of its token budget). Reproduce:
 
 ```bash
 llmrace openai=gpt-4o-mini openai=gpt-4.1 openai=gpt-5-nano -n 5 --warmup 1 --winner
