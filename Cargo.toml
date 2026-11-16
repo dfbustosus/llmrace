@@ -11,12 +11,6 @@ readme = "README.md"
 keywords = ["llm", "ai", "benchmark", "cli", "openai"]
 categories = ["command-line-utilities", "development-tools"]
 
-# Policy (README "Stability"): new struct fields arrive additively in
-# minors — exhaustive literals in downstream code are the known trade-off.
-# Everything else (removed items, signature changes) stays deny.
-[package.metadata.cargo-semver-checks.lints]
-constructible_struct_adds_field = { level = "warn", required-update = "minor" }
-
 # Keep the crates.io tarball lean: heavy media and repo-only machinery do
 # not belong in downstream downloads (the demo GIF alone is 2.3 MB).
 exclude = [
@@ -26,6 +20,13 @@ exclude = [
   ".github/**",
   "llmrace-report.*",
 ]
+
+
+# Policy (README "Stability"): new struct fields arrive additively in
+# minors — exhaustive literals in downstream code are the known trade-off.
+# Everything else (removed items, signature changes) stays deny.
+[package.metadata.cargo-semver-checks.lints]
+constructible_struct_adds_field = { level = "warn", required-update = "minor" }
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
