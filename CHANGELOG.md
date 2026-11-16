@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-16
+
+The reliability patch: two live-found correctness fixes, compile-time safety
+guarantees, enforced contracts, two new distribution channels, and graceful
+degradation everywhere. No new concepts to learn — everything gets more
+honest or more robust.
+
 ### Fixed
 
 - **Reports state the rounds actually measured**: `--duration` previously wrote its internal 100,000-round sentinel into markdown/JSON metadata (and a graceful interrupt would overstate too); metadata now reflects reality
