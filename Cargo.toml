@@ -27,6 +27,12 @@ exclude = [
 # Everything else (removed items, signature changes) stays deny.
 [package.metadata.cargo-semver-checks.lints]
 constructible_struct_adds_field = { level = "warn", required-update = "minor" }
+enum_variant_added = { level = "warn", required-update = "minor" }
+# Wire is a plain fieldless enum whose implicit discriminants shift when a
+# variant is inserted; no downstream numeric casts exist for it (it is a
+# protocol tag), and the alternative — hard-coding discriminants — would
+# freeze insertion order forever.
+enum_no_repr_variant_discriminant_changed = { level = "allow" }
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
