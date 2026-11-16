@@ -36,15 +36,19 @@ jobs:
 
       - name: Resolve version
         id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            v="${GITHUB_REF_NAME#v}"
           elif [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            v="${{ inputs.version }}"
           else
-            v="$(curl -sf https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)"
-            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
+            v="$(curl -sf -H "Authorization: Bearer $GH_TOKEN"               "https://api.github.com/repos/${{ github.repository }}/releases/latest"               | jq -r .tag_name)"
+            v="${v#v}"
           fi
+          [ -n "$v" ] || { echo "could not resolve version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
 
