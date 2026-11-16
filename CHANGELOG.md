@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Verified (post-1.3.2 acceptance)
+
+- Scratch image raced a **live cloud API**: gpt-4o-mini at 167 tok/s from inside the 2.9 MB `FROM scratch` container — full streaming TLS path, not just mock
+- GitHub Action self-test green against 1.3.2 (latest-path and pinned-version jobs)
+- 40-second watch soak: alternating mock + local-Ollama rounds, `--alert-rounds 2` debounce armed, graceful SIGINT, both providers recorded to history and rendered in the final report
+
+
 ## [1.3.2] - 2026-11-16
 
 Static everything: musl builds for linux amd64+arm64 (seven release
