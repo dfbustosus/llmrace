@@ -79,6 +79,8 @@ Or grab a binary for your platform from the [releases page](https://github.com/d
 
 ```bash
 docker run --rm -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace openai -n 5
+# 3 MB FROM-scratch static image (musl):
+docker run --rm -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace-scratch:scratch openai -n 5
 # reports land in /report — mount a volume to keep them:
 docker run --rm -v "$PWD:/report" -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace openai --json
 ```
