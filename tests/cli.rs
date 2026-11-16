@@ -798,3 +798,76 @@ fn non_tty_stdout_falls_back_to_headless() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("headless"), "note expected: {stderr}");
 }
+
+#[test]
+fn cli_contract_every_documented_flag_exists() {
+    // The README stability policy declares CLI flags a contract. This test
+    // is that contract, mechanically: removing or renaming any flag below
+    // fails CI. Add new flags here when they are documented.
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&out.stdout);
+    let flags = [
+        "--prompt",
+        "--prompt-file",
+        "--runs",
+        "--warmup",
+        "--duration",
+        "--concurrency",
+        "--model",
+        "--max-tokens",
+        "--timeout",
+        "--retries",
+        "--ramp",
+        "--endpoint",
+        "--provider-name",
+        "--api-key-env",
+        "--no-tui",
+        "--json",
+        "--csv",
+        "--html",
+        "--baseline",
+        "--max-regression",
+        "--require-significance",
+        "--max-ttfb",
+        "--out",
+        "--record",
+        "--storage",
+        "--trend",
+        "--dashboard",
+        "--days",
+        "--histogram",
+        "--tools",
+        "--push-gateway",
+        "--watch",
+        "--every",
+        "--alert-rounds",
+        "--sweep",
+        "--profile",
+        "--list",
+        "--doctor",
+        "--quiet",
+        "--init",
+        "--price",
+        "--completions",
+        "--man",
+        "--schema",
+        "--models",
+        "--compare",
+        "--merge",
+        "--region",
+        "--winner",
+        "--weights",
+    ];
+    let missing: Vec<&str> = flags
+        .iter()
+        .filter(|f| !help.contains(*f))
+        .copied()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "CLI contract broken, missing: {missing:?}"
+    );
+}

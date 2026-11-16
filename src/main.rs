@@ -35,206 +35,211 @@ pub(crate) struct Cli {
     prompt: String,
 
     /// Read the prompt from a file (use `-` for stdin).
-    #[arg(long)]
+    #[arg(help_heading = "Race", long)]
     prompt_file: Option<String>,
 
     /// Measured rounds per provider.
-    #[arg(short = 'n', long, default_value_t = 3)]
+    #[arg(help_heading = "Race", short = 'n', long, default_value_t = 3)]
     runs: usize,
 
     /// Warmup rounds excluded from statistics.
-    #[arg(long, default_value_t = 1)]
+    #[arg(help_heading = "Race", long, default_value_t = 1)]
     warmup: usize,
 
     /// Run rounds for this many seconds instead of a fixed count.
-    #[arg(long)]
+    #[arg(help_heading = "Race", long)]
     duration: Option<u64>,
 
     /// Concurrent requests per provider per round.
-    #[arg(short = 'c', long, default_value_t = 1)]
+    #[arg(help_heading = "Race", short = 'c', long, default_value_t = 1)]
     concurrency: usize,
 
     /// Saturation curve: race at each concurrency level (e.g. 1,2,4,8) and
     /// report throughput per level; conflicts with -c, --sweep and --watch.
-    #[arg(long, conflicts_with_all = ["concurrency", "sweep", "watch"])]
+    #[arg(help_heading = "Race", long, conflicts_with_all = ["concurrency", "sweep", "watch"])]
     ramp: Option<String>,
 
     /// Model override: plain (`gpt-4o-mini`) applies to every provider,
     /// `provider=model` (e.g. `ollama=llama3.2:1b`) targets one. Repeatable.
-    #[arg(short, long)]
+    #[arg(help_heading = "Race", short, long)]
     model: Vec<String>,
 
     /// Sampling cap passed as max_tokens.
-    #[arg(long, default_value_t = 256)]
+    #[arg(help_heading = "Race", long, default_value_t = 256)]
     max_tokens: u64,
 
     /// Per-request timeout in seconds.
-    #[arg(long, default_value_t = 120)]
+    #[arg(help_heading = "Race", long, default_value_t = 120)]
     timeout: u64,
 
     /// Retry a failed round up to N additional times before it counts as failed.
-    #[arg(long, default_value_t = 0)]
+    #[arg(help_heading = "Race", long, default_value_t = 0)]
     retries: usize,
 
     /// Declare an overall winner with a composite score (ttfb/tps/p95 weighted).
-    #[arg(long)]
+    #[arg(help_heading = "Scoring", long)]
     winner: bool,
 
     /// Composite score weights: ttfb=30,tps=40,p95=30 (with --winner).
-    #[arg(long)]
+    #[arg(help_heading = "Scoring", long)]
     weights: Option<String>,
 
     /// Compare two saved JSON reports side by side (a.json,b.json) and exit.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(help_heading = "Modes", long, value_delimiter = ',')]
     compare: Vec<String>,
 
     /// Merge region-tagged probe reports (comma-separated) into a
     /// cross-region comparison table and exit.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(help_heading = "Modes", long, value_delimiter = ',')]
     merge: Vec<String>,
 
     /// Region tag stamped into the JSON report (used by distributed probes).
-    #[arg(long)]
+    #[arg(help_heading = "Modes", long)]
     region: Option<String>,
 
     /// Register a custom OpenAI-compatible endpoint (e.g. vLLM, LiteLLM).
-    #[arg(long, requires = "provider_name")]
+    #[arg(help_heading = "Custom endpoint", long, requires = "provider_name")]
     endpoint: Option<String>,
 
     /// Name for the custom endpoint provider.
-    #[arg(long)]
+    #[arg(help_heading = "Custom endpoint", long)]
     provider_name: Option<String>,
 
     /// Env var holding the API key for the custom endpoint.
-    #[arg(long)]
+    #[arg(help_heading = "Custom endpoint", long)]
     api_key_env: Option<String>,
 
     /// Disable the live TUI (CI-friendly).
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     no_tui: bool,
 
     /// Also write a JSON report.
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     json: bool,
 
     /// Also write a CSV report with per-run rows.
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     csv: bool,
 
     /// Also write a self-contained shareable HTML report.
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     html: bool,
 
     /// Compare results against a baseline JSON report (CI quality gate).
-    #[arg(long)]
+    #[arg(help_heading = "CI gates", long)]
     baseline: Option<String>,
 
     /// Maximum tolerated regression in percent when --baseline is set.
-    #[arg(long, default_value_t = 15.0)]
+    #[arg(help_heading = "CI gates", long, default_value_t = 15.0)]
     max_regression: f64,
 
     /// With --baseline: only fail the gate on statistically significant
     /// regressions (Welch p < 0.05 on per-run data) — flake-resistant CI.
-    #[arg(long)]
+    #[arg(help_heading = "CI gates", long)]
     require_significance: bool,
 
     /// Exit 1 if any provider's mean TTFB exceeds this many milliseconds.
-    #[arg(long)]
+    #[arg(help_heading = "CI gates", long)]
     max_ttfb: Option<f64>,
 
     /// Output report path (markdown).
-    #[arg(short, long, default_value = "llmrace-report.md")]
+    #[arg(
+        help_heading = "Output",
+        short,
+        long,
+        default_value = "llmrace-report.md"
+    )]
     out: String,
 
     /// Append this run to the persistent history (~/.local/share/llmrace/history.jsonl).
-    #[arg(long)]
+    #[arg(help_heading = "History & monitoring", long)]
     record: bool,
 
     /// History storage backend for --record/--trend/--dashboard.
-    #[arg(long, default_value = "jsonl")]
+    #[arg(help_heading = "History & monitoring", long, default_value = "jsonl")]
     storage: String,
 
     /// Print provider trends from recorded history and exit (with --days).
-    #[arg(long)]
+    #[arg(help_heading = "History & monitoring", long)]
     trend: bool,
 
     /// Render the recorded history into a static HTML dashboard and exit.
-    #[arg(long)]
+    #[arg(help_heading = "History & monitoring", long)]
     dashboard: bool,
 
     /// Days of history to analyze with --trend.
-    #[arg(long, default_value_t = 30)]
+    #[arg(help_heading = "History & monitoring", long, default_value_t = 30)]
     days: u64,
 
     /// Include the latency distribution section (percentiles + histogram) in the markdown report.
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     histogram: bool,
 
     /// Benchmark tool calling and measure argument validity. Optional task
     /// name from the registry (weather, math, lookup); defaults to weather.
     /// Conflicts with --sweep (both control the prompt).
-    #[arg(long, num_args = 0..=1, default_missing_value = "weather", conflicts_with = "sweep")]
+    #[arg(help_heading = "Prompt shaping", long, num_args = 0..=1, default_missing_value = "weather", conflicts_with = "sweep")]
     tools: Option<String>,
 
     /// Push race metrics to a Prometheus pushgateway job URL after the race.
-    #[arg(long)]
+    #[arg(help_heading = "History & monitoring", long)]
     push_gateway: Option<String>,
 
     /// Continuous monitoring: re-run the race every N seconds and alert on degradation.
-    #[arg(long)]
+    #[arg(help_heading = "History & monitoring", long)]
     watch: bool,
 
     /// Seconds between watch rounds (with --watch).
-    #[arg(long, default_value_t = 900)]
+    #[arg(help_heading = "History & monitoring", long, default_value_t = 900)]
     every: u64,
 
     /// Consecutive degraded rounds before a --watch alert fires (debounce).
-    #[arg(long, default_value_t = 1)]
+    #[arg(help_heading = "History & monitoring", long, default_value_t = 1)]
     alert_rounds: usize,
 
     /// Run the race once per comma-separated prompt variant (short,long,code,json,reasoning).
-    #[arg(long)]
+    #[arg(help_heading = "Prompt shaping", long)]
     sweep: Option<String>,
 
     /// Load a named profile from llmrace.toml (explicit flags win).
-    #[arg(long)]
+    #[arg(help_heading = "Prompt shaping", long)]
     profile: Option<String>,
 
     /// List built-in providers.
-    #[arg(long)]
+    #[arg(help_heading = "Modes", long)]
     list: bool,
 
     /// List the models a provider currently offers (e.g. `--models groq`).
     /// Bare `--models` lists models for every auto-detected provider.
-    #[arg(long, num_args = 0..=1, default_missing_value = "*")]
+    #[arg(help_heading = "Modes", long, num_args = 0..=1, default_missing_value = "*")]
     models: Option<String>,
 
     /// Run environment diagnostics (keys, endpoints, Ollama, config, history).
-    #[arg(long)]
+    #[arg(help_heading = "Modes", long)]
     doctor: bool,
 
     /// Suppress terminal output except for errors (for scripts and CI).
-    #[arg(long)]
+    #[arg(help_heading = "Output", long)]
     quiet: bool,
 
     /// Create a starter llmrace.toml with example profiles and exit.
-    #[arg(long)]
+    #[arg(help_heading = "Modes", long)]
     init: bool,
 
     /// Override pricing for a model: provider/model=input:output (USD per million tokens). Repeatable.
-    #[arg(long = "price")]
+    #[arg(help_heading = "Prompt shaping", long = "price")]
     prices: Vec<String>,
 
     /// Print shell completions for the given shell and exit.
-    #[arg(long)]
+    #[arg(help_heading = "Modes", long)]
     completions: Option<String>,
 
     /// Print the man page (roff) and exit.
-    #[arg(long)]
+    #[arg(help_heading = "Modes", long)]
     man: bool,
 
     /// Print the JSON Schema for race.json reports and exit.
-    #[arg(long)]
+    #[arg(help_heading = "Modes", long)]
     schema: bool,
 }
 
