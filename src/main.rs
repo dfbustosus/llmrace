@@ -1,6 +1,8 @@
 //! llmrace CLI: argument definitions, profile/provider resolution and
 //! dispatch. Execution lives in [`run`], standalone modes in [`modes`].
 
+#![forbid(unsafe_code)]
+
 mod modes;
 mod run;
 
@@ -315,8 +317,8 @@ async fn dispatch(
                 .collect();
             list.extend(custom_spec);
             list
-        } else if custom_spec.as_ref().is_some_and(|c| *c.id == *target) {
-            vec![custom_spec.expect("checked above")]
+        } else if let Some(spec) = custom_spec.filter(|c| *c.id == *target) {
+            vec![spec]
         } else {
             vec![ProviderSpec::find(target)
                 .with_context(|| format!("unknown provider '{target}' (try --list)"))?]

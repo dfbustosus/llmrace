@@ -52,6 +52,9 @@
 
 #![deny(missing_docs)]
 #![deny(clippy::unwrap_used)]
+// 100% safe Rust, enforced at compile time — this crate renders untrusted
+// provider output and must never need unsafe to do it.
+#![forbid(unsafe_code)]
 
 pub mod bench;
 pub mod config;

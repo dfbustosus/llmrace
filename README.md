@@ -343,7 +343,7 @@ Missing a capability you need? [Open an issue](https://github.com/dfbustosus/llm
 
 ## Engineering
 
-- `#![deny(missing_docs)]` and `#![deny(clippy::unwrap_used)]` on the library
+- `#![deny(missing_docs)]`, `#![deny(clippy::unwrap_used)]` and `#![forbid(unsafe_code)]` — **100% safe Rust, enforced at compile time**; the binary's runtime paths contain zero `unwrap`/`expect` calls
 - Typed errors via `thiserror`; `anyhow` only at the binary edge
 - Zero-alignment-allocation SSE parser that survives arbitrary network chunk boundaries (exhaustively tested at every split point)
 - Criterion benchmarks for the parsing and statistics hot paths
