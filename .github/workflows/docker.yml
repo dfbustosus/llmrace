@@ -32,8 +32,16 @@ jobs:
         include:
           - platform: linux/amd64
             target: x86_64-unknown-linux-gnu
+            dockerfile: docker/Dockerfile
           - platform: linux/arm64
             target: aarch64-unknown-linux-gnu
+            dockerfile: docker/Dockerfile
+          - platform: linux/amd64
+            target: x86_64-unknown-linux-musl
+            dockerfile: docker/Dockerfile.scratch
+          - platform: linux/arm64
+            target: aarch64-unknown-linux-musl
+            dockerfile: docker/Dockerfile.scratch
     steps:
       - uses: actions/checkout@v7
 
@@ -78,7 +86,8 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: docker
+          context: .
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           push: true
           build-args: |
