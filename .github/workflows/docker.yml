@@ -4,8 +4,11 @@ name: Docker
 # Usage: docker run --rm -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace openai -n 5
 
 on:
-  push:
-    tags: ["v*"]
+  # the release workflow uploads the binaries this image fetches — run
+  # only after it completes (a raw tag push would race the asset upload)
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       version:
