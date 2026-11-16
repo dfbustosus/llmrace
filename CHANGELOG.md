@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **musl static builds** for linux amd64+arm64 (release matrix now 7 targets) and a `FROM scratch` Docker image — **2.9 MB total**, zero glibc surface, verified live in-container (race + TLS doctor); the ubuntu image remains as the `latest` tag, scratch ships as `:scratch`
+- Provider design issues for **Amazon Bedrock** (#126: SigV4 signer testable against AWS's public vectors + the AWS binary event-stream parser) and **Google Vertex AI** (#127: service-account OAuth2, SSE decoding already done) — both `good first issue`, scoped for contributors with credentials
+- `docs/launch/launch-kit.md`: Show HN + Reddit posts and launch checklist
+
+
 ## [1.3.1] - 2026-11-16
 
 The reliability patch: two live-found correctness fixes, compile-time safety
