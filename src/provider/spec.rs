@@ -15,6 +15,8 @@ pub enum Wire {
     Gemini,
     /// Cohere `/v2/chat` streaming.
     Cohere,
+    /// Amazon Bedrock `invoke-with-response-stream` (binary event-stream).
+    Bedrock,
     /// Built-in deterministic provider for tests and demos.
     Mock,
 }
@@ -255,6 +257,28 @@ impl ProviderSpec {
         p
     }
 
+    /// Amazon Bedrock (ConverseStream-era invoke-with-response-stream).
+    ///
+    /// **Experimental**: the SigV4 signer and binary event-stream decoder
+    /// are unit-tested against published AWS vectors, but the end-to-end
+    /// path has not been verified against a live Bedrock account — see
+    /// issue #126. Credentials: `AWS_ACCESS_KEY_ID`,
+    /// `AWS_SECRET_ACCESS_KEY` (optional `AWS_SESSION_TOKEN`) and
+    /// `AWS_REGION`.
+    pub fn bedrock() -> Self {
+        let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+        let endpoint = format!(
+            "https://bedrock-runtime.{region}.amazonaws.com/model/{{model}}/invoke-with-response-stream"
+        );
+        spec(
+            "bedrock",
+            &endpoint,
+            Some("AWS_ACCESS_KEY_ID"),
+            "anthropic.claude-3-5-haiku-20241022-v1:0",
+            Wire::Bedrock,
+        )
+    }
+
     /// Deterministic in-process provider for tests and demos.
     pub fn mock() -> Self {
         spec("mock", "", None, "mock-1", Wire::Mock)
@@ -304,6 +328,7 @@ impl ProviderSpec {
             ProviderSpec::hyperbolic(),
             ProviderSpec::openrouter(),
             ProviderSpec::ollama(),
+            ProviderSpec::bedrock(),
             ProviderSpec::lmstudio(),
             ProviderSpec::llamacpp(),
             ProviderSpec::mock(),

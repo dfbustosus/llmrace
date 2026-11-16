@@ -111,6 +111,11 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
             0.04,
         ),
         (
+            "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0",
+            0.80,
+            4.00,
+        ),
+        (
             "hyperbolic/meta-llama/Meta-Llama-3.1-70B-Instruct",
             0.10,
             0.40,

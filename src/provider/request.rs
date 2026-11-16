@@ -2,7 +2,7 @@
 //! wire-specific HTTP call and hands back the decoded event stream.
 
 use super::spec::{AuthKind, ProviderSpec, Wire};
-use super::stream::{EventStream, MockStream, SseStream};
+use super::stream::{BedrockStream, EventStream, MockStream, SseStream};
 use crate::error::{Error, Result};
 use serde_json::json;
 use std::time::Duration;
@@ -43,7 +43,7 @@ struct WireRequest {
 /// Builds the request for the given wire protocol; pure, no I/O.
 fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Result<WireRequest> {
     let mut body = match spec.wire {
-        Wire::Mock => json!(null),
+        Wire::Mock | Wire::Bedrock => json!(null),
         Wire::OpenAiCompat => {
             // gpt-5 / o-series reject `max_tokens` (HTTP 400) and require
             // `max_completion_tokens` instead.
@@ -82,6 +82,15 @@ fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Resul
         body["tools"] = crate::tools::tool_schema(&task, spec.wire);
     }
 
+    if spec.wire == Wire::Bedrock {
+        // SigV4 signs method+path+body; handled at send time
+        let url = spec.endpoint.replace("{model}", req.model);
+        return Ok(WireRequest {
+            url,
+            body,
+            auth: RequestAuth::None,
+        });
+    }
     let key = spec.api_key()?;
     let auth = match (spec.wire, spec.auth) {
         (Wire::Mock, _) => RequestAuth::None,
@@ -114,6 +123,9 @@ async fn send_wire_request(
     spec: &ProviderSpec,
     wire_req: WireRequest,
 ) -> Result<EventStream> {
+    if wire_req.url.starts_with("https://bedrock-runtime.") {
+        return send_bedrock(client, spec, wire_req).await;
+    }
     let mut request = client.post(&wire_req.url).json(&wire_req.body);
     match &wire_req.auth {
         RequestAuth::None => {}
@@ -223,6 +235,7 @@ pub async fn list_models(client: &reqwest::Client, spec: &ProviderSpec) -> Resul
             spec.endpoint.trim_end_matches("/chat").to_string() + "/models",
             bearer_or_none(key),
         ),
+        Wire::Bedrock => unreachable!("handled before auth resolution"),
         Wire::Mock => unreachable!("handled above"),
     };
     let mut request = client.get(&url);
@@ -349,4 +362,52 @@ async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<re
         status: status.as_u16(),
         body,
     })
+}
+
+/// Sends a SigV4-signed Bedrock request and returns the event-stream.
+async fn send_bedrock(
+    client: &reqwest::Client,
+    spec: &ProviderSpec,
+    wire_req: WireRequest,
+) -> Result<EventStream> {
+    use super::sigv4;
+
+    let creds = sigv4::credentials_from_env().ok_or_else(sigv4::missing_credentials_error)?;
+    let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let url = reqwest::Url::parse(&wire_req.url)
+        .map_err(|e| Error::Config(format!("invalid bedrock endpoint: {e}")))?;
+    let host = url.host_str().unwrap_or_default().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let body = serde_json::to_vec(&wire_req.body)
+        .map_err(|e| Error::Config(format!("bedrock body encode: {e}")))?;
+    let signed = sigv4::sign(
+        &creds,
+        &region,
+        &host,
+        "POST",
+        url.path(),
+        "",
+        &body,
+        &sigv4::amz_date(now),
+    );
+
+    let mut request = client
+        .post(url)
+        .header("x-amz-date", &signed.amz_date)
+        .header("x-amz-content-sha256", &signed.content_sha256)
+        .header("authorization", &signed.authorization)
+        .header("content-type", "application/json")
+        .body(body);
+    if let Some(token) = &signed.session_token {
+        request = request.header("x-amz-security-token", token);
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+    let resp = check_status(spec, resp).await?;
+    Ok(EventStream::Bedrock(BedrockStream::new(resp)))
 }

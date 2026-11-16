@@ -39,6 +39,8 @@ pub enum EventStream {
     Mock(MockStream),
     /// HTTP SSE stream.
     Http(SseStream),
+    /// Amazon Bedrock binary event-stream.
+    Bedrock(BedrockStream),
 }
 
 impl EventStream {
@@ -47,7 +49,7 @@ impl EventStream {
     pub fn server_timing(&self) -> ServerTiming {
         match self {
             EventStream::Http(s) => s.server_timing(),
-            EventStream::Mock(_) => ServerTiming::default(),
+            EventStream::Mock(_) | EventStream::Bedrock(_) => ServerTiming::default(),
         }
     }
 }
@@ -62,6 +64,7 @@ impl futures_util::Stream for EventStream {
         match &mut *self {
             EventStream::Mock(s) => Pin::new(s).poll_next(cx),
             EventStream::Http(s) => Pin::new(s).poll_next(cx),
+            EventStream::Bedrock(s) => Pin::new(s).poll_next(cx),
         }
     }
 }
@@ -268,7 +271,7 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 completion_tokens: usage,
             })
         }
-        Wire::Mock => None,
+        Wire::Bedrock | Wire::Mock => None,
     }
 }
 
@@ -328,5 +331,117 @@ impl futures_util::Stream for MockStream {
             token: Some("token ".to_string()),
             completion_tokens: None,
         })))
+    }
+}
+
+/// A live Bedrock `invoke-with-response-stream` body decoded into
+/// [`StreamEvent`]s via the binary event-stream frame parser.
+pub struct BedrockStream {
+    stream: Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
+    buf: Vec<u8>,
+    pending: std::collections::VecDeque<StreamEvent>,
+    upstream_done: bool,
+}
+
+impl BedrockStream {
+    pub(super) fn new(resp: reqwest::Response) -> Self {
+        BedrockStream {
+            stream: Box::pin(resp.bytes_stream()),
+            buf: Vec::new(),
+            pending: std::collections::VecDeque::new(),
+            upstream_done: false,
+        }
+    }
+
+    fn enqueue_frame(&mut self, frame: &super::event_stream::EventFrame) {
+        use super::event_stream::EventFrame;
+        let EventFrame {
+            event_type,
+            message_type,
+            payload,
+        } = frame;
+        if message_type == "exception" {
+            // surfaced via the stream ending / error on next poll
+            let body = String::from_utf8_lossy(payload);
+            let _ = crate::util::truncate(&body, 300);
+            return;
+        }
+        let Ok(v): std::result::Result<serde_json::Value, _> = serde_json::from_slice(payload)
+        else {
+            return;
+        };
+        match event_type.as_str() {
+            // legacy invoke-with-response-stream shapes
+            "chunk" | "contentBlockDelta" => {
+                let token = v
+                    .pointer("/delta/text")
+                    .or_else(|| v.pointer("/bytes/text"))
+                    .and_then(|c| c.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let tool_args = v
+                    .pointer("/delta/toolUse/input")
+                    .and_then(|c| c.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                if token.is_some() || tool_args.is_some() {
+                    self.pending.push_back(StreamEvent {
+                        token,
+                        tool_args,
+                        completion_tokens: None,
+                    });
+                }
+            }
+            "messageStop" => {}
+            "metadata" => {
+                let usage = v
+                    .pointer("/usage/outputTokens")
+                    .or_else(|| v.pointer("/usage/output_tokens"))
+                    .and_then(|c| c.as_u64());
+                if let Some(n) = usage {
+                    self.pending.push_back(StreamEvent {
+                        token: None,
+                        tool_args: None,
+                        completion_tokens: Some(n),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl futures_util::Stream for BedrockStream {
+    type Item = Result<StreamEvent>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        loop {
+            if let Some(event) = self.pending.pop_front() {
+                return Poll::Ready(Some(Ok(event)));
+            }
+            if self.upstream_done {
+                return Poll::Ready(None);
+            }
+            match futures_util::StreamExt::poll_next_unpin(&mut self.stream, cx) {
+                Poll::Ready(Some(Ok(chunk))) => {
+                    self.buf.extend_from_slice(&chunk);
+                    while let Ok((frame, used)) = super::event_stream::decode_frame(&self.buf) {
+                        let frame = frame.clone();
+                        self.buf.drain(..used);
+                        self.enqueue_frame(&frame);
+                    }
+                }
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Some(Err(Error::Stream(e.to_string()))))
+                }
+                Poll::Ready(None) => {
+                    self.upstream_done = true;
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 }

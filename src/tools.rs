@@ -139,7 +139,7 @@ pub fn tool_schema(task: &ToolTask, wire: Wire) -> Value {
                 "parameters": parameters,
             }]
         }]),
-        Wire::Mock => json!([]),
+        Wire::Bedrock | Wire::Mock => json!([]),
     }
 }
 
