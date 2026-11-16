@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--models bedrock` panicked (`unreachable!` in the discovery URL match); it now calls the SigV4-signed ListFoundationModels API — and with fake credentials AWS answers HTTP 403 "invalid security token", which live-confirms the signature *format* is well-formed even before real-account verification (#126)
+- README comparison table: provider count refreshed (17 + custom)
+
+
 ### Added
 
 - **Provider: Amazon Bedrock** (`bedrock`, **experimental**): SigV4 request signing and the AWS binary event-stream wire format, both implemented dependency-free (vendored SHA-256/HMAC/CRC-32C) and verified against published test vectors (FIPS 180-4, RFC 4231, iSCSI CRC-32C); the frame parser is a new fuzz target (148k clean runs locally). Credentials from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` + `AWS_REGION`. **The end-to-end path is not yet live-verified against a real account** — labeled experimental in `--list` and the README; reports welcome on #126

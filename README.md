@@ -354,7 +354,7 @@ PRs with results from other regions are welcome — record with `--json` and ext
 
 | | llmrace | provider CLIs | load testers (k6/vegeta) | router dashboards |
 |---|---|---|---|---|
-| Multi-provider streaming race | ✅ 14 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
+| Multi-provider streaming race | ✅ 17 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
 | TTFB / tokens/s / p95 / t-CI | ✅ built-in | varies | ✝ you build it | ✅ but only routed traffic |
 | Live terminal race view | ✅ | ❌ | ❌ | ❌ |
 | CI regression gate (`--baseline`) | ✅ | ❌ | ✝ heavy scripting | ❌ |

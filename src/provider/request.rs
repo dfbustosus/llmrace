@@ -235,9 +235,20 @@ pub async fn list_models(client: &reqwest::Client, spec: &ProviderSpec) -> Resul
             spec.endpoint.trim_end_matches("/chat").to_string() + "/models",
             bearer_or_none(key),
         ),
-        Wire::Bedrock => unreachable!("handled before auth resolution"),
+        // Bedrock lists models via the ListFoundationModels control-plane
+        // API, signed like every other Bedrock call.
+        Wire::Bedrock => {
+            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+            (
+                format!("https://bedrock.{region}.amazonaws.com/foundation-models"),
+                RequestAuth::None, // signed below
+            )
+        }
         Wire::Mock => unreachable!("handled above"),
     };
+    if spec.wire == Wire::Bedrock {
+        return list_bedrock_models(client, spec, &url).await;
+    }
     let mut request = client.get(&url);
     match &auth {
         RequestAuth::None => {}
@@ -410,4 +421,63 @@ async fn send_bedrock(
         .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
     let resp = check_status(spec, resp).await?;
     Ok(EventStream::Bedrock(BedrockStream::new(resp)))
+}
+
+/// GET ListFoundationModels with SigV4, returning model ids.
+async fn list_bedrock_models(
+    client: &reqwest::Client,
+    spec: &ProviderSpec,
+    url: &str,
+) -> Result<Vec<String>> {
+    use super::sigv4;
+    use serde_json::Value;
+
+    let creds = sigv4::credentials_from_env().ok_or_else(sigv4::missing_credentials_error)?;
+    let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| Error::Config(format!("invalid bedrock models url: {e}")))?;
+    let host = parsed.host_str().unwrap_or_default().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let signed = sigv4::sign(
+        &creds,
+        &region,
+        &host,
+        "GET",
+        parsed.path(),
+        parsed.query().unwrap_or(""),
+        b"",
+        &sigv4::amz_date(now),
+    );
+    let mut request = client
+        .get(parsed)
+        .header("x-amz-date", &signed.amz_date)
+        .header("x-amz-content-sha256", &signed.content_sha256)
+        .header("authorization", &signed.authorization)
+        .header("accept", "application/json");
+    if let Some(token) = &signed.session_token {
+        request = request.header("x-amz-security-token", token);
+    }
+    let resp = request
+        .send()
+        .await
+        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+    let resp = check_status(spec, resp).await?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Stream(format!("{}: invalid models response: {e}", spec.id)))?;
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(models) = body.get("modelSummaries").and_then(Value::as_array) {
+        for m in models {
+            if let Some(id) = m.get("modelId").and_then(Value::as_str) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
 }
