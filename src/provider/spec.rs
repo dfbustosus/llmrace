@@ -52,6 +52,9 @@ pub struct ProviderSpec {
     /// would otherwise join every bare `llmrace` run with an error lane
     /// whenever the daemon is not running.
     pub opt_in: bool,
+    /// Experimental providers: implemented and vector-tested, but the
+    /// end-to-end path is not yet live-verified against the real service.
+    pub experimental: bool,
 }
 
 impl ProviderSpec {
@@ -270,13 +273,15 @@ impl ProviderSpec {
         let endpoint = format!(
             "https://bedrock-runtime.{region}.amazonaws.com/model/{{model}}/invoke-with-response-stream"
         );
-        spec(
+        let mut p = spec(
             "bedrock",
             &endpoint,
             Some("AWS_ACCESS_KEY_ID"),
             "anthropic.claude-3-5-haiku-20241022-v1:0",
             Wire::Bedrock,
-        )
+        );
+        p.experimental = true;
+        p
     }
 
     /// Deterministic in-process provider for tests and demos.
@@ -371,5 +376,6 @@ fn spec(id: &str, endpoint: &str, key_env: Option<&str>, model: &str, wire: Wire
         wire,
         auth: AuthKind::default(),
         opt_in: false,
+        experimental: false,
     }
 }

@@ -98,6 +98,7 @@ pub(crate) fn list(json: bool) -> Result<()> {
                     "default_model": p.default_model.as_ref(),
                     "available": p.is_available(),
                     "opt_in": p.opt_in,
+                    "experimental": p.experimental,
                 })
             })
             .collect();
@@ -111,7 +112,12 @@ pub(crate) fn list(json: bool) -> Result<()> {
             (None, true) => "nothing (opt-in local)".to_string(),
             (None, false) => "nothing (local)".to_string(),
         };
-        println!("{:<14} {:<30} {}", p.id, p.default_model, needs);
+        let marker = if p.experimental {
+            " [experimental]"
+        } else {
+            ""
+        };
+        println!("{:<14} {:<30} {}{}", p.id, p.default_model, needs, marker);
     }
     Ok(())
 }
