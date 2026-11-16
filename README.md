@@ -75,6 +75,26 @@ cargo binstall llmrace
 
 Or grab a binary for your platform from the [releases page](https://github.com/dfbustosus/llmrace/releases) — Linux (x86_64), macOS (Apple Silicon & Intel), Windows (x86_64), each with SHA-256 checksums.
 
+**Docker** (no Rust, no Homebrew needed):
+
+```bash
+docker run --rm -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace openai -n 5
+# reports land in /report — mount a volume to keep them:
+docker run --rm -v "$PWD:/report" -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace openai --json
+```
+
+**GitHub Actions** (one line in any workflow):
+
+```yaml
+- uses: dfbustosus/llmrace-action@v1
+  with:
+    providers: openai groq
+    args: "-n 5 --winner --json"
+  env:
+    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+```
+
 **Shell completions:**
 
 ```bash
