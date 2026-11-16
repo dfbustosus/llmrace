@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-11-16
+
+Static everything: musl builds for linux amd64+arm64 (seven release
+targets), a 2.9 MB `FROM scratch` Docker image, and the Bedrock/Vertex
+contribution designs. No behavioral changes.
+
+
 ### Added
 
 - **musl static builds** for linux amd64+arm64 (release matrix now 7 targets) and a `FROM scratch` Docker image — **2.9 MB total**, zero glibc surface, verified live in-container (race + TLS doctor); the ubuntu image remains as the `latest` tag, scratch ships as `:scratch`
