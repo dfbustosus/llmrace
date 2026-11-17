@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-17
+
+The enterprise-cloud release: both remaining provider gaps — Amazon Bedrock
+and Google Vertex AI — implemented with the same honest discipline (verified
+crypto primitives, fuzzed parsers, experimental labels where live
+verification is pending). Eighteen providers total.
+
+
 ### Added
 
 - **Provider: Google Vertex AI** (`vertex`, **experimental**): service-account OAuth2 (JWT RS256 construction structurally tested against a real 2048-bit key; token exchange not yet live-verified — #127), reusing the Gemini SSE wire for streaming and `--models`. Credentials: `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_REGION`. The RSA decision: RustCrypto's audited `rsa` crate (pure Rust, no unsafe) — vendoring big-integer RSA would be reckless
