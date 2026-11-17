@@ -208,6 +208,7 @@ Every provider with a matching env var races automatically — no config file:
 | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
 | `ollama` | — (local) | `llama3.2` |
 | `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` | `anthropic.claude-3-5-haiku-20241022-v1:0` — **experimental**¹ |
+| `vertex` | `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_REGION` | `gemini-2.0-flash` — **experimental**¹ |
 | `lmstudio` | — (opt-in local, port 1234) | loaded model |
 | `llamacpp` | — (opt-in local, port 8080) | loaded model |
 | azure | `AZURE_OPENAI_API_KEY` (library: `ProviderSpec::azure_openai`) | per deployment |
@@ -215,7 +216,7 @@ Every provider with a matching env var races automatically — no config file:
 
 Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, so they never pollute auto-detected runs with error lanes.
 
-¹ Bedrock's SigV4 signing and binary event-stream decoding are verified against published AWS test vectors and fuzzed, but the end-to-end path has not been run against a live AWS account yet — reports from Bedrock users are especially welcome ([#126](https://github.com/dfbustosus/llmrace/issues/126)).
+¹ Bedrock's SigV4 signing and binary event-stream decoding are verified against published AWS test vectors and fuzzed, but the end-to-end path has not been run against a live AWS account yet — reports from Bedrock and Vertex users are especially welcome ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
 
 ## What it measures
 
@@ -354,7 +355,7 @@ PRs with results from other regions are welcome — record with `--json` and ext
 
 | | llmrace | provider CLIs | load testers (k6/vegeta) | router dashboards |
 |---|---|---|---|---|
-| Multi-provider streaming race | ✅ 17 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
+| Multi-provider streaming race | ✅ 18 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
 | TTFB / tokens/s / p95 / t-CI | ✅ built-in | varies | ✝ you build it | ✅ but only routed traffic |
 | Live terminal race view | ✅ | ❌ | ❌ | ❌ |
 | CI regression gate (`--baseline`) | ✅ | ❌ | ✝ heavy scripting | ❌ |

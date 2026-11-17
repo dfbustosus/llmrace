@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Provider: Google Vertex AI** (`vertex`, **experimental**): service-account OAuth2 (JWT RS256 construction structurally tested against a real 2048-bit key; token exchange not yet live-verified — #127), reusing the Gemini SSE wire for streaming and `--models`. Credentials: `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_REGION`. The RSA decision: RustCrypto's audited `rsa` crate (pure Rust, no unsafe) — vendoring big-integer RSA would be reckless
+- `--models bedrock` calls the SigV4-signed ListFoundationModels API (AWS-confirmed signature format with fake creds → HTTP 403 "invalid security token")
+
+### Fixed
+
+- `--models bedrock` panicked (`unreachable!` in the discovery URL match)
+- README comparison table: provider count refreshed (18 + custom)
+
+
 ### Fixed
 
 - `--models bedrock` panicked (`unreachable!` in the discovery URL match); it now calls the SigV4-signed ListFoundationModels API — and with fake credentials AWS answers HTTP 403 "invalid security token", which live-confirms the signature *format* is well-formed even before real-account verification (#126)

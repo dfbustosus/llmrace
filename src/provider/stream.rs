@@ -271,7 +271,7 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 completion_tokens: usage,
             })
         }
-        Wire::Bedrock | Wire::Mock => None,
+        Wire::Bedrock | Wire::Vertex | Wire::Mock => None,
     }
 }
 

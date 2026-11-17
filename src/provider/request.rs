@@ -43,7 +43,7 @@ struct WireRequest {
 /// Builds the request for the given wire protocol; pure, no I/O.
 fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Result<WireRequest> {
     let mut body = match spec.wire {
-        Wire::Mock | Wire::Bedrock => json!(null),
+        Wire::Mock | Wire::Bedrock | Wire::Vertex => json!(null),
         Wire::OpenAiCompat => {
             // gpt-5 / o-series reject `max_tokens` (HTTP 400) and require
             // `max_completion_tokens` instead.
@@ -83,8 +83,16 @@ fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Resul
     }
 
     if spec.wire == Wire::Bedrock {
-        // SigV4 signs method+path+body; handled at send time
         let url = spec.endpoint.replace("{model}", req.model);
+        return Ok(WireRequest {
+            url,
+            body,
+            auth: RequestAuth::None,
+        });
+    }
+    if spec.wire == Wire::Vertex {
+        let url = spec.endpoint.replace("{model}", req.model);
+        // token fetched at send time (async); auth is None here
         return Ok(WireRequest {
             url,
             body,
@@ -125,6 +133,9 @@ async fn send_wire_request(
 ) -> Result<EventStream> {
     if wire_req.url.starts_with("https://bedrock-runtime.") {
         return send_bedrock(client, spec, wire_req).await;
+    }
+    if spec.wire == Wire::Vertex {
+        return send_vertex(client, spec, wire_req).await;
     }
     let mut request = client.post(&wire_req.url).json(&wire_req.body);
     match &wire_req.auth {
@@ -235,6 +246,15 @@ pub async fn list_models(client: &reqwest::Client, spec: &ProviderSpec) -> Resul
             spec.endpoint.trim_end_matches("/chat").to_string() + "/models",
             bearer_or_none(key),
         ),
+        Wire::Vertex => {
+            // vertex models list reuses the Gemini path with an OAuth token
+            let region =
+                std::env::var("GOOGLE_CLOUD_REGION").unwrap_or_else(|_| "us-central1".to_string());
+            (
+                format!("https://{region}-aiplatform.googleapis.com/v1/publishers/google/models"),
+                RequestAuth::None, // OAuth at request time
+            )
+        }
         // Bedrock lists models via the ListFoundationModels control-plane
         // API, signed like every other Bedrock call.
         Wire::Bedrock => {
@@ -480,4 +500,27 @@ async fn list_bedrock_models(
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+/// Fetches an OAuth2 token and sends the Vertex request (Gemini SSE wire).
+async fn send_vertex(
+    client: &reqwest::Client,
+    spec: &ProviderSpec,
+    wire_req: WireRequest,
+) -> Result<EventStream> {
+    let account = super::gcp_oauth::load_service_account()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let cached = super::gcp_oauth::fetch_token(&account, now).await?;
+    let resp = client
+        .post(&wire_req.url)
+        .bearer_auth(&cached.token)
+        .json(&wire_req.body)
+        .send()
+        .await
+        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+    let resp = check_status(spec, resp).await?;
+    Ok(EventStream::Http(SseStream::new(resp, Wire::Gemini)))
 }

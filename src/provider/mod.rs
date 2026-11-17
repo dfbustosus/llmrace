@@ -1,6 +1,7 @@
 //! Provider registry, wire protocols and streaming request plumbing.
 
 mod event_stream;
+mod gcp_oauth;
 mod request;
 mod sigv4;
 mod spec;

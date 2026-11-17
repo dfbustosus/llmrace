@@ -17,6 +17,8 @@ pub enum Wire {
     Cohere,
     /// Amazon Bedrock `invoke-with-response-stream` (binary event-stream).
     Bedrock,
+    /// Google Vertex AI `streamGenerateContent` (SSE, Gemini shape).
+    Vertex,
     /// Built-in deterministic provider for tests and demos.
     Mock,
 }
@@ -284,6 +286,32 @@ impl ProviderSpec {
         p
     }
 
+    /// Google Vertex AI (service-account OAuth2, Gemini wire).
+    ///
+    /// **Experimental**: the JWT construction and RS256 signing are
+    /// structurally tested, but the token exchange and streaming path have
+    /// not been verified against a live GCP project — see issue #127.
+    /// Credentials: `GOOGLE_APPLICATION_CREDENTIALS` (service-account
+    /// JSON), `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_REGION`.
+    pub fn vertex() -> Self {
+        let project =
+            std::env::var("GOOGLE_CLOUD_PROJECT").unwrap_or_else(|_| "YOUR_PROJECT".to_string());
+        let region =
+            std::env::var("GOOGLE_CLOUD_REGION").unwrap_or_else(|_| "us-central1".to_string());
+        let endpoint = format!(
+            "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/publishers/google/models/{{model}}:streamGenerateContent?alt=sse",
+        );
+        let mut p = spec(
+            "vertex",
+            &endpoint,
+            Some("GOOGLE_APPLICATION_CREDENTIALS"),
+            "gemini-2.0-flash",
+            Wire::Vertex,
+        );
+        p.experimental = true;
+        p
+    }
+
     /// Deterministic in-process provider for tests and demos.
     pub fn mock() -> Self {
         spec("mock", "", None, "mock-1", Wire::Mock)
@@ -334,6 +362,7 @@ impl ProviderSpec {
             ProviderSpec::openrouter(),
             ProviderSpec::ollama(),
             ProviderSpec::bedrock(),
+            ProviderSpec::vertex(),
             ProviderSpec::lmstudio(),
             ProviderSpec::llamacpp(),
             ProviderSpec::mock(),
