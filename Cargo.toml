@@ -59,7 +59,7 @@ thiserror = "2"
 toml = "1.2"
 ratatui = "0.30"
 crossterm = "0.29"
-rsa = { version = "0.9", features = ["sha2"] }
+rsa = { version = "0.10", features = ["pkcs1v15"] }
 
 [dev-dependencies]
 criterion = "0.8"

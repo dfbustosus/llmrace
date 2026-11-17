@@ -8,9 +8,10 @@
 //! `GOOGLE_CLOUD_REGION`.
 
 use crate::error::{Error, Result};
+use rsa::pkcs1v15::Pkcs1v15Sign;
 use rsa::pkcs8::DecodePrivateKey;
 use rsa::sha2::{Digest, Sha256};
-use rsa::{Pkcs1v15Sign, RsaPrivateKey};
+use rsa::PrivateKey;
 use serde::Deserialize;
 
 /// The parsed service-account key file.
@@ -78,7 +79,7 @@ pub fn build_jwt(account: &ServiceAccount, iat_unix: u64, ttl_secs: u64) -> Resu
     );
     let signing_input = format!("{}.{}", b64(header), b64(claims.as_bytes()));
 
-    let key = RsaPrivateKey::from_pkcs8_pem(&account.private_key)
+    let key = PrivateKey::from_pkcs8_pem(&account.private_key)
         .map_err(|e| Error::Config(format!("parsing private key: {e}")))?;
     // Pkcs1v15Sign with a pre-hashed input: hash then sign the digest
     let mut hasher = Sha256::new();
