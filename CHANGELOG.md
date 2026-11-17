@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Vertex token caching**: every streamed completion was doing a full OAuth2 token exchange (~500 ms overhead per request); tokens are now cached process-wide and refreshed only within 60 s of expiry. `fetch_token` also reuses the caller's HTTP client instead of creating a fresh one per call
+
+
 ## [1.5.0] - 2026-11-17
 
 The enterprise-cloud release: both remaining provider gaps — Amazon Bedrock

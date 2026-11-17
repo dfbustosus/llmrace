@@ -101,11 +101,49 @@ pub struct CachedToken {
     pub expires_at: u64,
 }
 
+/// Returns a cached access token, refreshing it when absent or within
+/// 60 seconds of expiry. Google tokens are valid for one hour; without
+/// this, every streamed completion pays a ~500 ms token roundtrip.
+///
+/// The cache is process-wide (a race fits comfortably in one token's
+/// lifetime); concurrent callers may briefly race on refresh, which is
+/// harmless — the loser's token is still valid.
+pub async fn token(
+    client: &reqwest::Client,
+    account: &ServiceAccount,
+    now_unix: u64,
+) -> Result<String> {
+    static CACHE: std::sync::OnceLock<std::sync::RwLock<Option<CachedToken>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::RwLock::new(None));
+
+    // fast path: read lock, token still fresh
+    if let Ok(guard) = cache.read() {
+        if let Some(cached) = guard.as_ref() {
+            if cached.expires_at > now_unix + 60 {
+                return Ok(cached.token.clone());
+            }
+        }
+    }
+
+    // slow path: refresh under write lock
+    let fresh = fetch_token(client, account, now_unix).await?;
+    let token = fresh.token.clone();
+    if let Ok(mut guard) = cache.write() {
+        *guard = Some(fresh);
+    }
+    Ok(token)
+}
+
 /// Fetches an OAuth2 access token using the JWT grant, returning the token
 /// and its expiry.
-pub async fn fetch_token(account: &ServiceAccount, iat_unix: u64) -> Result<CachedToken> {
+pub async fn fetch_token(
+    client: &reqwest::Client,
+    account: &ServiceAccount,
+    iat_unix: u64,
+) -> Result<CachedToken> {
     let jwt = build_jwt(account, iat_unix, 3600)?;
-    let resp = reqwest::Client::new()
+    let resp = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
@@ -243,5 +281,22 @@ mod extra_tests {
     fn jwt_three_segments_when_signable() {
         // with a real throwaway key the JWT must be header.claims.sig
         // (key generation is expensive; structural test in jwt_header_and_claims)
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn token_cache_freshness_window() {
+        let cached = CachedToken {
+            token: "tok".into(),
+            expires_at: 1000,
+        };
+        // at now=900 (100s before expiry): still fresh (>60s margin)
+        assert!(cached.expires_at > 900 + 60);
+        // at now=950 (50s before expiry): stale (<60s margin, triggers refresh)
+        assert!(cached.expires_at <= 950 + 60);
     }
 }

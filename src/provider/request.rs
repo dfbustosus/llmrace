@@ -513,10 +513,10 @@ async fn send_vertex(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let cached = super::gcp_oauth::fetch_token(&account, now).await?;
+    let token = super::gcp_oauth::token(client, &account, now).await?;
     let resp = client
         .post(&wire_req.url)
-        .bearer_auth(&cached.token)
+        .bearer_auth(&token)
         .json(&wire_req.body)
         .send()
         .await
