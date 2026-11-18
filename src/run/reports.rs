@@ -86,13 +86,20 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
     Ok(())
 }
 
-/// Pushes metrics to the Prometheus pushgateway when configured.
+/// Pushes metrics to the Prometheus pushgateway and/or writes them to a
+/// file, per configuration.
 pub(super) async fn export_metrics(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<()> {
     if let Some(gateway) = &cfg.push_gateway {
         llmrace::prom::push(&cfg.client, gateway, summaries)
             .await
             .with_context(|| format!("pushing metrics to {gateway}"))?;
         println!("\u{1f4e1} metrics pushed to {gateway}");
+    }
+    if let Some(path) = &cfg.prom_output {
+        let body = llmrace::prom::render_metrics(summaries);
+        std::fs::write(path, body)
+            .with_context(|| format!("writing Prometheus metrics to {path}"))?;
+        println!("\u{1f4e1} Prometheus metrics saved to {path}");
     }
     Ok(())
 }

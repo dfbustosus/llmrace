@@ -302,6 +302,9 @@ llmrace openai --price openai/gpt-4o-mini=1.25:5
 Record every race to a local history file (JSONL under `~/.local/share/llmrace/`):
 
 ```bash
+# Prometheus metrics to a file (no pushgateway needed)
+llmrace openai groq --prom-output /path/to/textfile.collector/llmrace.prom
+
 llmrace openai groq --record
 ```
 

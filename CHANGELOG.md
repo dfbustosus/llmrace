@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--prom-output <file>`: writes Prometheus text-format metrics to a file after the race — no pushgateway needed. Pairs with node_exporter's textfile collector or any file-based scrape setup; complements the existing `--push-gateway`
+
+
 ## [1.5.1] - 2026-11-18
 
 Vertex performance fix: per-request auth overhead eliminated (token

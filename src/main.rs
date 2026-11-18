@@ -185,6 +185,10 @@ pub(crate) struct Cli {
     #[arg(help_heading = "History & monitoring", long)]
     push_gateway: Option<String>,
 
+    /// Write Prometheus text-format metrics to a file (no pushgateway needed).
+    #[arg(help_heading = "History & monitoring", long)]
+    prom_output: Option<String>,
+
     /// Continuous monitoring: re-run the race every N seconds and alert on degradation.
     #[arg(help_heading = "History & monitoring", long)]
     watch: bool,
@@ -438,6 +442,7 @@ fn build_run_config(
         out: cli.out,
         region: cli.region,
         push_gateway: cli.push_gateway,
+        prom_output: cli.prom_output,
         record: cli.record,
         storage: cli.storage,
         max_ttfb: cli.max_ttfb,

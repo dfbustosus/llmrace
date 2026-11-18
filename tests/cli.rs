@@ -874,3 +874,25 @@ fn cli_contract_every_documented_flag_exists() {
         "CLI contract broken, missing: {missing:?}"
     );
 }
+
+#[test]
+fn prom_output_writes_text_format_file() {
+    let path = std::env::temp_dir().join("llmrace-prom-output-test.prom");
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--quiet")
+        .arg("--prom-output")
+        .arg(path.to_string_lossy().into_owned())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(body.contains("llmrace_ttfb_ms{provider=\"mock\""), "{body}");
+    assert!(body.contains("llmrace_tokens_per_second{"), "{body}");
+    let _ = std::fs::remove_file(&path);
+}

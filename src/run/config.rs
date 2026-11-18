@@ -47,6 +47,8 @@ pub(crate) struct RunConfig {
     pub region: Option<String>,
     /// Prometheus pushgateway URL.
     pub push_gateway: Option<String>,
+    /// Write Prometheus text-format metrics to this file.
+    pub prom_output: Option<String>,
     /// Append every lane to the persistent history.
     pub record: bool,
     /// History backend: `jsonl` or `sqlite`.
