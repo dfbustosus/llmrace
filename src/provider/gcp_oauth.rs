@@ -23,8 +23,23 @@ pub struct ServiceAccount {
     pub private_key: String,
 }
 
-/// Loads the service account from `GOOGLE_APPLICATION_CREDENTIALS`.
+/// Loads (and caches) the service account from `GOOGLE_APPLICATION_CREDENTIALS`.
+///
+/// The file is read once per process — credentials files do not change
+/// mid-race, and re-reading + JSON-parsing per request is wasted I/O.
 pub fn load_service_account() -> Result<ServiceAccount> {
+    // cache only successful loads: errors are not cached so a later call
+    // can retry after the file is created or fixed
+    static CACHE: std::sync::OnceLock<std::sync::RwLock<Option<ServiceAccount>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::RwLock::new(None));
+
+    if let Ok(guard) = cache.read() {
+        if let Some(cached) = guard.as_ref() {
+            return Ok(cached.clone());
+        }
+    }
+
     let path = std::env::var("GOOGLE_APPLICATION_CREDENTIALS").map_err(|_| {
         Error::Config(
             "vertex requires GOOGLE_APPLICATION_CREDENTIALS (service-account JSON), \
@@ -34,8 +49,13 @@ pub fn load_service_account() -> Result<ServiceAccount> {
     })?;
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| Error::Config(format!("reading credentials file {path}: {e}")))?;
-    serde_json::from_str(&raw)
-        .map_err(|e| Error::Config(format!("parsing service-account JSON: {e}")))
+    let account: ServiceAccount = serde_json::from_str(&raw)
+        .map_err(|e| Error::Config(format!("parsing service-account JSON: {e}")))?;
+
+    if let Ok(mut guard) = cache.write() {
+        *guard = Some(account.clone());
+    }
+    Ok(account)
 }
 
 /// Base64url-encoded JWT parts.

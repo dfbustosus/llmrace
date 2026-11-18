@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Vertex token caching**: every streamed completion was doing a full OAuth2 token exchange (~500 ms overhead per request); tokens are now cached process-wide and refreshed only within 60 s of expiry. `fetch_token` also reuses the caller's HTTP client instead of creating a fresh one per call
+- **Vertex per-request overhead eliminated**: every streamed completion was doing a full OAuth2 token exchange (~500 ms), creating a fresh HTTP client, AND re-reading the credentials JSON from disk. Tokens are now cached process-wide (refreshed within 60 s of expiry), `fetch_token` reuses the caller's client, and the ServiceAccount file is read once per process (errors not cached, so fixes are picked up)
 
 
 ## [1.5.0] - 2026-11-17
