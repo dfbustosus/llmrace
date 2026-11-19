@@ -49,6 +49,10 @@ pub(crate) struct RunConfig {
     pub push_gateway: Option<String>,
     /// Write Prometheus text-format metrics to this file.
     pub prom_output: Option<String>,
+    /// POST watch alerts to this webhook URL.
+    pub alert_webhook: Option<String>,
+    /// Desktop notification on completion and alerts.
+    pub notify_desktop: bool,
     /// Append every lane to the persistent history.
     pub record: bool,
     /// History backend: `jsonl` or `sqlite`.

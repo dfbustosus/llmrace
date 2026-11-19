@@ -1395,3 +1395,24 @@ fn brain_annotation_hidden_for_classic_models_in_tool_mode() {
     let reasoning_row = table.lines().find(|l| l.contains("gpt-5-nano")).unwrap();
     assert!(reasoning_row.contains('🧠'), "{reasoning_row}");
 }
+
+#[test]
+fn webhook_payload_covers_slack_and_discord_shapes() {
+    // both "text" (Slack) and "content" (Discord) are populated in the
+    // same JSON body, so one webhook URL serves either platform
+    let alert = llmrace::watch::Alert {
+        round: 5,
+        provider: "groq".to_string(),
+        metric: "ttfb",
+        baseline: 100.0,
+        current: 200.0,
+        delta_pct: 100.0,
+    };
+    let text = format!(
+        "⚠ llmrace alert: {} {} degraded {:.0} → {:.0} ms (+{:.0}%) at round {}",
+        alert.provider, alert.metric, alert.baseline, alert.current, alert.delta_pct, alert.round
+    );
+    let payload = serde_json::json!({ "text": text, "content": text });
+    assert!(payload["text"].as_str().unwrap().contains("groq"));
+    assert!(payload["content"].as_str().unwrap().contains("+100%"));
+}

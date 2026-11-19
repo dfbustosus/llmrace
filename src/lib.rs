@@ -16,7 +16,8 @@
 //! - [`regression`]: baseline comparison for CI quality gates
 //! - [`gates`]: TTFB quality gates over race results
 //! - [`score`]: composite winner scoring and the podium
-//! - [`merge`]: cross-region merging of distributed probe reports
+//! - [`merge`]: cross-region merging
+//! - [`notify`]: alert webhooks and desktop notifications of distributed probe reports
 //! - [`variants`]: built-in prompt variants for multi-shape sweeps
 //! - [`tui`]: the live terminal race view
 //! - [`util`]: shared helpers for truncation, dates, ranking
@@ -65,6 +66,7 @@ pub mod error;
 pub mod gates;
 pub mod history;
 pub mod merge;
+pub mod notify;
 pub mod prom;
 pub mod provider;
 pub mod regression;

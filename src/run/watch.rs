@@ -38,11 +38,14 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
             )
         })
         .collect();
+    let webhook_url = cfg.alert_webhook.clone();
+    let notify_desktop = cfg.notify_desktop;
+    let webhook_client = cfg.client.clone();
     let report = llmrace::watch::watch_with_models(
         watch_lanes,
         watch_config,
         cfg.client.clone(),
-        |round, summaries, alerts| {
+        move |round, summaries, alerts| {
             for s in summaries {
                 if s.successful() {
                     println!(
@@ -64,6 +67,22 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
                     "  \u{26a0} ALERT r{} {} {} {:.0} \u{2192} {:.0} ms (+{:.0}%)",
                     a.round, a.provider, a.metric, a.baseline, a.current, a.delta_pct
                 );
+                // fire-and-forget webhook (async, can't block the sync closure)
+                if let Some(url) = webhook_url.clone() {
+                    let alert = a.clone();
+                    let client = webhook_client.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = llmrace::notify::post_webhook(&client, &url, &alert).await {
+                            eprintln!("  \u{26a0} alert webhook failed: {e}");
+                        }
+                    });
+                }
+                if notify_desktop {
+                    llmrace::notify::desktop_notification(
+                        "llmrace alert",
+                        &format!("{} {} degraded +{:.0}%", a.provider, a.metric, a.delta_pct),
+                    );
+                }
             }
         },
         move || ctrl_c_flag.load(std::sync::atomic::Ordering::Relaxed),
@@ -75,6 +94,17 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
         report.rounds.len(),
         report.alerts.len()
     );
+    if cfg.notify_desktop {
+        llmrace::notify::desktop_notification(
+            "llmrace watch complete",
+            &format!(
+                "{} rounds, {} alert(s) — report: {}",
+                report.rounds.len(),
+                report.alerts.len(),
+                cfg.out
+            ),
+        );
+    }
 
     if cfg.record {
         let mut records = Vec::new();

@@ -201,6 +201,14 @@ pub(crate) struct Cli {
     #[arg(help_heading = "History & monitoring", long, default_value_t = 1)]
     alert_rounds: usize,
 
+    /// POST watch alerts to a webhook URL (Slack/Discord-compatible JSON).
+    #[arg(help_heading = "History & monitoring", long)]
+    alert_webhook: Option<String>,
+
+    /// Desktop notification on race completion and watch alerts.
+    #[arg(help_heading = "Output", long)]
+    notify_desktop: bool,
+
     /// Run the race once per comma-separated prompt variant (short,long,code,json,reasoning).
     #[arg(help_heading = "Prompt shaping", long)]
     sweep: Option<String>,
@@ -443,6 +451,8 @@ fn build_run_config(
         region: cli.region,
         push_gateway: cli.push_gateway,
         prom_output: cli.prom_output,
+        alert_webhook: cli.alert_webhook,
+        notify_desktop: cli.notify_desktop,
         record: cli.record,
         storage: cli.storage,
         max_ttfb: cli.max_ttfb,

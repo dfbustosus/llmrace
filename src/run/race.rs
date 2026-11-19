@@ -61,6 +61,25 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
         record_history(&summaries, &cfg.storage)?;
     }
 
+    if cfg.notify_desktop && !summaries.is_empty() {
+        let winner = summaries.iter().filter(|s| s.successful()).max_by(|a, b| {
+            a.mean_tokens_per_sec()
+                .partial_cmp(&b.mean_tokens_per_sec())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let Some(w) = winner {
+            llmrace::notify::desktop_notification(
+                "llmrace complete",
+                &format!(
+                    "{} won at {:.0} tok/s \u{2014} {} lanes raced",
+                    w.name,
+                    w.mean_tokens_per_sec(),
+                    summaries.len()
+                ),
+            );
+        }
+    }
+
     // A run where every lane failed must exit non-zero: the TTFB and
     // baseline gates only judge successful lanes and would otherwise
     // pass over a total outage.
