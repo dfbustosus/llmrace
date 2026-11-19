@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`llmrace --recommend`**: analyzes accumulated `--record` history and answers the question every benchmark leads to — *which provider should I use?* Ranks providers on four axes (fastest, highest throughput, most stable, cheapest) with a plain-language recommendation for latency-sensitive vs batch workloads. No competitor does this
 - **Benchmark suites**: `llmrace --suite file.toml` runs multiple named races sequentially (different prompts, concurrency levels, token budgets) and produces a combined markdown report with one ranked table per suite. Suite entries support `providers`, `runs`, `warmup`, `concurrency`, `max_tokens`, `prompt`, and `prompt_file` — see `examples/llmrace.suite.toml`. Exit code reflects all suites (any failure → 1)
 - **Watch alert webhooks**: `--alert-webhook URL` POSTs alerts (fire-and-forget, non-blocking) as JSON with both `text` (Slack) and `content` (Discord) fields — one URL serves either platform. Turns `--watch` into a production on-call tool: degraded providers page you through your existing alerting stack
 - **Desktop notifications**: `--notify-desktop` sends native notifications (macOS Notification Center, Linux `notify-send`, Windows toast) on race completion ("mock won at 87 tok/s — 4 lanes raced") and on every watch alert — no terminal-watching required

@@ -316,6 +316,7 @@ Then analyze drift — TTFB/throughput changes versus the rolling median, with m
 ```bash
 llmrace --trend              # last 30 days, all providers
 llmrace --trend --days 7 groq
+llmrace --recommend           # which provider should I use?
 ```
 
 **Continuous monitoring with alerts:**

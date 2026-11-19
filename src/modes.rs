@@ -280,6 +280,16 @@ pub(crate) async fn run_suite(
             anyhow::bail!("suite entry '{}' has no providers", entry.name);
         }
 
+        // per-suite output file so each race's reports are preserved:
+        // race.md becomes race-<suite-name>.md
+        let suite_out = {
+            let stem = cli
+                .out
+                .strip_suffix(".md")
+                .unwrap_or(cli.out.trim_end_matches('.'));
+            format!("{stem}-{}.md", entry.name.replace(' ', "-"))
+        };
+
         let cfg = crate::run::RunConfig {
             client,
             providers: specs,
@@ -297,7 +307,7 @@ pub(crate) async fn run_suite(
             json: cli.json,
             csv: cli.csv,
             html: cli.html,
-            out: cli.out.clone(),
+            out: suite_out,
             region: cli.region.clone(),
             push_gateway: None,
             prom_output: None,

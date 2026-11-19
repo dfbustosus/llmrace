@@ -70,6 +70,7 @@ pub mod merge;
 pub mod notify;
 pub mod prom;
 pub mod provider;
+pub mod recommend;
 pub mod regression;
 pub mod report;
 pub mod schema;

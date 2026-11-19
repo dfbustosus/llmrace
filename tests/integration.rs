@@ -1416,3 +1416,53 @@ fn webhook_payload_covers_slack_and_discord_shapes() {
     assert!(payload["text"].as_str().unwrap().contains("groq"));
     assert!(payload["content"].as_str().unwrap().contains("+100%"));
 }
+
+#[test]
+fn recommend_profiles_and_renders_from_history() {
+    let records: Vec<llmrace::history::HistoryRecord> = (0..5)
+        .flat_map(|i| {
+            vec![
+                llmrace::history::HistoryRecord {
+                    timestamp_unix: 1_700_000_000 + i * 3_600,
+                    provider: "fast".into(),
+                    model: "gpt-4o-mini".into(),
+                    variant: None,
+                    concurrency: 1,
+                    mean_total_ms: 100.0 + i as f64,
+                    p95_total_ms: 120.0 + i as f64,
+                    mean_ttfb_ms: 20.0,
+                    mean_tokens_per_sec: 200.0,
+                    itl_p95_ms: None,
+                    reasoning_tokens: None,
+                    thinking_ms_estimate: None,
+                },
+                llmrace::history::HistoryRecord {
+                    timestamp_unix: 1_700_000_000 + i * 3_600,
+                    provider: "slow".into(),
+                    model: "m".into(),
+                    variant: None,
+                    concurrency: 1,
+                    mean_total_ms: 500.0 + i as f64,
+                    p95_total_ms: 600.0 + i as f64,
+                    mean_ttfb_ms: 100.0,
+                    mean_tokens_per_sec: 50.0,
+                    itl_p95_ms: None,
+                    reasoning_tokens: None,
+                    thinking_ms_estimate: None,
+                },
+            ]
+        })
+        .collect();
+
+    let profiles = llmrace::recommend::build_profiles(&records);
+    assert_eq!(profiles.len(), 2);
+    let fast = profiles.iter().find(|p| p.name == "fast").unwrap();
+    assert_eq!(fast.races, 5);
+    assert!(fast.median_latency_ms < 110.0);
+    assert!(fast.median_tokens_per_sec > 190.0);
+
+    let text = llmrace::recommend::render_recommendation(&profiles);
+    assert!(text.contains("⚡ Fastest:  fast"), "{text}");
+    assert!(text.contains("🚀 Highest throughput:  fast"), "{text}");
+    assert!(text.contains("use fast"), "{text}");
+}

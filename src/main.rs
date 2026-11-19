@@ -163,6 +163,10 @@ pub(crate) struct Cli {
     #[arg(help_heading = "History & monitoring", long)]
     trend: bool,
 
+    /// Print a provider recommendation from recorded history and exit.
+    #[arg(help_heading = "History & monitoring", long)]
+    recommend: bool,
+
     /// Render the recorded history into a static HTML dashboard and exit.
     #[arg(help_heading = "History & monitoring", long)]
     dashboard: bool,
@@ -370,6 +374,13 @@ async fn dispatch(
     if cli.compare.len() == 1 {
         anyhow::bail!("--compare expects two comma-separated report paths (a.json,b.json)");
     }
+    if cli.recommend {
+        let records = load_history(&cli.storage)?;
+        let profiles = llmrace::recommend::build_profiles(&records);
+        print!("{}", llmrace::recommend::render_recommendation(&profiles));
+        return Ok(0);
+    }
+
     if cli.trend {
         return modes::trend(cli.days, &cli.providers, &cli.storage).map(|_| 0);
     }
