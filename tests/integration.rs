@@ -1424,7 +1424,7 @@ fn recommend_profiles_and_renders_from_history() {
             vec![
                 llmrace::history::HistoryRecord {
                     timestamp_unix: 1_700_000_000 + i * 3_600,
-                    provider: "fast".into(),
+                    provider: "openai".into(),
                     model: "gpt-4o-mini".into(),
                     variant: None,
                     concurrency: 1,
@@ -1438,7 +1438,7 @@ fn recommend_profiles_and_renders_from_history() {
                 },
                 llmrace::history::HistoryRecord {
                     timestamp_unix: 1_700_000_000 + i * 3_600,
-                    provider: "slow".into(),
+                    provider: "ollama".into(),
                     model: "m".into(),
                     variant: None,
                     concurrency: 1,
@@ -1456,13 +1456,18 @@ fn recommend_profiles_and_renders_from_history() {
 
     let profiles = llmrace::recommend::build_profiles(&records);
     assert_eq!(profiles.len(), 2);
-    let fast = profiles.iter().find(|p| p.name == "fast").unwrap();
+    let fast = profiles.iter().find(|p| p.name == "openai").unwrap();
     assert_eq!(fast.races, 5);
     assert!(fast.median_latency_ms < 110.0);
     assert!(fast.median_tokens_per_sec > 190.0);
 
     let text = llmrace::recommend::render_recommendation(&profiles);
-    assert!(text.contains("⚡ Fastest:  fast"), "{text}");
-    assert!(text.contains("🚀 Highest throughput:  fast"), "{text}");
-    assert!(text.contains("use fast"), "{text}");
+    assert!(text.contains("⚡ Fastest:  openai"), "{text}");
+    assert!(text.contains("🚀 Highest throughput:  openai"), "{text}");
+    assert!(text.contains("use openai"), "{text}");
+    let fast_profile = profiles.iter().find(|p| p.name == "openai").unwrap();
+    assert!(
+        fast_profile.cost_per_run_usd.is_some(),
+        "gpt-4o-mini is priced"
+    );
 }

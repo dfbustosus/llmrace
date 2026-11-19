@@ -11,6 +11,8 @@ use crate::stats::Sample;
 /// One provider's accumulated profile across recorded races.
 #[derive(Debug, Clone)]
 pub struct ProviderProfile {
+    /// Estimated monthly cost at the given daily request volume, USD.
+    pub monthly_cost_usd: Option<f64>,
     /// Provider id.
     pub name: String,
     /// Most recent model used.
@@ -79,7 +81,9 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                     * (latencies.iter().sum::<f64>() / latencies.len() as f64 / 1000.0);
                 avg_tokens * pout / 1_000_000.0
             });
+            let monthly_cost = cost.map(|per_run| per_run * 1000.0); // 1000 req/day * 30 days
             Some(ProviderProfile {
+                monthly_cost_usd: monthly_cost,
                 name,
                 current_model: races.last().map(|r| r.model.clone()).unwrap_or_default(),
                 races: races.len(),
@@ -160,7 +164,11 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
     for p in &sorted {
         out.push_str(&format!("  {}\n", p.headline()));
         if let Some(cost) = p.cost_per_run_usd {
-            out.push_str(&format!("    cost: ~${cost:.5}/run\n"));
+            out.push_str(&format!("    cost: ~${cost:.5}/run"));
+            if let Some(monthly) = p.monthly_cost_usd {
+                out.push_str(&format!(" (\u{2248}${monthly:.0}/mo at 1k req/day)"));
+            }
+            out.push('\n');
         }
     }
 
