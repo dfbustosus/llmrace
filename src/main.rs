@@ -400,7 +400,7 @@ async fn dispatch(
     } else if cfg_watch(&cfg) {
         run::watch_race(cfg).await
     } else {
-        run::run_race(cfg).await
+        run::run_race(cfg).await.map(|(code, _)| code)
     }
 }
 

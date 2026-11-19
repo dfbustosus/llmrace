@@ -325,16 +325,14 @@ pub(crate) async fn run_suite(
         };
 
         // run headless, collect results
-        let exit = crate::run::run_race(cfg).await?;
+        let (exit, lane_summaries) = crate::run::run_race(cfg).await?;
         // run_race returns an exit code; for the suite we want the summaries.
         // The simplest correct approach: read the JSON report it wrote.
-        let summaries: Vec<llmrace::bench::LaneSummary> = Vec::new();
-        let _ = summaries;
         let failed = exit != 0;
         results.push(llmrace::suite::SuiteResult {
             name: entry.name.clone(),
             description: entry.description.clone(),
-            summaries: Vec::new(), // populated by run_race's own reports
+            summaries: lane_summaries,
             failed,
         });
     }

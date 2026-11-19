@@ -4,10 +4,11 @@ use super::collect::race_collect;
 use super::config::RunConfig;
 use super::reports::{export_metrics, record_history, regression_gate, ttfb_gate, write_reports};
 use anyhow::Result;
+use llmrace::bench::LaneSummary;
 use llmrace::report;
 
 /// Runs one full race (or sweep) and returns the process exit code.
-pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
+pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> {
     if !cfg.quiet {
         println!(
             "\u{1f3c1} llmrace v{} — {} providers × {} rounds ({} warmup, c={})",
@@ -85,14 +86,14 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<i32> {
     // pass over a total outage.
     if llmrace::gates::all_lanes_failed(&summaries) {
         eprintln!("\n✗ every provider failed — no metrics were measured");
-        return Ok(1);
+        return Ok((1, Vec::new()));
     }
 
     if !ttfb_gate(&summaries, &cfg) {
-        return Ok(1);
+        return Ok((1, Vec::new()));
     }
     if !regression_gate(&summaries, &cfg)? {
-        return Ok(1);
+        return Ok((1, Vec::new()));
     }
-    Ok(0)
+    Ok((0, summaries))
 }
