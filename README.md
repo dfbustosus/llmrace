@@ -35,7 +35,7 @@ Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tai
 
 ![llmrace demo](docs/demo.gif)
 
-*A multi-model race — classic `gpt-4o-mini` vs the reasoning `gpt-5-nano` (🧠 hidden-reasoning tokens) against local Ollama and the instant mock lane — finishing in the ranked table, the `--winner` podium and a Welch significance verdict (in this recording: p = 0.85, honestly "could be noise"), then live model discovery (`--models`) and `--doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs); needs `OPENAI_API_KEY` in the environment).*
+*A multi-model race — classic `gpt-4o-mini` vs local Ollama and the instant mock lane — with the `--winner` podium and Welch significance verdict, then `--recommend` (provider recommendation with value-for-money from accumulated history) and `--doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs); needs `OPENAI_API_KEY` in the environment).*
 
 ## Why
 
@@ -374,18 +374,24 @@ PRs with results from other regions are welcome — record with `--json` and ext
 
 | | llmrace | provider CLIs | load testers (k6/vegeta) | router dashboards |
 |---|---|---|---|---|
-| Multi-provider streaming race | ✅ 18 + any OpenAI-compatible |
-| Statistical significance (Welch p-values) | ✅ built-in |
-| Provider recommendation from history | ✅ `--recommend` |
-| Benchmark suites (multi-race batteries) | ✅ `--suite` |
-| Alert webhooks (Slack/Discord) | ✅ `--alert-webhook` | one at a time | ✝ hand-written scripts | ❌ passive |
-| TTFB / tokens/s / p95 / t-CI | ✅ built-in | varies | ✝ you build it | ✅ but only routed traffic |
+| Multi-provider streaming race | ✅ 18 + any OpenAI-compatible | one at a time | ✝ hand-written scripts | ❌ passive |
+| Statistical significance (Welch p-values) | ✅ built-in | ❌ | ❌ | ❌ |
+| Provider recommendation from history | ✅ `--recommend` | ❌ | ❌ | ❌ |
+| Value-for-money (tok/s per $/M) | ✅ built-in | ❌ | ❌ | ❌ |
+| Benchmark suites (multi-race batteries) | ✅ `--suite` | ❌ | ✝ heavy scripting | ❌ |
+| Alert webhooks (Slack/Discord) | ✅ `--alert-webhook` | ❌ | ✝ custom | ❌ |
+| Desktop notifications | ✅ `--notify-desktop` | ❌ | ❌ | ❌ |
+| TTFB / tokens/s / p95 / t-CI / ITL | ✅ built-in | varies | ✝ you build it | ✅ but only routed traffic |
+| Reasoning-model honesty (🧠 split) | ✅ built-in | ❌ | ❌ | ❌ |
 | Live terminal race view | ✅ | ❌ | ❌ | ❌ |
-| CI regression gate (`--baseline`) | ✅ | ❌ | ✝ heavy scripting | ❌ |
+| CI regression gate with significance | ✅ `--require-significance` | ❌ | ✝ heavy scripting | ❌ |
+| Saturation curves (`--ramp`) | ✅ built-in | ❌ | ✝ complex | ❌ |
 | Longitudinal trends + model-swap detection | ✅ | ❌ | ❌ | partial |
 | Cost per run from real token usage | ✅ | ❌ | ❌ | partial |
+| Cross-region probe merging | ✅ `--merge` | ❌ | ❌ | ❌ |
 | Single static binary, no config file | ✅ | ❌ | ❌ | ❌ |
-| Fuzzed, bounded parser + typed errors | ✅ | — | — | — |
+| 100% safe Rust, fuzzed parsers | ✅ | — | — | — |
+| Docker (2.9 MB scratch) + GitHub Action | ✅ | ❌ | partial | ❌ |
 
 ✝ possible with effort — llmrace exists so you don't spend that effort.
 Missing a capability you need? [Open an issue](https://github.com/dfbustosus/llmrace/issues/new/choose).

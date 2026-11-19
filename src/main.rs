@@ -414,6 +414,31 @@ fn build_run_config(
     custom_variants: std::collections::BTreeMap<String, String>,
 ) -> Result<RunConfig> {
     let selected = resolve_providers(&cli)?;
+
+    // pre-flight: fail fast on experimental providers missing credentials
+    // (better than starting the race and failing on the first request)
+    for spec in &selected {
+        if spec.experimental {
+            match spec.wire {
+                llmrace::provider::Wire::Bedrock => {
+                    if llmrace::provider::sigv4_credential_check().is_none() {
+                        anyhow::bail!(
+                            "bedrock requires AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION"
+                        );
+                    }
+                }
+                llmrace::provider::Wire::Vertex
+                    if std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_err() =>
+                {
+                    anyhow::bail!(
+                        "vertex requires GOOGLE_APPLICATION_CREDENTIALS (service-account JSON), GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_REGION"
+                    );
+                }
+                llmrace::provider::Wire::Vertex => {}
+                _ => {}
+            }
+        }
+    }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
         .build()
@@ -447,8 +472,7 @@ fn build_run_config(
     };
     let weights = match &cli.weights {
         Some(spec) => llmrace::score::Weights::parse(spec)
-            .map_err(|e| anyhow::anyhow!("{e}"))
-            .with_context(|| "parsing --weights")?,
+            .map_err(|e| anyhow::anyhow!("invalid --weights '{spec}': {e}"))?,
         None => llmrace::score::Weights::default(),
     };
     Ok(RunConfig {

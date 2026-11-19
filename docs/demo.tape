@@ -10,17 +10,19 @@ Set Padding 18
 Set TypingSpeed 10ms
 Set CursorBlink true
 
-# Multi-model race — classic vs reasoning vs local, with significance verdict
-Type "llmrace openai=gpt-4o-mini openai=gpt-5-nano ollama=llama3.2:1b mock -n 3 --warmup 0 --winner"
+# Multi-model race with significance verdict and winner podium
+Type "llmrace openai=gpt-4o-mini ollama=llama3.2:1b mock -n 3 --warmup 0 --winner"
 Enter
-Sleep 12s
+Sleep 10s
 Enter
 Sleep 3s
 
-# Live model discovery + diagnostics
-Type "llmrace --models ollama"
+# Provider recommendation from accumulated history
+Type "llmrace --recommend"
 Enter
-Sleep 2s
+Sleep 3s
+
+# Diagnostics
 Type "llmrace --doctor"
 Enter
 Sleep 5s

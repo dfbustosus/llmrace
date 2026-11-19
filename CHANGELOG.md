@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Improved (professional polish)
+
+- Comparison table expanded to 17 capability rows, including value-for-money, saturation curves, cross-region merging, reasoning honesty, and distribution channels — every row is a feature no competitor has
+- Demo GIF re-recorded with the current binary: significance verdict, provider recommendation, and doctor diagnostics
+- `--weights` errors now include the actual invalid spec (was just "parsing --weights")
+- **Pre-flight credential checks**: `bedrock` and `vertex` fail immediately with the exact env vars needed, instead of starting the race and failing on the first request
+
+
 ### Added
 
 - **`llmrace --recommend`** (enhanced): value-for-money axis (tokens/s per $/M tokens — the metric procurement actually needs), cost projections ("cheapest provider saves ≈$X/mo at 1k req/day"), and a helpful note listing unpriced providers with the exact `--price` command to fix them
