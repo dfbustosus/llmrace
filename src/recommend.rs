@@ -13,6 +13,9 @@ use crate::stats::Sample;
 pub struct ProviderProfile {
     /// Estimated monthly cost at the given daily request volume, USD.
     pub monthly_cost_usd: Option<f64>,
+    /// Value for money: tokens per second per dollar per million tokens.
+    /// Higher = more output per unit cost.
+    pub value_for_money: Option<f64>,
     /// Provider id.
     pub name: String,
     /// Most recent model used.
@@ -82,8 +85,17 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                 avg_tokens * pout / 1_000_000.0
             });
             let monthly_cost = cost.map(|per_run| per_run * 1000.0); // 1000 req/day * 30 days
+            let median_tps = Sample::from_values(tps.clone()).median();
+            let vfm = cost.map(|per_run| {
+                if per_run > 0.0 {
+                    median_tps / (per_run * 1_000_000.0)
+                } else {
+                    0.0
+                }
+            });
             Some(ProviderProfile {
                 monthly_cost_usd: monthly_cost,
+                value_for_money: vfm,
                 name,
                 current_model: races.last().map(|r| r.model.clone()).unwrap_or_default(),
                 races: races.len(),
@@ -163,6 +175,12 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
     });
     for p in &sorted {
         out.push_str(&format!("  {}\n", p.headline()));
+        if let Some(vfm) = p.value_for_money {
+            out.push_str(&format!(
+                "    value: {:.0} tok/s per $/M\n",
+                vfm * 1_000_000.0
+            ));
+        }
         if let Some(cost) = p.cost_per_run_usd {
             out.push_str(&format!("    cost: ~${cost:.5}/run"));
             if let Some(monthly) = p.monthly_cost_usd {
@@ -184,6 +202,22 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
                 alternative.name, alternative.median_tokens_per_sec, best.median_tokens_per_sec
             ));
         }
+    }
+
+    // note unpriced providers
+    let unpriced: Vec<&ProviderProfile> = profiles
+        .iter()
+        .filter(|p| p.cost_per_run_usd.is_none())
+        .collect();
+    if !unpriced.is_empty() {
+        out.push_str("\n  ℹ No pricing data for: ");
+        for (i, p) in unpriced.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!("{} ({})", p.name, p.current_model));
+        }
+        out.push_str("\n    pass `--price provider/model=in:out` to add cost data\n");
     }
 
     out.push_str(
