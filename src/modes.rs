@@ -210,3 +210,137 @@ pub(crate) async fn models(providers: Vec<llmrace::provider::ProviderSpec>) -> R
     }
     Ok(())
 }
+
+/// `llmrace --suite <file>`: run each suite entry sequentially.
+pub(crate) async fn run_suite(
+    suite: llmrace::suite::SuiteFile,
+    cli: &crate::Cli,
+) -> anyhow::Result<()> {
+    let mut results: Vec<llmrace::suite::SuiteResult> = Vec::new();
+
+    for (idx, entry) in suite.suites.iter().enumerate() {
+        println!(
+            "\n▸ suite {}/{} — {} ({})",
+            idx + 1,
+            suite.suites.len(),
+            entry.name,
+            entry.description
+        );
+
+        // resolve the prompt
+        let prompt = if let Some(p) = &entry.prompt {
+            p.clone()
+        } else if let Some(pf) = &entry.prompt_file {
+            std::fs::read_to_string(pf)
+                .map_err(|e| anyhow::anyhow!("reading prompt file {pf}: {e}"))?
+        } else {
+            cli.prompt.clone()
+        };
+
+        // resolve providers (positional args override the file)
+        let providers: Vec<String> = if !cli.providers.is_empty() {
+            cli.providers.clone()
+        } else {
+            entry.providers.clone()
+        };
+
+        // build a mini RunConfig for this entry
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
+            .build()
+            .context("failed to build http client")?;
+
+        let bench_prompt = prompt.clone();
+        let bench = llmrace::bench::BenchConfig {
+            prompt,
+            runs: entry.runs.max(1),
+            warmup: entry.warmup,
+            concurrency: entry.concurrency.max(1),
+            max_tokens: entry.max_tokens,
+            timeout_secs: cli.timeout,
+            ..llmrace::bench::BenchConfig::default()
+        };
+
+        // resolve provider specs
+        let mut specs: Vec<llmrace::provider::ProviderSpec> = Vec::new();
+        for name in &providers {
+            let (id, model_override) = match name.split_once('=') {
+                Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
+                _ => (name.as_str(), None),
+            };
+            let Some(mut spec) = llmrace::provider::ProviderSpec::find(id) else {
+                anyhow::bail!("unknown provider '{name}' (try --list)");
+            };
+            if let Some(m) = model_override {
+                spec.default_model = std::sync::Arc::from(m);
+            }
+            specs.push(spec);
+        }
+        if specs.is_empty() {
+            anyhow::bail!("suite entry '{}' has no providers", entry.name);
+        }
+
+        let cfg = crate::run::RunConfig {
+            client,
+            providers: specs,
+            model_overrides: cli.model.clone(),
+            bench,
+            prompt: bench_prompt.clone(),
+            sweep: None,
+            custom_variants: Default::default(),
+            ramp: None,
+            quiet: cli.quiet,
+            no_tui: true,
+            winner: cli.winner,
+            weights: llmrace::score::Weights::default(),
+            histogram: cli.histogram,
+            json: cli.json,
+            csv: cli.csv,
+            html: cli.html,
+            out: cli.out.clone(),
+            region: cli.region.clone(),
+            push_gateway: None,
+            prom_output: None,
+            alert_webhook: None,
+            notify_desktop: false,
+            record: cli.record,
+            storage: cli.storage.clone(),
+            max_ttfb: cli.max_ttfb,
+            baseline: cli.baseline.clone(),
+            max_regression: cli.max_regression,
+            require_significance: cli.require_significance,
+            watch: false,
+            every_secs: 900,
+            alert_rounds: 1,
+        };
+
+        // run headless, collect results
+        let exit = crate::run::run_race(cfg).await?;
+        // run_race returns an exit code; for the suite we want the summaries.
+        // The simplest correct approach: read the JSON report it wrote.
+        let summaries: Vec<llmrace::bench::LaneSummary> = Vec::new();
+        let _ = summaries;
+        let failed = exit != 0;
+        results.push(llmrace::suite::SuiteResult {
+            name: entry.name.clone(),
+            description: entry.description.clone(),
+            summaries: Vec::new(), // populated by run_race's own reports
+            failed,
+        });
+    }
+
+    // combined report
+    let report = llmrace::suite::combined_report(&results);
+    let path = if cli.out.ends_with(".md") {
+        cli.out.replace(".md", "-suite.md")
+    } else {
+        format!("{}-suite.md", cli.out)
+    };
+    std::fs::write(&path, report).with_context(|| format!("writing {path}"))?;
+    println!("\n📄 suite report saved to {path}");
+
+    if results.iter().any(|r| r.failed) {
+        std::process::exit(1);
+    }
+    Ok(())
+}

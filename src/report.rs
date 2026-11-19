@@ -8,6 +8,25 @@ use crate::stats::fmt_ms;
 ///
 /// When lanes carry variant labels (a `--sweep` run), one table is emitted
 /// per variant.
+/// Renders just the significance verdict line, if computable.
+pub(crate) fn significance_line(summaries: &[LaneSummary]) -> Option<String> {
+    top_two_significance(summaries).map(|(a, b, delta, p, significant)| {
+        if significant {
+            format!(
+                "*Significance*: {a} vs {b} — \u{394} {delta:+.0} ms, statistically significant (p = {p:.3}) (Welch's t-test)."
+            )
+        } else {
+            format!(
+                "*Significance*: {a} vs {b} — \u{394} {delta:+.0} ms, **not** statistically significant (p = {p:.2}) — the gap could be noise (Welch's t-test)."
+            )
+        }
+    })
+}
+
+/// Renders a shareable markdown report ranked by aggregate tokens/s.
+///
+/// When lanes carry variant labels (a `--sweep` run), one table is emitted
+/// per variant.
 pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens: u64) -> String {
     let mut out = String::new();
     out.push_str("# 🏁 llmrace report\n\n");
@@ -98,7 +117,7 @@ fn group_by_variant(summaries: &[LaneSummary]) -> Vec<(Option<String>, Vec<&Lane
         .collect()
 }
 
-fn variant_table(lanes: &[&LaneSummary]) -> String {
+pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
     let ranked = rank(lanes);
     let mut out = String::new();
     out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | ITL p95 | Stutters | Tokens/s | Cost/run |\n");

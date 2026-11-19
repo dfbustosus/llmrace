@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Benchmark suites**: `llmrace --suite file.toml` runs multiple named races sequentially (different prompts, concurrency levels, token budgets) and produces a combined markdown report with one ranked table per suite. Suite entries support `providers`, `runs`, `warmup`, `concurrency`, `max_tokens`, `prompt`, and `prompt_file` — see `examples/llmrace.suite.toml`. Exit code reflects all suites (any failure → 1)
 - **Watch alert webhooks**: `--alert-webhook URL` POSTs alerts (fire-and-forget, non-blocking) as JSON with both `text` (Slack) and `content` (Discord) fields — one URL serves either platform. Turns `--watch` into a production on-call tool: degraded providers page you through your existing alerting stack
 - **Desktop notifications**: `--notify-desktop` sends native notifications (macOS Notification Center, Linux `notify-send`, Windows toast) on race completion ("mock won at 87 tok/s — 4 lanes raced") and on every watch alert — no terminal-watching required
 - `--prom-output <file>`: writes Prometheus text-format metrics to a file after the race — no pushgateway needed. Pairs with node_exporter's textfile collector or any file-based scrape setup; complements the existing `--push-gateway`

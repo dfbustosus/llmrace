@@ -1,0 +1,29 @@
+# Benchmark suite: multiple races, one command, one combined report.
+#
+# Run: llmrace --suite examples/llmrace.suite.toml
+
+[[suite]]
+name = "latency-short"
+description = "single-word answers: connection + scheduling overhead"
+providers = ["mock"]
+runs = 3
+warmup = 1
+prompt = "Reply with exactly one word: hello."
+
+[[suite]]
+name = "throughput-long"
+description = "sustained generation: tokens/s under real load"
+providers = ["mock"]
+runs = 2
+warmup = 0
+max_tokens = 512
+prompt = "Write a vivid paragraph about a storm at sea."
+
+[[suite]]
+name = "saturation"
+description = "8 parallel streams: throughput under contention"
+providers = ["mock"]
+runs = 2
+warmup = 0
+concurrency = 8
+prompt = "Count from 1 to 20, one number per line."

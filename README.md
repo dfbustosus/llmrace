@@ -182,6 +182,9 @@ llmrace --endpoint http://localhost:8000/v1/chat/completions \
 # Markdown to stdout (pipe into CI step summaries), JSON alongside
 llmrace openai groq -n 5 --out - --json > "$GITHUB_STEP_SUMMARY"
 
+# Benchmark suite: multiple races, one combined report
+llmrace --suite examples/llmrace.suite.toml
+
 # Custom prompt (inline or from a file), JSON + CSV output for CI
 llmrace openai groq -p "Explain transformer attention in 3 sentences." -n 5 --json --csv
 llmrace openai groq --prompt-file prompts/attention.txt

@@ -7,6 +7,7 @@
 //! - [`provider`]: provider registry, wire protocols, streaming plumbing
 //! - [`sse`]: incremental Server-Sent Events parsing
 //! - [`sqlite`]: optional SQLite history backend (feature `sqlite`)
+//! - [`suite`]: multi-race benchmark suite orchestration
 //! - [`stats`]: descriptive statistics with t-based confidence intervals
 //! - [`bench`]: the benchmark engine and lane summaries
 //! - [`config`]: named profiles from `llmrace.toml`
@@ -77,6 +78,7 @@ pub mod score;
 pub mod sqlite;
 pub mod sse;
 pub mod stats;
+pub mod suite;
 pub mod tools;
 pub mod tui;
 pub mod util;

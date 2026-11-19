@@ -896,3 +896,57 @@ fn prom_output_writes_text_format_file() {
     assert!(body.contains("llmrace_tokens_per_second{"), "{body}");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn suite_runs_multiple_races_and_writes_combined_report() {
+    let dir = std::env::temp_dir();
+    let suite_path = dir.join("llmrace-suite-test.toml");
+    let out_path = dir.join("llmrace-suite-out.md");
+    std::fs::write(
+        &suite_path,
+        r#"
+[[suite]]
+name = "quick"
+description = "fast check"
+providers = ["mock"]
+runs = 1
+warmup = 0
+prompt = "hello"
+
+[[suite]]
+name = "sat"
+description = "concurrent"
+providers = ["mock"]
+runs = 1
+warmup = 0
+concurrency = 4
+prompt = "count"
+"#,
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--suite")
+        .arg(suite_path.to_string_lossy().into_owned())
+        .arg("--quiet")
+        .arg("--out")
+        .arg(out_path.to_string_lossy().into_owned())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let suite_report = dir.join("llmrace-suite-out-suite.md");
+    let body = std::fs::read_to_string(&suite_report).unwrap();
+    assert!(body.contains("## quick"), "{body}");
+    assert!(body.contains("## sat"), "{body}");
+    assert!(body.contains("fast check"), "{body}");
+    assert!(body.contains("concurrent"), "{body}");
+    assert!(
+        !body.contains("1 failed"),
+        "no suite failures expected: {body}"
+    );
+}

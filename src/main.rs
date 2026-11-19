@@ -217,6 +217,10 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Prompt shaping", long)]
     profile: Option<String>,
 
+    /// Run a benchmark suite (multiple named races from a TOML file).
+    #[arg(help_heading = "Prompt shaping", long)]
+    suite: Option<String>,
+
     /// List built-in providers.
     #[arg(help_heading = "Modes", long)]
     list: bool,
@@ -293,6 +297,12 @@ async fn dispatch(
     cli: Cli,
     custom_variants: std::collections::BTreeMap<String, String>,
 ) -> Result<i32> {
+    if let Some(suite_path) = &cli.suite {
+        let suite = llmrace::suite::load(std::path::Path::new(suite_path))
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        return modes::run_suite(suite, &cli).await.map(|_| 0);
+    }
+
     if cli.init {
         return modes::init().map(|_| 0);
     }
