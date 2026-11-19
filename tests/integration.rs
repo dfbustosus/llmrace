@@ -1471,3 +1471,50 @@ fn recommend_profiles_and_renders_from_history() {
         "gpt-4o-mini is priced"
     );
 }
+
+#[test]
+fn suite_combined_report_renders_tables_and_significance() {
+    let summary = |name: &str| llmrace::bench::LaneSummary {
+        name: name.into(),
+        model: "m".into(),
+        runs: vec![
+            RunMetrics {
+                total_ms: 100.0,
+                ttfb_ms: 10.0,
+                tokens: 10,
+                ..RunMetrics::default()
+            },
+            RunMetrics {
+                total_ms: 102.0,
+                ttfb_ms: 12.0,
+                tokens: 10,
+                ..RunMetrics::default()
+            },
+        ],
+        error: None,
+        prompt: String::new(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    let results = vec![
+        llmrace::suite::SuiteResult {
+            name: "latency".into(),
+            description: "fast responses".into(),
+            summaries: vec![summary("fast"), summary("slow")],
+            failed: false,
+        },
+        llmrace::suite::SuiteResult {
+            name: "saturation".into(),
+            description: "under load".into(),
+            summaries: vec![summary("bulk")],
+            failed: false,
+        },
+    ];
+    let report = llmrace::suite::combined_report(&results);
+    assert!(report.contains("## latency"), "{report}");
+    assert!(report.contains("## saturation"), "{report}");
+    assert!(report.contains("fast responses"), "{report}");
+    assert!(report.contains("| 1 | fast |"), "ranked table: {report}");
+    assert!(!report.contains("1 failed"), "{report}");
+}
