@@ -51,6 +51,15 @@ pub struct SuiteEntry {
     /// Prompt file path (alternative to `prompt`).
     #[serde(default)]
     pub prompt_file: Option<String>,
+    /// Prompt-variant sweep spec (e.g. `"short,json"`).
+    #[serde(default)]
+    pub sweep: Option<String>,
+    /// Enable tool-calling benchmark for this suite.
+    #[serde(default)]
+    pub tools: bool,
+    /// Tool task name (weather, math, lookup).
+    #[serde(default)]
+    pub tool_task: Option<String>,
 }
 
 fn default_runs() -> usize {

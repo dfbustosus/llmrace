@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--recommend --json`: structured recommendation output for CI and tooling consumers — provider profiles with all metrics, costs, and value-for-money as machine-readable JSON
+- `--alert-test`: sends a test alert to your `--alert-webhook` URL (and fires a desktop notification with `--notify-desktop`) so you can verify the pipeline before relying on it in production
+- Suite entries support `sweep` (prompt-variant sweeps per suite) and `tools`/`tool_task` (tool-calling benchmarks per suite)
+
 ### Improved (professional polish)
 
 - Comparison table expanded to 17 capability rows, including value-for-money, saturation curves, cross-region merging, reasoning honesty, and distribution channels — every row is a feature no competitor has

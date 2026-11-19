@@ -213,6 +213,10 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Output", long)]
     notify_desktop: bool,
 
+    /// Send a test alert to --alert-webhook (verify your pipeline).
+    #[arg(help_heading = "History & monitoring", long)]
+    alert_test: bool,
+
     /// Run the race once per comma-separated prompt variant (short,long,code,json,reasoning).
     #[arg(help_heading = "Prompt shaping", long)]
     sweep: Option<String>,
@@ -374,10 +378,63 @@ async fn dispatch(
     if cli.compare.len() == 1 {
         anyhow::bail!("--compare expects two comma-separated report paths (a.json,b.json)");
     }
+    if cli.alert_test {
+        let Some(url) = &cli.alert_webhook else {
+            anyhow::bail!("--alert-test requires --alert-webhook <url>");
+        };
+        let test_alert = llmrace::watch::Alert {
+            round: 0,
+            provider: "test".into(),
+            metric: "alert-test",
+            baseline: 100.0,
+            current: 200.0,
+            delta_pct: 100.0,
+        };
+        let client = reqwest::Client::new();
+        llmrace::notify::post_webhook(&client, url, &test_alert).await?;
+        println!("✓ test alert sent to {url} — check your Slack/Discord");
+        if cli.notify_desktop {
+            llmrace::notify::desktop_notification(
+                "llmrace alert-test",
+                "If you can read this, desktop notifications work",
+            );
+        }
+        return Ok(0);
+    }
+
     if cli.recommend {
         let records = load_history(&cli.storage)?;
         let profiles = llmrace::recommend::build_profiles(&records);
-        print!("{}", llmrace::recommend::render_recommendation(&profiles));
+        if cli.json {
+            let payload: Vec<serde_json::Value> = profiles
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "provider": p.name,
+                        "model": p.current_model,
+                        "races": p.races,
+                        "median_latency_ms": p.median_latency_ms,
+                        "median_ttfb_ms": p.median_ttfb_ms,
+                        "median_tokens_per_sec": p.median_tokens_per_sec,
+                        "latency_cv": p.latency_cv,
+                        "cost_per_run_usd": p.cost_per_run_usd,
+                        "monthly_cost_usd": p.monthly_cost_usd,
+                        "value_for_money": p.value_for_money,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "tool": "llmrace",
+                    "mode": "recommend",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "providers": payload,
+                }))?
+            );
+        } else {
+            print!("{}", llmrace::recommend::render_recommendation(&profiles));
+        }
         return Ok(0);
     }
 

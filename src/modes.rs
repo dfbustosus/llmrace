@@ -258,6 +258,11 @@ pub(crate) async fn run_suite(
             concurrency: entry.concurrency.max(1),
             max_tokens: entry.max_tokens,
             timeout_secs: cli.timeout,
+            tools: entry.tools,
+            tool_task: entry
+                .tool_task
+                .clone()
+                .unwrap_or_else(|| "weather".to_string()),
             ..llmrace::bench::BenchConfig::default()
         };
 
@@ -296,7 +301,7 @@ pub(crate) async fn run_suite(
             model_overrides: cli.model.clone(),
             bench,
             prompt: bench_prompt.clone(),
-            sweep: None,
+            sweep: entry.sweep.clone(),
             custom_variants: Default::default(),
             ramp: None,
             quiet: cli.quiet,

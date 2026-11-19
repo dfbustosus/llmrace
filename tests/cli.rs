@@ -950,3 +950,28 @@ prompt = "count"
         "no suite failures expected: {body}"
     );
 }
+
+#[test]
+fn recommend_json_is_structured() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--recommend")
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(parsed["mode"], "recommend");
+    assert!(parsed["providers"].as_array().is_some());
+}
+
+#[test]
+fn alert_test_requires_webhook() {
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--alert-test")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--alert-webhook"), "{stderr}");
+}
