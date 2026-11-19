@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-19
+
+The platform release: llmrace grows from a benchmark CLI into a complete
+provider evaluation and monitoring platform — define suites, measure with
+statistics, gate CI on significance, monitor with alerts, and decide with
+data-driven recommendations.
+
+### New capabilities
+
+- **Benchmark suites** (`--suite file.toml`): multiple named races with a combined report — different prompts, concurrency levels, token budgets, sweeps, tool tasks — as one command
+- **Provider recommendation** (`--recommend`): analyzes accumulated history and answers "which provider should I use?" — ranked on speed, throughput, stability, cost, and value-for-money (tokens/s per $/M), with cost projections and `--json` for CI
+- **Alert webhooks** (`--alert-webhook URL`): watch alerts page Slack/Discord (fire-and-forget, non-blocking); `--alert-test` verifies the pipeline
+- **Desktop notifications** (`--notify-desktop`): native notifications on race completion and alerts (macOS/Linux/Windows)
+- **Prometheus file export** (`--prom-output`): text-format metrics to a file for node_exporter textfile collector
+- **`--version-json`**: machine-readable version info for CI scripts
+- Suite entries support `sweep`, `tools`, and `tool_task`
+
+### Quality improvements
+
+- Suite combined reports show real data tables (was empty — run_race now returns LaneSummary results)
+- Suite runner propagates all output flags (`--prom-output`, `--alert-webhook`, `--notify-desktop`, `--push-gateway`)
+- Comparison table: 17 capability rows, every one a feature no competitor has
+- Demo GIF re-recorded with current features (significance, recommendation, doctor)
+- `--weights` errors include the actual invalid spec
+- Pre-flight credential checks for experimental providers (bedrock/vertex fail immediately, not on first request)
+- Vertex token + credentials cached process-wide (was re-authenticating per request)
+- Amazon Bedrock provider (experimental): SigV4 + binary event-stream, vector-verified, fuzzed
+- Google Vertex AI provider (experimental): service-account JWT RS256, Gemini SSE reuse
+
+
 ### Added
 
 - `--recommend --json`: structured recommendation output for CI and tooling consumers — provider profiles with all metrics, costs, and value-for-money as machine-readable JSON

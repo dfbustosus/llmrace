@@ -217,6 +217,10 @@ pub(crate) struct Cli {
     #[arg(help_heading = "History & monitoring", long)]
     alert_test: bool,
 
+    /// Print machine-readable version info for CI scripts.
+    #[arg(help_heading = "Modes", long)]
+    version_json: bool,
+
     /// Run the race once per comma-separated prompt variant (short,long,code,json,reasoning).
     #[arg(help_heading = "Prompt shaping", long)]
     sweep: Option<String>,
@@ -378,6 +382,20 @@ async fn dispatch(
     if cli.compare.len() == 1 {
         anyhow::bail!("--compare expects two comma-separated report paths (a.json,b.json)");
     }
+    // structured version info for CI scripts
+    if cli.version_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "name": "llmrace",
+                "version": env!("CARGO_PKG_VERSION"),
+                "rustc": option_env!("LLMRACE_RUSTC").unwrap_or("unknown"),
+                "providers": llmrace::provider::ProviderSpec::registry().len(),
+            }))?
+        );
+        return Ok(0);
+    }
+
     if cli.alert_test {
         let Some(url) = &cli.alert_webhook else {
             anyhow::bail!("--alert-test requires --alert-webhook <url>");
