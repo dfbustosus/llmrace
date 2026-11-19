@@ -315,6 +315,18 @@ llmrace --trend              # last 30 days, all providers
 llmrace --trend --days 7 groq
 ```
 
+**Continuous monitoring with alerts:**
+
+```bash
+# watch every 15 min, alert after 2 consecutive degraded rounds,
+# page Slack/Discord when providers degrade
+llmrace openai groq --watch --every 900 --alert-rounds 2 \
+  --alert-webhook https://hooks.slack.com/services/... --record
+
+# desktop notification when the race completes (macOS/Linux/Windows)
+llmrace openai groq --notify-desktop
+```
+
 ## Using llmrace as a CI quality gate
 
 Record a baseline once, then fail your pipeline when a provider regresses:

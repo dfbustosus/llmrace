@@ -54,7 +54,7 @@ pub fn desktop_notification(title: &str, body: &str) {
     #[cfg(target_os = "windows")]
     {
         let script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null"
+            "$[xml]$t = New-Object Windows.UI.Notifications.ToastXmlManager;              $t.GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)              .GetElementsByTagName('text').Item(0).AppendChild($t.CreateTextNode('{title}')) | Out-Null;              $t.GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)              .GetElementsByTagName('text').Item(1).AppendChild($t.CreateTextNode('{body}')) | Out-Null"
         );
         let _ = std::process::Command::new("powershell")
             .arg("-Command")
