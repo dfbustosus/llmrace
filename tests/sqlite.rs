@@ -17,6 +17,10 @@ fn rec(ts: u64, provider: &str, model: &str) -> HistoryRecord {
         itl_p95_ms: None,
         reasoning_tokens: None,
         thinking_ms_estimate: None,
+        failure_rate: None,
+        goodput_tokens_per_sec: None,
+        retry_attempts: 0,
+        cost_per_run_usd: None,
     }
 }
 
