@@ -64,8 +64,8 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
 
     if cfg.notify_desktop && !summaries.is_empty() {
         let winner = summaries.iter().filter(|s| s.successful()).max_by(|a, b| {
-            a.mean_tokens_per_sec()
-                .partial_cmp(&b.mean_tokens_per_sec())
+            a.goodput_tokens_per_sec()
+                .partial_cmp(&b.goodput_tokens_per_sec())
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         if let Some(w) = winner {
@@ -74,7 +74,7 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
                 &format!(
                     "{} won at {:.0} tok/s \u{2014} {} lanes raced",
                     w.name,
-                    w.mean_tokens_per_sec(),
+                    w.goodput_tokens_per_sec(),
                     summaries.len()
                 ),
             );
