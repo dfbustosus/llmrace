@@ -182,6 +182,7 @@ pub async fn fetch_token(
             provider: "vertex".into(),
             status: status.as_u16(),
             body: crate::util::truncate(&body.to_string(), 300),
+            retry_after: None,
         });
     }
     let token = body
