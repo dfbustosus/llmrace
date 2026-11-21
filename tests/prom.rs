@@ -115,6 +115,8 @@ fn sweep_variants_get_their_own_series() {
             tokens: 10,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
