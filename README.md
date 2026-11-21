@@ -229,8 +229,9 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 
 | Metric | Definition |
 |--------|------------|
-| **TTFB** | Time from just before the request is sent to the first streamed token (includes connection, TLS and queueing) |
-| **Saturation peak** | `--ramp` races at each concurrency level and marks each provider's peak throughput (⬇ flags >10% degradation past it) |
+| **TTFT** | Time to first token. Same clock as TTFB: from just before the request is sent to the first streamed token (includes connection, TLS and queueing). Reports print TTFT; JSON keeps `mean_ttfb_ms` and adds `ttft_ms` |
+| **TPOT** | Time per output token: the effective generation window divided by completion tokens. JSON reports the median (`tpot_p50_ms`) and p95 (`tpot_p95_ms`) across rounds |
+| **Saturation peak** | `--ramp` races at each concurrency level and marks the concurrency where goodput peaks (⬇ flags a goodput drop of more than 10% past it). JSON names the first level whose failure rate crosses 5% |
 | **Tokens/s** | Completion tokens divided by the *effective generation window* (total − TTFB, widened to the provider-reported server processing time when longer); with `--concurrency N`, total tokens of all N parallel requests over the round window — i.e. saturation throughput |
 | **ITL p50 / p95** | Distribution of inter-token gaps while streaming — how *smooth* the stream feels, not just how fast it finishes |
 | **Stutters** | Inter-token gaps over 250 ms — visible streaming hiccups, counted per lane |
@@ -242,14 +243,14 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 Methodology notes:
 
 - One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes. A warmup failure is not a measured failure
-- **Failed measured rounds stay in the report.** Latency, tokens/s and cost/run use successful rounds only. The rank uses goodput (tokens/s × the success rate), so a provider that timed out half its calls cannot win on the calls that happened to succeed. Retries are counted and not priced: a failed attempt does not return token usage
+- **Failed measured rounds stay in the report.** Latency, tokens/s and cost/run use successful rounds only. The rank uses goodput (tokens/s × the success rate), so a provider that timed out half its calls cannot win on the calls that happened to succeed. Retries are counted and not priced: a failed attempt does not return token usage. `--record`, `--baseline` and `--recommend` keep the same failure rate, goodput, retry count and cost. A history file or baseline written before those fields existed still loads; the gate skips a metric the baseline did not record
 - Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other. Exception: `provider=model` lanes of the *same* provider race concurrently — the provider's rate limits and capacity are then shared between those lanes, which is exactly what a mixed-model race measures in practice
 - Rounds with 3σ latency outliers are flagged with `†`
 - **ITL caveat**: inter-token gaps are timestamped when the runtime polls the event, so they include local scheduling jitter (sub-millisecond on a quiet machine, more under heavy concurrent load) — compare ITL across providers measured in the *same* race, not across machines
 - Token counts prefer **provider-reported usage** (`include_usage` on OpenAI-compatible APIs, `message_delta` on Anthropic) and fall back to stream-event counting
 - All requests in a run share the prompt, `max_tokens` and sampling parameters. Omit `--temperature`, `--top-p`, `--seed` and `--system` to keep each provider's own default. When you set them, the values are stamped into the markdown, JSON and HTML reports. OpenAI reasoning models (gpt-5, o-series) ignore temperature, top-p and seed, because those APIs reject the fields; the system prompt is still sent
 - Per-request timeouts (`--timeout`) are enforced mid-stream; panics in a single request never abort the race
-- **Reasoning models** (gpt-5, o-series): TTFB honestly includes thinking time — the model emits nothing visible while it reasons. When the provider reports server processing time, tokens/s uses the wider of the observed streaming window and the server window, so burst delivery after thinking cannot inflate throughput ([#125](https://github.com/dfbustosus/llmrace/issues/125))
+- **Reasoning models** (gpt-5, o-series): TTFT honestly includes thinking time — the model emits nothing visible while it reasons. When the provider reports server processing time, tokens/s uses the wider of the observed streaming window and the server window, so burst delivery after thinking cannot inflate throughput ([#125](https://github.com/dfbustosus/llmrace/issues/125)). Gemini `thoughtsTokenCount` is billed as output on top of `candidatesTokenCount`. OpenAI `completion_tokens` already includes `reasoning_tokens`, so that count is recorded and not added again. When the provider sends no count, the visible-stream estimate remains
 
 ## Reports
 
@@ -350,7 +351,7 @@ llmrace openai groq --json --out llmrace-report.json
 llmrace openai groq --baseline llmrace-report.json --max-regression 15
 ```
 
-The check compares mean latency, p95, TTFB (increases) and tokens/s (decreases) against the threshold, prints an old → new diff table with per-metric Welch p-values, and flags providers that are new or missing from the baseline. With `--require-significance`, a threshold breach only fails the gate when the difference is statistically significant (p < 0.05 on per-run data) — the flake-resistant mode for CI:
+The check compares mean latency, p95 and TTFT (increases) and tokens/s (decreases) against the threshold. When the baseline recorded them, it also fails if the failure rate rises by more than the threshold in percentage points, if goodput falls by more than the threshold, or if cost/run rises by more than the threshold. A baseline that omits those fields skips them. The report prints an old → new diff table with per-metric Welch p-values, and flags providers that are new or missing from the baseline. With `--require-significance`, a latency or tokens/s breach fails the gate only when the difference is statistically significant (p < 0.05 on per-run data). Failure rate, goodput and cost are ratios of the whole sample, so a threshold breach on those counts without a t-test:
 
 ```bash
 llmrace openai groq --baseline llmrace-report.json --max-regression 15 --require-significance
