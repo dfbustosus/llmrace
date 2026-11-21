@@ -111,6 +111,16 @@ fn openai_wire_decodes_deltas_and_usage() {
     .unwrap();
     assert_eq!(billed.prompt_tokens, Some(42));
     assert_eq!(billed.completion_tokens, Some(2));
+    assert_eq!(billed.cache_read_tokens, None);
+
+    let cached = decode_payload(
+        r#"{"choices":[],"usage":{"prompt_tokens":2000,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":1500}}}"#,
+        Wire::OpenAiCompat,
+    )
+    .unwrap();
+    assert_eq!(cached.prompt_tokens, Some(2000));
+    assert_eq!(cached.cache_read_tokens, Some(1500));
+    assert_eq!(cached.cache_write_tokens, None);
 
     assert!(decode_payload("[DONE]", Wire::OpenAiCompat).is_none());
 }
@@ -137,7 +147,19 @@ fn anthropic_wire_decodes_events() {
     )
     .unwrap();
     assert_eq!(started.prompt_tokens, Some(31));
+    assert_eq!(started.cache_read_tokens, None);
     assert!(started.token.is_none());
+
+    let cached = decode_payload(
+        r#"{"type":"message_start","message":{"usage":{"input_tokens":100,"cache_creation_input_tokens":80,"cache_read_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":30,"ephemeral_1h_input_tokens":50},"output_tokens":1}}}"#,
+        Wire::Anthropic,
+    )
+    .unwrap();
+    assert_eq!(cached.prompt_tokens, Some(580));
+    assert_eq!(cached.cache_read_tokens, Some(400));
+    assert_eq!(cached.cache_write_tokens, Some(30));
+    assert_eq!(cached.cache_write_1h_tokens, Some(50));
+    assert!(cached.token.is_none());
 
     assert!(decode_payload(r#"{"type":"ping"}"#, Wire::Anthropic).is_none());
 }
@@ -284,6 +306,57 @@ fn measured_prompt_tokens_price_the_bill_not_the_guess() {
     let cost = lane.cost_per_run_usd().unwrap();
     assert!((cost - 0.00021).abs() < 1e-12, "{cost}");
     assert!(lane.prompt_tokens_measured());
+    assert!(lane.cache_discount_applied());
+
+    let cached = LaneSummary {
+        name: "openai".into(),
+        model: "gpt-4o-mini".into(),
+        prompt: "hi".into(),
+        runs: vec![RunMetrics {
+            tokens: 100,
+            prompt_tokens: 1_000,
+            cache_read_tokens: 800,
+            ..RunMetrics::default()
+        }],
+        ..LaneSummary::default()
+    };
+    // 200 fresh × $0.15 + 800 cached × $0.075 + 100 × $0.60, per million.
+    let cached_cost = cached.cost_per_run_usd().unwrap();
+    assert!((cached_cost - 0.00015).abs() < 1e-12, "{cached_cost}");
+    assert!(cached_cost < cost);
+
+    let sonnet = LaneSummary {
+        name: "anthropic".into(),
+        model: "claude-sonnet-4-5".into(),
+        prompt: "hi".into(),
+        runs: vec![RunMetrics {
+            tokens: 10,
+            prompt_tokens: 950,
+            cache_read_tokens: 800,
+            cache_write_tokens: 50,
+            ..RunMetrics::default()
+        }],
+        ..LaneSummary::default()
+    };
+    // 100 × $3 + 800 × $0.30 + 50 × $3.75 + 10 × $15, per million.
+    let sonnet_cost = sonnet.cost_per_run_usd().unwrap();
+    assert!((sonnet_cost - 0.0008775).abs() < 1e-9, "{sonnet_cost}");
+
+    let unpriced_cache = LaneSummary {
+        name: "openai".into(),
+        model: "gpt-4.1-nano".into(),
+        prompt: "hi".into(),
+        runs: vec![RunMetrics {
+            tokens: 10,
+            prompt_tokens: 100,
+            cache_read_tokens: 80,
+            ..RunMetrics::default()
+        }],
+        ..LaneSummary::default()
+    };
+    assert!(!unpriced_cache.cache_discount_applied());
+    let md = report::markdown(std::slice::from_ref(&unpriced_cache), "hi", 1, 32);
+    assert!(md.contains("billed at the input rate"), "{md}");
 
     let guessed = LaneSummary {
         name: "openai".into(),
@@ -409,6 +482,13 @@ fn gemini_wire_decodes_deltas_and_usage() {
     )
     .unwrap();
     assert_eq!(billed.prompt_tokens, Some(18));
+    let cached = decode_payload(
+        r#"{"usageMetadata":{"promptTokenCount":11500,"cachedContentTokenCount":10000,"candidatesTokenCount":4}}"#,
+        Wire::Gemini,
+    )
+    .unwrap();
+    assert_eq!(cached.prompt_tokens, Some(11500));
+    assert_eq!(cached.cache_read_tokens, Some(10000));
     assert_eq!(billed.completion_tokens, Some(42));
 
     assert!(
