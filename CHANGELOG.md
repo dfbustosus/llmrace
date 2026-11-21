@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-11-21
+
+`--reproducible` pins sampling only when asked. A race that omits it still uses each provider's own default.
+
+### Added
+
+- `--reproducible` fills whichever of temperature, top-p and seed are still unset, after the profile is applied: `0`, `1` and `0`. A flag or a profile value already set wins
+- Those three values are already part of the request hash, so a pinned race and an unpinned race hash differently and the gate refuses the comparison
+
+OpenAI reasoning models still ignore temperature, top-p and seed on the wire.
+
 ## [1.22.0] - 2026-11-21
 
 `expect` can be a substring or a regex. A line that only has `expect` stays an exact check, and its request hash does not change.
@@ -611,7 +622,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.22.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.23.0...HEAD
+[1.23.0]: https://github.com/dfbustosus/llmrace/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/dfbustosus/llmrace/compare/v1.21.0...v1.22.0
 [1.21.0]: https://github.com/dfbustosus/llmrace/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/dfbustosus/llmrace/compare/v1.19.0...v1.20.0
