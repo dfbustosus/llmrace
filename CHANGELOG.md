@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-11-21
+
+A wrong answer now fails the CI gate for the same reason it loses the report. A race with no task still has no task metric, so a plain latency gate does not move.
+
+### Added
+
+- History and the optional SQLite store keep `task_pass_rate` (ok/measured). Older JSONL and older databases still load
+- The regression gate fails when task success falls, in percentage points, beside failure rate. A baseline that omitted the field skips it. A missing p-value counts, because it is a ratio of the whole sample
+- `--recommend` says when a provider led on goodput and lost on task success
+- `race.json` writes `task_pass_rate` next to `task_pass`
+
+### Changed
+
+- The example CI workflow races `examples/workloads/short-answer.jsonl` with `--json` and `--require-significance`, and uploads the JSON that command writes
+
 ## [1.14.0] - 2026-11-20
 
 The price table now says when it was read and which page it came from. Bedrock and Vertex stay experimental: no live account was available to run them.
@@ -526,7 +541,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.15.0...HEAD
+[1.15.0]: https://github.com/dfbustosus/llmrace/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/dfbustosus/llmrace/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/dfbustosus/llmrace/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/dfbustosus/llmrace/compare/v1.11.0...v1.12.0
