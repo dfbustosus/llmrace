@@ -27,6 +27,33 @@ fn lane_with_model(name: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> La
 }
 
 #[test]
+fn a_fast_wrong_answer_loses_and_a_plain_race_does_not_change() {
+    let mut fast = lane("fast", 10.0, 200.0, 100.0);
+    fast.runs[0].task_ok = Some(false);
+    let mut right = lane("right", 40.0, 50.0, 400.0);
+    right.runs[0].task_ok = Some(true);
+    let scored = score_lanes(&[fast, right], &Weights::default());
+    assert_eq!(
+        scored[0].name, "right",
+        "task success outranks raw speed: {scored:?}"
+    );
+
+    let plain = vec![
+        lane("fast", 10.0, 200.0, 100.0),
+        lane("slow", 40.0, 50.0, 400.0),
+    ];
+    let no_task = Weights {
+        task: 0.0,
+        ..Weights::default()
+    };
+    let with_default = score_lanes(&plain, &Weights::default());
+    let without = score_lanes(&plain, &no_task);
+    assert_eq!(with_default[0].name, "fast");
+    assert!((with_default[0].score - without[0].score).abs() < 1e-9);
+    assert!((with_default[1].score - without[1].score).abs() < 1e-9);
+}
+
+#[test]
 fn winner_scores_hundred() {
     let lanes = vec![
         lane("fast", 10.0, 200.0, 100.0),
@@ -56,7 +83,7 @@ fn failed_lane_ignored() {
 fn weights_parse_defaults_and_errors() {
     assert_eq!(Weights::parse("").unwrap(), Weights::default());
     assert_eq!(Weights::parse("tps=60").unwrap().tps, 60.0);
-    assert!(Weights::parse("ttfb=0,tps=0,p95=0").is_err());
+    assert!(Weights::parse("ttfb=0,tps=0,p95=0,cost=0,task=0").is_err());
     assert!(Weights::parse("ttfb").is_err());
     assert!(Weights::parse("bogus=1").is_err());
 }
@@ -153,6 +180,7 @@ fn cost_weight_changes_ranking() {
         tps: 50.0,
         p95: 0.0,
         cost: 50.0,
+        task: 0.0,
     };
     let scored = score_lanes(&[a.clone(), b.clone()], &with_cost);
     assert_eq!(
