@@ -544,6 +544,27 @@ impl LaneSummary {
         }
         rows
     }
+
+    /// `(passed, measured)` for the task, when this lane had one.
+    ///
+    /// The denominator is every measured round, including HTTP failures,
+    /// so a dropped round is not a pass. `None` when no round was checked.
+    #[must_use]
+    pub fn task_pass(&self) -> Option<(usize, usize)> {
+        let checked = self.runs.iter().any(|r| r.task_ok.is_some());
+        if !checked {
+            return None;
+        }
+        let ok = self.runs.iter().filter(|r| r.task_ok == Some(true)).count();
+        Some((ok, self.measured_rounds()))
+    }
+
+    /// Fraction of measured rounds that passed the task.
+    #[must_use]
+    pub fn task_rate(&self) -> Option<f64> {
+        self.task_pass()
+            .map(|(ok, n)| if n == 0 { 0.0 } else { ok as f64 / n as f64 })
+    }
 }
 
 /// Aggregated timings for one workload prompt on one lane.
