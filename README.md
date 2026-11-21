@@ -157,6 +157,10 @@ llmrace openai groq --ramp 1,2,4,8 -n 3
 # CI gate: fail if any provider exceeds 500ms TTFB
 llmrace openai groq --max-ttfb 500 --quiet
 
+# Reproducible race: pin sampling and stamp it into the report.
+# Omit the flags to keep each provider's own default.
+llmrace openai groq --temperature 0 --top-p 1 --seed 1 --system "Be concise."
+
 # Declare an overall winner (weighted ttfb/tps/p95/cost composite)
 llmrace openai groq --winner
 llmrace openai groq --winner --weights ttfb=50,tps=50
@@ -219,7 +223,7 @@ Every provider with a matching env var races automatically — no config file:
 
 Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, so they never pollute auto-detected runs with error lanes.
 
-¹ Bedrock's SigV4 signing and binary event-stream decoding are verified against published AWS test vectors and fuzzed, but the end-to-end path has not been run against a live AWS account yet — reports from Bedrock and Vertex users are especially welcome ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
+¹ Bedrock speaks the Converse Stream API (one request body for every model family) and Vertex speaks Gemini `streamGenerateContent`. SigV4, the event-stream decoder and the Vertex JWT are verified against published test vectors; the live account path is not, so both stay experimental — reports are especially welcome ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
 
 ## What it measures
 
@@ -242,7 +246,7 @@ Methodology notes:
 - Rounds with 3σ latency outliers are flagged with `†`
 - **ITL caveat**: inter-token gaps are timestamped when the runtime polls the event, so they include local scheduling jitter (sub-millisecond on a quiet machine, more under heavy concurrent load) — compare ITL across providers measured in the *same* race, not across machines
 - Token counts prefer **provider-reported usage** (`include_usage` on OpenAI-compatible APIs, `message_delta` on Anthropic) and fall back to stream-event counting
-- All requests use the same prompt, `max_tokens` and sampling defaults per run
+- All requests in a run share the prompt, `max_tokens` and sampling parameters. Omit `--temperature`, `--top-p`, `--seed` and `--system` to keep each provider's own default. When you set them, the values are stamped into the markdown, JSON and HTML reports. OpenAI reasoning models (gpt-5, o-series) ignore temperature, top-p and seed, because those APIs reject the fields; the system prompt is still sent
 - Per-request timeouts (`--timeout`) are enforced mid-stream; panics in a single request never abort the race
 - **Reasoning models** (gpt-5, o-series): TTFB honestly includes thinking time — the model emits nothing visible while it reasons. When the provider reports server processing time, tokens/s uses the wider of the observed streaming window and the server window, so burst delivery after thinking cannot inflate throughput ([#125](https://github.com/dfbustosus/llmrace/issues/125))
 
@@ -390,6 +394,8 @@ PRs with results from other regions are welcome — record with `--json` and ext
 | Longitudinal trends + model-swap detection | ✅ | ❌ | ❌ | partial |
 | Cost per run from real token usage | ✅ | ❌ | ❌ | partial |
 | Cross-region probe merging | ✅ `--merge` | ❌ | ❌ | ❌ |
+| Reproducible sampling (temperature, top-p, seed, system) stamped on the report | ✅ | ❌ | ✝ | ❌ |
+| Retries honor `Retry-After`; permanent 4xx fails fast | ✅ | ❌ | partial | ❌ |
 | Single static binary, no config file | ✅ | ❌ | ❌ | ❌ |
 | 100% safe Rust, fuzzed parsers | ✅ | — | — | — |
 | Docker (2.9 MB scratch) + GitHub Action | ✅ | ❌ | partial | ❌ |
@@ -402,6 +408,7 @@ Missing a capability you need? [Open an issue](https://github.com/dfbustosus/llm
 - `#![deny(missing_docs)]`, `#![deny(clippy::unwrap_used)]` and `#![forbid(unsafe_code)]` — **100% safe Rust, enforced at compile time**; the binary's runtime paths contain zero `unwrap`/`expect` calls
 - Typed errors via `thiserror`; `anyhow` only at the binary edge
 - Zero-alignment-allocation SSE parser that survives arbitrary network chunk boundaries (exhaustively tested at every split point)
+- The race HTTP client sizes its idle pool to the concurrency, caps the connect timeout at 10s, and keeps TCP and HTTP/2 connections alive so warmup is the round that pays for the handshake
 - Criterion benchmarks for the parsing and statistics hot paths
 - Panic containment: a failing request becomes an error row, never a crash
 - CI on Linux/macOS/Windows: fmt + clippy `-D warnings` + tests + end-to-end mock race
