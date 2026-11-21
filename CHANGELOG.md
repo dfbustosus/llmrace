@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-20
+
+The price table now says when it was read and which page it came from. Bedrock and Vertex stay experimental: no live account was available to run them.
+
+### Added
+
+- OpenAI, Anthropic and Gemini rates are stamped 2026-11-20, from the providers' pricing pages. The report prints that stamp under the cost column
+- Rows for the models people race now, without a row for every new id: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano` (short context), `claude-sonnet-4-6`, `claude-haiku-4-5`, `gemini-2.5-flash`
+- `cost::PRICING_AS_OF`, `cost::pricing_sources` and `cost::pricing_stamp`
+
 ## [1.13.0] - 2026-11-20
 
 A fast wrong answer can lose. Task success is a successful request that failed the check, not a failed HTTP call, and a race with no task keeps the previous podium.
@@ -516,7 +526,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/dfbustosus/llmrace/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/dfbustosus/llmrace/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/dfbustosus/llmrace/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/dfbustosus/llmrace/compare/v1.10.0...v1.11.0
