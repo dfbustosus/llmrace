@@ -526,6 +526,22 @@ fn regression_fails_when_failure_rate_rises_or_goodput_falls() {
 }
 
 #[test]
+fn regression_fails_when_task_success_falls() {
+    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,"task_pass_rate":1.0}]}"#;
+    let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
+    let mut wrong = regression_summary("mock", 100.0, 120.0, 20.0, 80.0);
+    wrong.runs[0].task_ok = Some(false);
+    let report = evaluate(std::slice::from_ref(&wrong), &baseline, 15.0);
+    let task = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.label == "task success")
+        .unwrap();
+    assert!(task.regressed, "a fall from 100% to 0% is a regression");
+    assert!(report.any_regressed_significant());
+}
+
+#[test]
 fn regression_reports_new_and_skipped_providers() {
     let baseline_raw = r#"{"providers":[{"provider":"groq","model":"m","mean_total_ms":100.0,"mean_tokens_per_sec":80.0}]}"#;
     let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
@@ -1775,6 +1791,7 @@ fn recommend_profiles_and_renders_from_history() {
                     goodput_tokens_per_sec: None,
                     retry_attempts: 0,
                     cost_per_run_usd: None,
+                    task_pass_rate: None,
                 },
                 llmrace::history::HistoryRecord {
                     timestamp_unix: 1_700_000_000 + i * 3_600,
@@ -1793,6 +1810,7 @@ fn recommend_profiles_and_renders_from_history() {
                     goodput_tokens_per_sec: None,
                     retry_attempts: 0,
                     cost_per_run_usd: None,
+                    task_pass_rate: None,
                 },
             ]
         })
@@ -1834,6 +1852,7 @@ fn rec_hist(provider: &str, tps: f64) -> llmrace::history::HistoryRecord {
         goodput_tokens_per_sec: None,
         retry_attempts: 0,
         cost_per_run_usd: None,
+        task_pass_rate: None,
     }
 }
 
@@ -1853,6 +1872,23 @@ fn recommend_says_when_failure_rate_costs_the_goodput_lead() {
         "{text}"
     );
     assert!(text.contains("For throughput: use steady"), "{text}");
+}
+
+#[test]
+fn recommend_says_when_task_success_costs_the_lead() {
+    let mut fast = rec_hist("fast", 400.0);
+    fast.goodput_tokens_per_sec = Some(400.0);
+    fast.task_pass_rate = Some(0.0);
+    let mut careful = rec_hist("careful", 200.0);
+    careful.goodput_tokens_per_sec = Some(200.0);
+    careful.task_pass_rate = Some(1.0);
+    let text = llmrace::recommend::render_recommendation(&llmrace::recommend::build_profiles(&[
+        fast, careful,
+    ]));
+    assert!(
+        text.contains("loses on task success because its pass rate is 0%"),
+        "{text}"
+    );
 }
 
 #[test]
