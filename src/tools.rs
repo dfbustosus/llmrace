@@ -169,17 +169,65 @@ pub fn answer_matches(answer: &str, expect: &str) -> bool {
     (got.is_object() && want.is_object() || got.is_number() && want.is_number()) && got == want
 }
 
+/// Compiles an answer regex with a 1 MiB size limit.
+///
+/// Called when the workload is read, so an invalid or oversized pattern
+/// fails before any request is sent.
+pub fn compile_answer_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    regex::RegexBuilder::new(pattern)
+        .size_limit(1 << 20)
+        .dfa_size_limit(1 << 20)
+        .build()
+}
+
+/// Compares a trimmed answer using the workload's `match` mode.
+///
+/// [`crate::workload::ExpectMatch::Exact`] is [`answer_matches`]. `contains`
+/// is a case-sensitive substring. `regex` uses the pattern as written.
+#[must_use]
+pub fn answer_matches_mode(answer: &str, expect: &str, mode: crate::workload::ExpectMatch) -> bool {
+    use crate::workload::ExpectMatch;
+    match mode {
+        ExpectMatch::Exact => answer_matches(answer, expect),
+        ExpectMatch::Contains => answer.trim().contains(expect),
+        ExpectMatch::Regex => {
+            compile_answer_regex(expect).is_ok_and(|re| re.is_match(answer.trim()))
+        }
+    }
+}
+
 /// Whether this successful response passed the task.
 ///
-/// `None` when the round had no task. Tool validity and an exact `expect`
-/// both apply when both are set; either failure fails the task. The HTTP
-/// call can still have succeeded.
+/// `None` when the round had no task. Tool validity and an `expect`
+/// check both apply when both are set; either failure fails the task. The
+/// HTTP call can still have succeeded. `expect` is an exact check; use
+/// [`task_ok_match`] for `contains` and `regex`.
 #[must_use]
 pub fn task_ok(
     tools: bool,
     tool_task: &str,
     tool_args: &str,
     expect: Option<&str>,
+    answer: &str,
+) -> Option<bool> {
+    task_ok_match(
+        tools,
+        tool_task,
+        tool_args,
+        expect,
+        crate::workload::ExpectMatch::Exact,
+        answer,
+    )
+}
+
+/// Like [`task_ok`], with the workload's `match` mode.
+#[must_use]
+pub fn task_ok_match(
+    tools: bool,
+    tool_task: &str,
+    tool_args: &str,
+    expect: Option<&str>,
+    mode: crate::workload::ExpectMatch,
     answer: &str,
 ) -> Option<bool> {
     let mut checks = Vec::new();
@@ -190,7 +238,7 @@ pub fn task_ok(
         checks.push(!tool_args.is_empty() && validate(tool_args));
     }
     if let Some(expect) = expect {
-        checks.push(answer_matches(answer, expect));
+        checks.push(answer_matches_mode(answer, expect, mode));
     }
     if checks.is_empty() {
         None
