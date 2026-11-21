@@ -127,8 +127,12 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
                 .filter(|s| s.successful())
                 .map(|s| s.mean_tokens_per_sec())
                 .unwrap_or(0.0);
-            if best.is_none_or(|(_, b)| tps > b) {
-                best = Some((phase.concurrency, tps));
+            let goodput = lane
+                .filter(|s| s.successful())
+                .map(|s| s.goodput_tokens_per_sec())
+                .unwrap_or(0.0);
+            if best.is_none_or(|(_, b)| goodput > b) {
+                best = Some((phase.concurrency, goodput));
             }
             per_level.insert(
                 phase.concurrency.to_string(),
@@ -138,6 +142,13 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
             let _ = write!(term_row, " {tps:>10.1}");
         }
         let peak = best.unwrap_or((1, 0.0));
+        let crosses = phases.iter().find(|ph| {
+            ph.summaries
+                .iter()
+                .find(|s| s.name == *name && s.model == *model)
+                .and_then(|s| s.failure_rate())
+                .is_some_and(|rate| rate > 0.05)
+        });
         // flag degradation: any later level >10% below peak
         let degraded = phases.iter().any(|ph| {
             ph.concurrency > peak.0
@@ -146,9 +157,20 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
                     .iter()
                     .find(|s| s.name == *name && s.model == *model)
                     .filter(|s| s.successful())
-                    .map(|s| s.mean_tokens_per_sec())
-                    .is_some_and(|tps| tps < peak.1 * 0.9)
+                    .map(|s| s.goodput_tokens_per_sec())
+                    .is_some_and(|goodput| goodput < peak.1 * 0.9)
         });
+        let peak_tps = phases
+            .iter()
+            .find(|ph| ph.concurrency == peak.0)
+            .and_then(|ph| {
+                ph.summaries
+                    .iter()
+                    .find(|s| s.name == *name && s.model == *model)
+            })
+            .filter(|s| s.successful())
+            .map(|s| s.mean_tokens_per_sec())
+            .unwrap_or(0.0);
         let peak_note = if degraded {
             format!("c={} ({:.1}) \u{2b07}", peak.0, peak.1)
         } else {
@@ -163,7 +185,9 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
             "model": model,
             "tokens_per_sec_by_concurrency": per_level,
             "peak_concurrency": peak.0,
-            "peak_tokens_per_sec": (peak.1 * 10.0).round() / 10.0,
+            "peak_tokens_per_sec": (peak_tps * 10.0).round() / 10.0,
+            "peak_goodput_tokens_per_sec": (peak.1 * 10.0).round() / 10.0,
+            "failure_rate_crosses_at": crosses.map(|ph| ph.concurrency),
             "degrades_past_peak": degraded,
         }));
     }
@@ -185,7 +209,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     }
     md.push_str("\n## Saturation curve (tokens/s by concurrency)\n\n");
     md.push_str(&curve);
-    md.push_str("\n> Peak marks each provider's highest measured throughput; \u{2b07} flags degradation (>10% drop) beyond the peak.\n");
+    md.push_str("\n> Peak is the concurrency where goodput is highest. The cells are tokens/s of successful rounds. \u{2b07} flags a goodput drop of more than 10% past that peak. A failure rate above 5% is `failure_rate_crosses_at` in the JSON.\n");
     std::fs::write(&cfg.out, &md).with_context(|| format!("writing {}", cfg.out))?;
     println!("\u{1f4c4} ramp report saved to {}", cfg.out);
 
