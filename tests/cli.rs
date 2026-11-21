@@ -836,6 +836,7 @@ fn cli_contract_every_documented_flag_exists() {
         "--temperature",
         "--top-p",
         "--seed",
+        "--reproducible",
         "--system",
         "--timeout",
         "--retries",
@@ -1049,6 +1050,60 @@ fn sampling_flags_are_stamped_and_out_of_range_values_fail() {
     assert!(!bad.status.success());
     let err = String::from_utf8_lossy(&bad.stderr);
     assert!(err.contains("temperature"), "{err}");
+}
+
+#[test]
+fn reproducible_fills_only_the_sampling_controls_still_unset() {
+    let dir = std::env::temp_dir().join(format!("llmrace-repro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let report = dir.join("race.json");
+    let run = |extra: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmrace"));
+        cmd.current_dir(&dir).args([
+            "mock", "--no-tui", "-n", "1", "--warmup", "0", "--quiet", "--json", "--out",
+        ]);
+        cmd.arg(&report);
+        cmd.args(extra);
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::read_to_string(report.with_extension("json")).unwrap()
+    };
+    let pinned_body = run(&["--reproducible"]);
+    assert!(
+        pinned_body.contains("\"temperature\": 0.0"),
+        "{pinned_body}"
+    );
+    assert!(pinned_body.contains("\"top_p\": 1.0"), "{pinned_body}");
+    assert!(pinned_body.contains("\"seed\": 0"), "{pinned_body}");
+
+    let plain_body = run(&[]);
+    assert!(!plain_body.contains("\"temperature\""), "{plain_body}");
+    let pinned_hash = serde_json::from_str::<serde_json::Value>(&pinned_body).unwrap();
+    let plain_hash = serde_json::from_str::<serde_json::Value>(&plain_body).unwrap();
+    assert_ne!(pinned_hash["request_sha256"], plain_hash["request_sha256"]);
+
+    let kept_body = run(&["--reproducible", "--temperature", "0.2"]);
+    assert!(kept_body.contains("\"temperature\": 0.2"), "{kept_body}");
+    assert!(kept_body.contains("\"seed\": 0"), "{kept_body}");
+
+    std::fs::write(
+        dir.join("llmrace.toml"),
+        "[profiles.p]\nproviders = [\"mock\"]\nruns = 1\nwarmup = 0\ntemperature = 0.4\n",
+    )
+    .unwrap();
+    let profile_body = run(&["--profile", "p", "--reproducible"]);
+    assert!(
+        profile_body.contains("\"temperature\": 0.4"),
+        "{profile_body}"
+    );
+    assert!(profile_body.contains("\"top_p\": 1.0"), "{profile_body}");
+    assert!(profile_body.contains("\"seed\": 0"), "{profile_body}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
