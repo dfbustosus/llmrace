@@ -7,6 +7,66 @@ use crate::error::{Error, Result};
 use serde_json::json;
 use std::time::Duration;
 
+/// Optional sampling controls shared by every wire.
+///
+/// Unset fields are omitted from the request, so a race that does not pass
+/// them measures the provider default — the same request earlier versions
+/// sent. Set fields are encoded per wire (`top_p` vs Cohere's `p`, a system
+/// message vs Anthropic's `system` field vs Gemini's `systemInstruction`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Sampling {
+    /// Passed through as `temperature` where the wire has one.
+    pub temperature: Option<f64>,
+    /// Nucleus sampling (`top_p`, or Cohere's `p`).
+    pub top_p: Option<f64>,
+    /// Deterministic seed. Sent only on wires that document one
+    /// (OpenAI-compatible and Gemini). Other wires ignore it instead of
+    /// rejecting the request.
+    pub seed: Option<u64>,
+    /// System prompt, encoded in the wire's native slot.
+    pub system: Option<String>,
+}
+
+impl Sampling {
+    /// `true` when every control is unset or the system prompt is blank.
+    #[must_use]
+    pub fn is_unset(&self) -> bool {
+        self.temperature.is_none()
+            && self.top_p.is_none()
+            && self.seed.is_none()
+            && self.system.as_deref().is_none_or(str::is_empty)
+    }
+
+    /// Rejects values no major provider will accept.
+    ///
+    /// Temperature uses the OpenAI/Gemini range `0.0..=2.0`. Anthropic's
+    /// tighter `0..=1` is left to the provider, which answers HTTP 400
+    /// with its own message. `top_p` is `0.0..=1.0`.
+    pub fn checked(self) -> std::result::Result<Self, String> {
+        if let Some(t) = self.temperature {
+            if !t.is_finite() || !(0.0..=2.0).contains(&t) {
+                return Err(format!(
+                    "temperature must be within 0.0..=2.0 (Anthropic only accepts 0..=1), got {t}"
+                ));
+            }
+        }
+        if let Some(p) = self.top_p {
+            if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+                return Err(format!("top_p must be within 0.0..=1.0, got {p}"));
+            }
+        }
+        if let Some(sys) = &self.system {
+            if sys.trim().is_empty() {
+                return Err("system prompt is empty".into());
+            }
+            if sys.chars().count() > 100_000 {
+                return Err("system prompt exceeds 100000 characters".into());
+            }
+        }
+        Ok(self)
+    }
+}
+
 /// Parameters of a single completion request.
 #[derive(Debug, Clone)]
 pub struct CompletionRequest<'a> {
@@ -20,6 +80,8 @@ pub struct CompletionRequest<'a> {
     pub tools: bool,
     /// Which tool task to attach (`crate::tools::registry` name).
     pub tool_task: Option<&'a str>,
+    /// Sampling controls. Use [`Sampling::default`] to omit all of them.
+    pub sampling: Sampling,
 }
 
 /// How a built wire request authenticates.
@@ -40,10 +102,32 @@ struct WireRequest {
     auth: RequestAuth,
 }
 
-/// Builds the request for the given wire protocol; pure, no I/O.
-fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Result<WireRequest> {
+/// Percent-encodes a model id for use as a single URL path segment.
+///
+/// Unreserved characters (RFC 3986) pass through. Everything else,
+/// including the `:` in Bedrock model ids, is encoded so the path cannot
+/// be split by a reserved character.
+fn encode_model_id(model: &str) -> String {
+    let mut out = String::with_capacity(model.len());
+    for b in model.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn expand_endpoint(endpoint: &str, model: &str) -> String {
+    endpoint.replace("{model}", &encode_model_id(model))
+}
+
+/// JSON body for one completion. Pure: no credentials, no I/O.
+fn build_body(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> serde_json::Value {
     let mut body = match spec.wire {
-        Wire::Mock | Wire::Bedrock | Wire::Vertex => json!(null),
+        Wire::Mock => json!(null),
         Wire::OpenAiCompat => {
             // gpt-5 / o-series reject `max_tokens` (HTTP 400) and require
             // `max_completion_tokens` instead.
@@ -69,30 +153,140 @@ fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Resul
             "messages": [{"role": "user", "content": req.prompt}],
             "stream": true,
         }),
-        Wire::Gemini => json!({
-            "contents": [{"parts": [{"text": req.prompt}]}],
+        // Vertex speaks the Gemini streaming wire; the OAuth token is
+        // attached at send time, not in the body.
+        Wire::Gemini | Wire::Vertex => json!({
+            "contents": [{"role": "user", "parts": [{"text": req.prompt}]}],
             "generationConfig": {"maxOutputTokens": req.max_tokens},
         }),
+        // Converse is model-agnostic: one document works for Anthropic,
+        // Amazon, Meta and Mistral on Bedrock. The decoder already reads
+        // `contentBlockDelta` / `metadata` from this operation.
+        Wire::Bedrock => json!({
+            "messages": [{"role": "user", "content": [{"text": req.prompt}]}],
+            "inferenceConfig": {"maxTokens": req.max_tokens},
+        }),
     };
+    apply_sampling(&mut body, spec.wire, req.model, &req.sampling);
     if req.tools {
         let task = req
             .tool_task
             .and_then(crate::tools::find)
             .unwrap_or_else(default_tool_task);
-        body["tools"] = crate::tools::tool_schema(&task, spec.wire);
+        match spec.wire {
+            Wire::Mock => {}
+            Wire::Bedrock => {
+                body["toolConfig"] = json!({
+                    "tools": [{
+                        "toolSpec": {
+                            "name": task.function,
+                            "description": task.description,
+                            "inputSchema": { "json": (task.parameters)() },
+                        }
+                    }]
+                });
+            }
+            Wire::Vertex => {
+                body["tools"] = crate::tools::tool_schema(&task, Wire::Gemini);
+            }
+            other => {
+                body["tools"] = crate::tools::tool_schema(&task, other);
+            }
+        }
     }
+    body
+}
 
-    if spec.wire == Wire::Bedrock {
-        let url = spec.endpoint.replace("{model}", req.model);
-        return Ok(WireRequest {
-            url,
-            body,
-            auth: RequestAuth::None,
-        });
+/// Writes sampling controls in each wire's native shape.
+///
+/// OpenAI reasoning models (gpt-5, o-series) reject `temperature`,
+/// `top_p` and `seed`; those fields are omitted so a mixed race can still
+/// pin sampling for the classic models beside them. The system prompt is
+/// still sent — those models accept it.
+fn apply_sampling(body: &mut serde_json::Value, wire: Wire, model: &str, sampling: &Sampling) {
+    if sampling.is_unset() {
+        return;
     }
-    if spec.wire == Wire::Vertex {
-        let url = spec.endpoint.replace("{model}", req.model);
-        // token fetched at send time (async); auth is None here
+    let reasoning = wire == Wire::OpenAiCompat && requires_completion_tokens(model);
+    match wire {
+        Wire::Mock => {}
+        Wire::OpenAiCompat => {
+            if !reasoning {
+                if let Some(t) = sampling.temperature {
+                    body["temperature"] = json!(t);
+                }
+                if let Some(p) = sampling.top_p {
+                    body["top_p"] = json!(p);
+                }
+                if let Some(seed) = sampling.seed {
+                    body["seed"] = json!(seed);
+                }
+            }
+            prepend_system_message(body, sampling.system.as_deref());
+        }
+        Wire::Anthropic => {
+            if let Some(t) = sampling.temperature {
+                body["temperature"] = json!(t);
+            }
+            if let Some(p) = sampling.top_p {
+                body["top_p"] = json!(p);
+            }
+            if let Some(sys) = sampling.system.as_deref() {
+                body["system"] = json!(sys);
+            }
+        }
+        Wire::Cohere => {
+            if let Some(t) = sampling.temperature {
+                body["temperature"] = json!(t);
+            }
+            if let Some(p) = sampling.top_p {
+                body["p"] = json!(p);
+            }
+            prepend_system_message(body, sampling.system.as_deref());
+        }
+        Wire::Gemini | Wire::Vertex => {
+            if let Some(t) = sampling.temperature {
+                body["generationConfig"]["temperature"] = json!(t);
+            }
+            if let Some(p) = sampling.top_p {
+                body["generationConfig"]["topP"] = json!(p);
+            }
+            if let Some(seed) = sampling.seed {
+                body["generationConfig"]["seed"] = json!(seed);
+            }
+            if let Some(sys) = sampling.system.as_deref() {
+                body["systemInstruction"] = json!({"parts": [{"text": sys}]});
+            }
+        }
+        Wire::Bedrock => {
+            if let Some(t) = sampling.temperature {
+                body["inferenceConfig"]["temperature"] = json!(t);
+            }
+            if let Some(p) = sampling.top_p {
+                body["inferenceConfig"]["topP"] = json!(p);
+            }
+            if let Some(sys) = sampling.system.as_deref() {
+                body["system"] = json!([{"text": sys}]);
+            }
+        }
+    }
+}
+
+fn prepend_system_message(body: &mut serde_json::Value, system: Option<&str>) {
+    let Some(sys) = system.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        messages.insert(0, json!({"role": "system", "content": sys}));
+    }
+}
+
+/// Builds the request for the given wire protocol; pure, no I/O.
+fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Result<WireRequest> {
+    let body = build_body(spec, req);
+    let url = expand_endpoint(&spec.endpoint, req.model);
+    if spec.wire == Wire::Bedrock || spec.wire == Wire::Vertex {
+        // Bedrock signs at send time; Vertex fetches an OAuth token then.
         return Ok(WireRequest {
             url,
             body,
@@ -116,11 +310,6 @@ fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Resul
             Some(k) => RequestAuth::Bearer(k),
             None => RequestAuth::None,
         },
-    };
-    let url = if spec.wire == Wire::Gemini {
-        spec.endpoint.replace("{model}", req.model)
-    } else {
-        spec.endpoint.to_string()
     };
     Ok(WireRequest { url, body, auth })
 }
@@ -163,7 +352,7 @@ async fn send_wire_request(
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// let client = reqwest::Client::new();
 /// let spec = ProviderSpec::mock();
-/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8, tools: false, tool_task: None };
+/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8, tools: false, tool_task: None, sampling: llmrace::provider::Sampling::default() };
 /// let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
 /// use futures_util::StreamExt;
 /// let mut tokens = 0;
@@ -366,11 +555,28 @@ fn requires_completion_tokens(model: &str) -> bool {
     m.starts_with("gpt-5") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4")
 }
 
+fn parse_retry_after(value: &reqwest::header::HeaderValue) -> Option<std::time::Duration> {
+    let text = value.to_str().ok()?.trim();
+    if let Ok(secs) = text.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(secs));
+    }
+    let secs: f64 = text.parse().ok()?;
+    if secs.is_finite() && secs >= 0.0 {
+        Some(std::time::Duration::from_secs_f64(secs))
+    } else {
+        None
+    }
+}
+
 async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<reqwest::Response> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);
     }
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(parse_retry_after);
     let body = resp.text().await.unwrap_or_default();
     let mut body = crate::util::truncate(&body, 300);
     if *spec.id == *"ollama" && status.as_u16() == 404 && body.contains("not found") {
@@ -392,6 +598,7 @@ async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<re
         provider: spec.id.to_string(),
         status: status.as_u16(),
         body,
+        retry_after,
     })
 }
 
@@ -431,6 +638,7 @@ async fn send_bedrock(
         .header("x-amz-content-sha256", &signed.content_sha256)
         .header("authorization", &signed.authorization)
         .header("content-type", "application/json")
+        .header("accept", "application/vnd.amazon.eventstream")
         .body(body);
     if let Some(token) = &signed.session_token {
         request = request.header("x-amz-security-token", token);
@@ -523,4 +731,152 @@ async fn send_vertex(
         .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
     let resp = check_status(spec, resp).await?;
     Ok(EventStream::Http(SseStream::new(resp, Wire::Gemini)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req<'a>(model: &'a str, sampling: Sampling) -> CompletionRequest<'a> {
+        CompletionRequest {
+            model,
+            prompt: "hi",
+            max_tokens: 8,
+            tools: false,
+            tool_task: None,
+            sampling,
+        }
+    }
+
+    fn pinned() -> Sampling {
+        Sampling {
+            temperature: Some(0.0),
+            top_p: Some(1.0),
+            seed: Some(7),
+            system: Some("Be brief.".into()),
+        }
+    }
+
+    #[test]
+    fn unset_sampling_omits_every_control() {
+        let spec = ProviderSpec::custom("vllm", "http://localhost/v1/chat/completions", None, "m");
+        let body = build_body(&spec, &req("gpt-4o-mini", Sampling::default()));
+        assert!(body.get("temperature").is_none(), "{body}");
+        assert!(body.get("top_p").is_none(), "{body}");
+        assert!(body.get("seed").is_none(), "{body}");
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn openai_sampling_is_native_and_system_is_prepended() {
+        let spec = ProviderSpec::custom("vllm", "http://localhost/v1/chat/completions", None, "m");
+        let body = build_body(&spec, &req("gpt-4o-mini", pinned()));
+        assert_eq!(body["temperature"].as_f64(), Some(0.0));
+        assert_eq!(body["top_p"].as_f64(), Some(1.0));
+        assert_eq!(body["seed"].as_u64(), Some(7));
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][0]["content"], "Be brief.");
+        assert_eq!(body["messages"][1]["role"], "user");
+    }
+
+    #[test]
+    fn reasoning_models_keep_the_system_prompt_and_drop_sampling() {
+        let spec = ProviderSpec::custom("vllm", "http://localhost/v1/chat/completions", None, "m");
+        let body = build_body(&spec, &req("gpt-5-nano", pinned()));
+        assert!(body.get("temperature").is_none(), "{body}");
+        assert!(body.get("top_p").is_none(), "{body}");
+        assert!(body.get("seed").is_none(), "{body}");
+        assert_eq!(body["max_completion_tokens"], 8);
+        assert!(body.get("max_tokens").is_none(), "{body}");
+        assert_eq!(body["messages"][0]["content"], "Be brief.");
+    }
+
+    #[test]
+    fn anthropic_uses_top_level_system_and_ignores_seed() {
+        let spec = ProviderSpec::anthropic();
+        let body = build_body(&spec, &req("claude-3-5-haiku-latest", pinned()));
+        assert_eq!(body["temperature"].as_f64(), Some(0.0));
+        assert_eq!(body["top_p"].as_f64(), Some(1.0));
+        assert!(body.get("seed").is_none(), "{body}");
+        assert_eq!(body["system"], "Be brief.");
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn cohere_calls_nucleus_sampling_p() {
+        let spec = ProviderSpec::cohere();
+        let body = build_body(&spec, &req("command-a-03-2025", pinned()));
+        assert_eq!(body["p"].as_f64(), Some(1.0));
+        assert!(body.get("top_p").is_none(), "{body}");
+        assert_eq!(body["messages"][0]["role"], "system");
+    }
+
+    #[test]
+    fn gemini_and_vertex_share_generation_config() {
+        let sampling = pinned();
+        for spec in [ProviderSpec::gemini(), ProviderSpec::vertex()] {
+            let body = build_body(&spec, &req("gemini-2.0-flash", sampling.clone()));
+            assert_eq!(body["generationConfig"]["maxOutputTokens"], 8);
+            assert_eq!(body["generationConfig"]["temperature"].as_f64(), Some(0.0));
+            assert_eq!(body["generationConfig"]["topP"].as_f64(), Some(1.0));
+            assert_eq!(body["generationConfig"]["seed"].as_u64(), Some(7));
+            assert_eq!(body["systemInstruction"]["parts"][0]["text"], "Be brief.");
+            assert!(body.get("contents").is_some(), "{body}");
+        }
+    }
+
+    #[test]
+    fn bedrock_converse_body_encodes_the_model_id() {
+        let spec = ProviderSpec::bedrock();
+        let body = build_body(
+            &spec,
+            &req("anthropic.claude-3-5-haiku-20241022-v1:0", pinned()),
+        );
+        assert_eq!(body["inferenceConfig"]["maxTokens"], 8);
+        assert_eq!(body["inferenceConfig"]["temperature"].as_f64(), Some(0.0));
+        assert_eq!(body["inferenceConfig"]["topP"].as_f64(), Some(1.0));
+        assert!(body.get("seed").is_none(), "{body}");
+        assert_eq!(body["system"][0]["text"], "Be brief.");
+        assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
+        let url = expand_endpoint(&spec.endpoint, "anthropic.claude-3-5-haiku-20241022-v1:0");
+        assert!(url.contains("/converse-stream"), "{url}");
+        assert!(url.contains("%3A"), "{url}");
+        assert!(!url.contains("invoke-with-response-stream"), "{url}");
+    }
+
+    #[test]
+    fn sampling_checked_rejects_out_of_range_values() {
+        let hot = Sampling {
+            temperature: Some(2.5),
+            ..Sampling::default()
+        };
+        assert!(hot.checked().is_err());
+        let top = Sampling {
+            top_p: Some(1.1),
+            ..Sampling::default()
+        };
+        assert!(top.checked().is_err());
+        let blank = Sampling {
+            system: Some("   ".into()),
+            ..Sampling::default()
+        };
+        assert!(blank.checked().is_err());
+        assert!(pinned().checked().is_ok());
+    }
+
+    #[test]
+    fn retry_after_parses_delay_seconds_only() {
+        let secs = reqwest::header::HeaderValue::from_static("3");
+        assert_eq!(
+            parse_retry_after(&secs),
+            Some(std::time::Duration::from_secs(3))
+        );
+        let frac = reqwest::header::HeaderValue::from_static("1.5");
+        assert_eq!(
+            parse_retry_after(&frac),
+            Some(std::time::Duration::from_secs_f64(1.5))
+        );
+        let date = reqwest::header::HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT");
+        assert!(parse_retry_after(&date).is_none());
+    }
 }
