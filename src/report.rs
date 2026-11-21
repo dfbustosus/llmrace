@@ -95,7 +95,18 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
     }
 
     out.push_str("\n> Tokens/s is measured over the generation window (total time minus time-to-first-byte), summed across concurrent requests per round. Token counts use provider-reported usage when available.\n");
-    out.push_str("> Cost/run uses billed input tokens when the provider reported them. A trailing ~ means input tokens were estimated from the user prompt, which leaves out a system prompt and tool schemas.\n");
+    out.push_str("> Cost/run uses billed input and output tokens when the provider reported them. Cache reads and cache writes use the published discount when this crate has one for the model; hourly cache storage is not in the per-request usage and is not included. A trailing ~ means input tokens were estimated from the user prompt, which leaves out a system prompt and tool schemas.\n");
+    let undiscounted: Vec<&str> = summaries
+        .iter()
+        .filter(|s| s.successful() && !s.cache_discount_applied())
+        .map(|s| s.name.as_str())
+        .collect();
+    if !undiscounted.is_empty() {
+        out.push_str(&format!(
+            "\n*cache tokens on {} were billed at the input rate — no cached-input price is published for that model; pass `--price provider/model=in:out:cached`*\n",
+            undiscounted.join(", ")
+        ));
+    }
     out.push_str("> Generated with [llmrace](https://github.com/dfbustosus/llmrace) 🦀\n");
     out
 }
@@ -298,6 +309,9 @@ pub fn json_report_with_region(
                     "tokens": r.tokens,
                     "chars": r.chars,
                     "prompt_tokens": r.prompt_tokens,
+                    "cache_read_tokens": r.cache_read_tokens,
+                    "cache_write_tokens": r.cache_write_tokens,
+                    "cache_write_1h_tokens": r.cache_write_1h_tokens,
                     "tokens_per_sec": r.tokens_per_sec(),
                 })).collect::<Vec<_>>(),
                 "mean_total_ms": s.mean_total_ms(),
@@ -312,6 +326,10 @@ pub fn json_report_with_region(
                 "cost_per_run_usd": s.cost_per_run_usd(),
                 "prompt_tokens": s.mean_prompt_tokens(),
                 "prompt_tokens_measured": s.prompt_tokens_measured(),
+                "cache_read_tokens": s.mean_cache_read_tokens(),
+                "cache_write_tokens": s.mean_cache_write_tokens(),
+                "cache_write_1h_tokens": s.mean_cache_write_1h_tokens(),
+                "cache_discount_applied": s.cache_discount_applied(),
                 "server_ms": s.median_server_ms(),
                 "network_overhead_ms": s.network_overhead_ms(),
                 "itl_p50_ms": s.itl_p50_ms(),
