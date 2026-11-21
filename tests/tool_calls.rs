@@ -217,6 +217,8 @@ fn lane_validity_uses_its_own_task_validator() {
             tool_args: r#"{"expression":"17*23"}"#.into(),
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
