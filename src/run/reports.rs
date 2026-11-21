@@ -58,7 +58,7 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
     };
     if cfg.json {
         let request = race_request_sha256(cfg);
-        let j = report::insert_sampling_json(
+        let mut j = report::insert_sampling_json(
             &report::json_report_cited(
                 summaries,
                 &cfg.prompt,
@@ -74,6 +74,9 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
             ),
             &cfg.bench.sampling,
         );
+        if let Some(verdict) = baseline_verdict(summaries, cfg, &request) {
+            j = report::insert_regression_json(&j, &verdict);
+        }
         let path = sibling("json");
         std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
         println!("\u{1f4ca} json report saved to {path}");
@@ -198,6 +201,25 @@ pub(super) fn ttfb_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> bool {
     true
 }
 
+/// The `regression` object for a baseline that parses. A missing or
+/// unreadable baseline is left to the gate, which reports the error.
+fn baseline_verdict(
+    summaries: &[LaneSummary],
+    cfg: &RunConfig,
+    request: &str,
+) -> Option<serde_json::Value> {
+    let path = cfg.baseline.as_ref()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let baseline = llmrace::regression::BaselineReport::from_json_str(&raw).ok()?;
+    let regression = llmrace::regression::evaluate_request(
+        summaries,
+        &baseline,
+        cfg.max_regression,
+        Some(request),
+    );
+    Some(regression.verdict_json(cfg.max_regression, cfg.require_significance))
+}
+
 /// `--baseline` regression gate: returns `false` on regression.
 pub(super) fn regression_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<bool> {
     let Some(baseline_path) = &cfg.baseline else {
@@ -215,15 +237,11 @@ pub(super) fn regression_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> Res
         Some(&request),
     );
     println!("\n{}", regression.terminal_table(cfg.max_regression));
-    if regression.request_mismatch {
-        return Ok(false);
+    if cfg.require_significance
+        && regression.any_regressed()
+        && !regression.any_regressed_significant()
+    {
+        println!("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
     }
-    if cfg.require_significance {
-        if regression.any_regressed() && !regression.any_regressed_significant() {
-            println!("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
-        }
-        Ok(!regression.any_regressed_significant())
-    } else {
-        Ok(!regression.any_regressed())
-    }
+    Ok(!regression.gate_failed(cfg.require_significance))
 }
