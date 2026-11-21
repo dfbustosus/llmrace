@@ -47,6 +47,9 @@ pub struct RegressionReport {
     pub new_providers: Vec<String>,
     /// Providers present in the baseline that were not benchmarked now.
     pub skipped_providers: Vec<String>,
+    /// `true` when both sides named a request and the hashes differ.
+    /// Metric comparisons are skipped: a different request is not a regression.
+    pub request_mismatch: bool,
 }
 
 impl RegressionReport {
@@ -114,7 +117,11 @@ impl RegressionReport {
         for name in &self.skipped_providers {
             out.push_str(&format!("{name:<14} in baseline but not benchmarked\n"));
         }
-        if self.any_regressed() {
+        if self.request_mismatch {
+            out.push_str(
+                "\n✗ REQUEST CHANGED: this race is not the baseline's request, so the metrics were not compared\n",
+            );
+        } else if self.any_regressed() {
             out.push_str("\n✗ REGRESSION DETECTED: at least one metric exceeded the threshold\n");
         } else {
             out.push_str("\n✓ no regressions beyond threshold\n");
@@ -128,6 +135,10 @@ impl RegressionReport {
 pub struct BaselineReport {
     /// Providers recorded in the baseline.
     pub providers: Vec<BaselineProvider>,
+    /// Request hash of the saved race. Absent on reports written before
+    /// the request id existed; the gate then compares metrics as before.
+    #[serde(default)]
+    pub request_sha256: Option<String>,
 }
 
 /// One per-run measurement of a baseline (the report's `runs` array).
@@ -232,13 +243,28 @@ pub fn evaluate(
     baseline: &BaselineReport,
     max_regression_pct: f64,
 ) -> RegressionReport {
-    let current_report = baseline_from_lanes(current);
+    evaluate_request(current, baseline, max_regression_pct, None)
+}
+
+/// Like [`evaluate`], and refuses the comparison when both sides name a
+/// request and the hashes differ. `None` keeps the previous behaviour for
+/// a caller that does not know the request.
+#[must_use]
+pub fn evaluate_request(
+    current: &[LaneSummary],
+    baseline: &BaselineReport,
+    max_regression_pct: f64,
+    current_request: Option<&str>,
+) -> RegressionReport {
+    let mut current_report = baseline_from_lanes(current);
+    current_report.request_sha256 = current_request.map(str::to_string);
     compare_baselines(&current_report, baseline, max_regression_pct)
 }
 
 /// Converts live lane summaries into the baseline subset used by comparisons.
 fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
     BaselineReport {
+        request_sha256: None,
         providers: lanes
             .iter()
             .filter(|s| s.successful())
@@ -312,6 +338,12 @@ pub fn compare_baselines(
     max_regression_pct: f64,
 ) -> RegressionReport {
     let mut report = RegressionReport::default();
+    if let (Some(base), Some(current)) = (&a.request_sha256, &b.request_sha256) {
+        if base != current {
+            report.request_mismatch = true;
+            return report;
+        }
+    }
     let mut compared: Vec<(String, Option<String>)> = Vec::new();
 
     for current in &b.providers {
