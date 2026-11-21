@@ -111,7 +111,11 @@ pub struct BenchConfig {
     pub duration_secs: Option<u64>,
     /// Additional attempts made for a failed round before it counts as
     /// failed. `0` keeps the previous behaviour of failing immediately.
+    /// Only retryable failures (timeouts, 429, 5xx) consume an attempt;
+    /// permanent 4xx errors fail the round immediately.
     pub retries: usize,
+    /// Sampling controls forwarded to every request in the lane.
+    pub sampling: crate::provider::Sampling,
 }
 
 impl Default for BenchConfig {
@@ -128,6 +132,7 @@ impl Default for BenchConfig {
             variant: None,
             duration_secs: None,
             retries: 0,
+            sampling: crate::provider::Sampling::default(),
         }
     }
 }
