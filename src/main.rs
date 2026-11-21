@@ -105,7 +105,9 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Scoring", long)]
     winner: bool,
 
-    /// Composite score weights: ttfb=30,tps=40,p95=30 (with --winner).
+    /// Composite score weights: ttfb=30,tps=40,p95=30,task=40 (with --winner).
+    /// `task` counts only when the race had a task. `cost` counts only when
+    /// every scored lane has a price.
     #[arg(help_heading = "Scoring", long)]
     weights: Option<String>,
 
