@@ -9,10 +9,26 @@ use futures_util::StreamExt;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-/// Linear retry backoff: 500ms for the first retry, then 1s, 1.5s…
-/// capped at 5s.
-fn backoff(attempt: usize) -> Duration {
-    Duration::from_millis((500 * attempt as u64).min(5_000))
+/// Full-jitter exponential backoff (the AWS "Full Jitter" pattern),
+/// capped at 8s. A `Retry-After` hint wins and is itself capped at 30s
+/// so a hostile header cannot stall the race. Concurrent lanes mix the
+/// clock into the jitter so they do not retry in lockstep.
+fn backoff(attempt: usize, retry_after: Option<Duration>) -> Duration {
+    if let Some(hint) = retry_after {
+        let capped = hint.min(Duration::from_secs(30));
+        if !capped.is_zero() {
+            return capped;
+        }
+    }
+    let shift = attempt.saturating_sub(1).min(5);
+    let ceiling = 200u64.saturating_mul(1_u64 << shift).clamp(1, 8_000);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(1);
+    let mixed = nanos.wrapping_mul(0x9E37_79B1) ^ (attempt as u32).wrapping_mul(0x85EB_CA6B);
+    let millis = u64::from(mixed % u32::try_from(ceiling).unwrap_or(u32::MAX)).max(1);
+    Duration::from_millis(millis)
 }
 
 /// Spawns a benchmark lane as an independent task.
@@ -84,12 +100,10 @@ pub fn spawn_lane_stoppable(
             let outcome = loop {
                 match run_round(&client, &spec, &model, &config, &tx).await {
                     Ok(metrics) => break Ok(metrics),
-                    Err(e) if attempts_left > 0 => {
+                    Err(e) if attempts_left > 0 && e.is_retryable() => {
                         attempts_left -= 1;
-                        // Linear backoff: an erroring endpoint (e.g. a 429)
-                        // must not be hammered back-to-back.
                         let attempt = config.retries - attempts_left;
-                        tokio::time::sleep(backoff(attempt)).await;
+                        tokio::time::sleep(backoff(attempt, e.retry_after())).await;
                         let _ = tx.send(LaneUpdate {
                             provider: Arc::clone(&spec.id),
                             variant: config.variant.clone(),
@@ -184,6 +198,7 @@ async fn run_round(
             tools: config.tools,
             tool_task: config.tool_task.clone(),
             variant_label: config.variant.clone(),
+            sampling: config.sampling.clone(),
         };
         let progress = progress.clone();
         tasks.spawn(async move { single_request(job, &progress).await });
@@ -253,6 +268,7 @@ struct RequestJob {
     tools: bool,
     tool_task: String,
     variant_label: Option<Arc<str>>,
+    sampling: crate::provider::Sampling,
 }
 
 /// Streams one completion, measuring TTFB, token gaps and usage.
@@ -271,6 +287,7 @@ async fn single_request(
         tools,
         tool_task,
         variant_label,
+        sampling,
     } = job;
     let req = CompletionRequest {
         model: &model,
@@ -278,6 +295,7 @@ async fn single_request(
         max_tokens,
         tools,
         tool_task: Some(&tool_task),
+        sampling,
     };
     let start = Instant::now();
     let mut stream = stream_completion(&client, &spec, &req).await?;
@@ -377,4 +395,32 @@ async fn single_request(
         stutters,
         visible_tokens,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_is_honored_and_capped() {
+        assert_eq!(
+            backoff(1, Some(Duration::from_secs(2))),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            backoff(3, Some(Duration::from_secs(120))),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn jitter_stays_inside_the_exponential_ceiling() {
+        let first = backoff(1, None);
+        assert!(first >= Duration::from_millis(1));
+        assert!(first <= Duration::from_millis(200), "{first:?}");
+        let later = backoff(4, None);
+        assert!(later <= Duration::from_millis(1_600), "{later:?}");
+        let capped = backoff(12, None);
+        assert!(capped <= Duration::from_millis(8_000), "{capped:?}");
+    }
 }
