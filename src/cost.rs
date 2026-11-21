@@ -208,7 +208,9 @@ pub fn pricing_stamp() -> String {
         .map(|(name, url)| format!("{name} ({url})"))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("OpenAI, Anthropic and Gemini rates were read on {PRICING_AS_OF} from {pages}.")
+    format!(
+        "OpenAI and Anthropic rates were read on {PRICING_AS_OF} from {pages}. gemini-3.5-flash-lite was read on 2026-11-21 from the Gemini page; the other Gemini rows were read on {PRICING_AS_OF}."
+    )
 }
 
 /// Returns `(input, output)` USD per million tokens, when known.
@@ -254,11 +256,13 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
     // are https://platform.claude.com/docs/en/about-claude/pricing ; the
     // cache schedule is 0.1× read, 1.25× 5-minute write, 2× 1-hour write.
     // Gemini rates are the paid text tier on
-    // https://ai.google.dev/gemini-api/docs/pricing . Hourly cache storage
-    // is not a per-request token count and is not priced. Rows for other
-    // providers were not re-read on that date. The Vertex lane copies the
-    // Gemini Developer API cached rate for the same model. Not every model
-    // id is listed: pass `--price` for one that is missing.
+    // https://ai.google.dev/gemini-api/docs/pricing . gemini-3.5-flash-lite
+    // was read on 2026-11-21 ($0.30 / $2.50, cache read $0.03). The other
+    // Gemini rows were read on 2026-11-20. Hourly cache storage is not a
+    // per-request token count and is not priced. Rows for other providers
+    // were not re-read on that date. The Vertex lane copies the Gemini
+    // Developer API cached rate for the same model. Not every model id is
+    // listed: pass `--price` for one that is missing.
     let table: &[(&str, f64, f64, CacheSchedule)] = &[
         ("openai/gpt-4o", 2.50, 10.00, CacheSchedule::Read(1.25)),
         ("openai/gpt-4o-mini", 0.15, 0.60, CacheSchedule::Read(0.075)),
@@ -314,6 +318,18 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
         ),
         (
             "vertex/gemini-2.5-flash",
+            0.30,
+            2.50,
+            CacheSchedule::Read(0.03),
+        ),
+        (
+            "gemini/gemini-3.5-flash-lite",
+            0.30,
+            2.50,
+            CacheSchedule::Read(0.03),
+        ),
+        (
+            "vertex/gemini-3.5-flash-lite",
             0.30,
             2.50,
             CacheSchedule::Read(0.03),
