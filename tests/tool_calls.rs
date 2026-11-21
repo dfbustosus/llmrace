@@ -31,6 +31,21 @@ fn exact_match_accepts_a_number_and_a_json_object() {
         "{\"a\":2,\"b\":1}"
     ));
     assert!(!llmrace::tools::answer_matches("the answer is 4", "4"));
+    assert!(llmrace::tools::answer_matches_mode(
+        "the answer is 4",
+        "4",
+        llmrace::workload::ExpectMatch::Contains,
+    ));
+    assert!(!llmrace::tools::answer_matches_mode(
+        "the answer is Paris",
+        "paris",
+        llmrace::workload::ExpectMatch::Contains,
+    ));
+    assert!(llmrace::tools::answer_matches_mode(
+        "  Paris\n",
+        "^Paris$",
+        llmrace::workload::ExpectMatch::Regex,
+    ));
     assert_eq!(
         llmrace::tools::task_ok(true, "weather", r#"{"city":"Paris"}"#, None, ""),
         Some(true)
