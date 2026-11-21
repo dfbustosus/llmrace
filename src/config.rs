@@ -9,6 +9,21 @@ use crate::error::{Error, Result};
 use serde::Deserialize;
 use std::path::PathBuf;
 
+fn de_opt_f64<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<toml::Value>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(toml::Value::Float(f)) => Ok(Some(f)),
+        Some(toml::Value::Integer(i)) => Ok(Some(i as f64)),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "expected a number, got {other}"
+        ))),
+    }
+}
+
 /// One named profile inside the config file's `[profiles.<name>]` table.
 ///
 /// Unknown keys are rejected so typos (`run` instead of `runs`) fail loudly
@@ -43,6 +58,18 @@ pub struct Profile {
     /// Additional attempts for failed rounds.
     #[serde(default)]
     pub retries: Option<usize>,
+    /// Sampling temperature (`0.0` is valid; integers are accepted).
+    #[serde(default, deserialize_with = "de_opt_f64")]
+    pub temperature: Option<f64>,
+    /// Nucleus sampling top-p.
+    #[serde(default, deserialize_with = "de_opt_f64")]
+    pub top_p: Option<f64>,
+    /// Deterministic seed for providers that support one.
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// System prompt prepended to every request.
+    #[serde(default)]
+    pub system: Option<String>,
 }
 
 /// Root of a `llmrace.toml` file.
