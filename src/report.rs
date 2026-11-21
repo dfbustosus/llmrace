@@ -326,6 +326,21 @@ pub fn insert_sampling_json(json: &str, sampling: &crate::provider::Sampling) ->
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| json.to_string())
 }
 
+/// Inserts the baseline-gate verdict into a JSON report.
+///
+/// Present only when the race was compared to a `--baseline`. An older
+/// report omits the key and still validates.
+#[must_use]
+pub fn insert_regression_json(json: &str, verdict: &serde_json::Value) -> String {
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(json) else {
+        return json.to_string();
+    };
+    if let Some(map) = doc.as_object_mut() {
+        map.insert("regression".to_string(), verdict.clone());
+    }
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|_| json.to_string())
+}
+
 /// Renders the full machine-readable JSON report.
 pub fn json_report(
     summaries: &[LaneSummary],
