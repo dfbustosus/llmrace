@@ -237,7 +237,7 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 | **Latency p50 / p95** | Distribution of round time-to-last-token (linear-interpolation percentiles) |
 | **Mean ± 95% CI** | Student-t confidence interval on the mean latency |
 | **Significance** | Welch's t-test on per-run latencies between the top two lanes — the report states whether the gap is real or could be noise (p < 0.05) |
-| **Cost/run** | Provider-reported token counts × public per-model prices (editable in `src/cost.rs`) |
+| **Cost/run** | Public per-model prices × billed input and output tokens. Input tokens come from the provider's usage report (system prompt and tool schemas included). When a provider omits usage, the user prompt is estimated and the markdown table marks the figure with `~` |
 
 Methodology notes:
 
@@ -392,7 +392,7 @@ PRs with results from other regions are welcome — record with `--json` and ext
 | CI regression gate with significance | ✅ `--require-significance` | ❌ | ✝ heavy scripting | ❌ |
 | Saturation curves (`--ramp`) | ✅ built-in | ❌ | ✝ complex | ❌ |
 | Longitudinal trends + model-swap detection | ✅ | ❌ | ❌ | partial |
-| Cost per run from real token usage | ✅ | ❌ | ❌ | partial |
+| Cost per run from billed input and output tokens | ✅ | ❌ | ❌ | partial |
 | Cross-region probe merging | ✅ `--merge` | ❌ | ❌ | ❌ |
 | Reproducible sampling (temperature, top-p, seed, system) stamped on the report | ✅ | ❌ | ✝ | ❌ |
 | Retries honor `Retry-After`; permanent 4xx fails fast | ✅ | ❌ | partial | ❌ |
