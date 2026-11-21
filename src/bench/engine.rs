@@ -232,6 +232,11 @@ async fn run_round(
             model_label: Arc::clone(&model_label),
             prompt: prompt.to_string(),
             prompt_id: prompt_id.to_string(),
+            expect: config
+                .workload
+                .iter()
+                .find(|item| item.id == prompt_id)
+                .and_then(|item| item.expect.clone()),
             max_tokens: config.max_tokens,
             timeout: Duration::from_secs(config.timeout_secs),
             tools: config.tools,
@@ -303,6 +308,14 @@ async fn run_round(
             stutters,
             visible_tokens: all.iter().map(|m| m.visible_tokens).sum(),
             prompt_id: prompt_id.to_string(),
+            task_ok: {
+                let flags: Vec<bool> = all.iter().filter_map(|m| m.task_ok).collect();
+                if flags.is_empty() {
+                    None
+                } else {
+                    Some(flags.iter().all(|ok| *ok))
+                }
+            },
         }])
     }
 }
@@ -316,6 +329,7 @@ struct RequestJob {
     model_label: Arc<str>,
     prompt: String,
     prompt_id: String,
+    expect: Option<String>,
     max_tokens: u64,
     timeout: Duration,
     tools: bool,
@@ -336,6 +350,7 @@ async fn single_request(
         model_label,
         prompt,
         prompt_id,
+        expect,
         max_tokens,
         timeout,
         tools,
@@ -358,6 +373,7 @@ async fn single_request(
     let mut ttfb: Option<Duration> = None;
     let mut tokens = 0u64;
     let mut chars = 0u64;
+    let mut answer = String::new();
     let mut usage: Option<u64> = None;
     let mut prompt_tokens: Option<u64> = None;
     let mut cache_read_tokens = 0u64;
@@ -411,6 +427,7 @@ async fn single_request(
             last_token_at = Some(now);
             tokens += 1;
             chars += t.len() as u64;
+            answer.push_str(t);
             let _ = progress.send(LaneUpdate {
                 provider: Arc::clone(&spec.id),
                 variant: variant_label.clone(),
@@ -461,6 +478,7 @@ async fn single_request(
     } else {
         tokens = visible_tokens;
     }
+    let task_ok = crate::tools::task_ok(tools, &tool_task, &tool_args, expect.as_deref(), &answer);
     Ok(RunMetrics {
         total_ms: total.as_secs_f64() * 1000.0,
         ttfb_ms: ttfb.as_secs_f64() * 1000.0,
@@ -480,6 +498,7 @@ async fn single_request(
         stutters,
         visible_tokens,
         prompt_id,
+        task_ok,
     })
 }
 
