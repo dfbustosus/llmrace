@@ -31,6 +31,31 @@ pub fn race_report_schema() -> String {
         "system": {"type": "string"}
       }
     },
+    "regression": {
+      "type": "object",
+      "description": "Present only when the race was compared to a baseline. ok is false when the process exits 1 for this gate.",
+      "required": ["ok", "request_mismatch", "threshold_pct", "failures"],
+      "properties": {
+        "ok": {"type": "boolean"},
+        "request_mismatch": {"type": "boolean"},
+        "threshold_pct": {"type": "number", "minimum": 0},
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["provider", "metric", "prompt_id", "baseline", "current", "delta_pct"],
+            "properties": {
+              "provider": {"type": "string"},
+              "metric": {"type": "string"},
+              "prompt_id": {"type": ["string", "null"]},
+              "baseline": {"type": "number"},
+              "current": {"type": "number"},
+              "delta_pct": {"type": "number"}
+            }
+          }
+        }
+      }
+    },
     "significance": {
       "type": ["object", "null"],
       "properties": {
