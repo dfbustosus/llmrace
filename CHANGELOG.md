@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-20
+
+Reproducible races. Sampling is now part of the measurement, retries behave
+like a production client, and the experimental cloud providers send real
+request bodies instead of JSON `null`.
+
+### Added
+
+- **Reproducible sampling**: `--temperature`, `--top-p`, `--seed` and `--system`, plus the same keys on `llmrace.toml` profiles (integer temperatures are accepted). Unset controls are omitted, so a race that does not pass them still measures each provider's own default. Set controls are encoded in the wire's native shape — Cohere's `p`, Anthropic's top-level `system`, Gemini `generationConfig` / `systemInstruction`, Bedrock `inferenceConfig` — and stamped into the markdown, JSON, HTML and ramp reports. OpenAI reasoning models (gpt-5, o-series) keep the system prompt and drop temperature, top-p and seed, because those APIs reject the fields. Out-of-range values fail before the first request
+- `Error::Http` carries an optional `retry_after` parsed from a `Retry-After` delay in seconds, and `Error::is_retryable` separates permanent client errors from timeouts, 429 and 5xx
+- `provider::benchmark_client`: connect timeout capped at 10 seconds, idle pool sized to the race concurrency, TCP keepalive, and HTTP/2 when the server offers it
+- Starter profile `repro` (`temperature = 0`, fixed seed, system prompt)
+
+### Fixed
+
+- **Bedrock and Vertex were sending `null` bodies.** Bedrock now calls Converse Stream — the operation the event-stream decoder already reads (`contentBlockDelta`, `metadata`) — with a real document, percent-encoded model id, `toolConfig` when `--tools` is set, and `Accept: application/vnd.amazon.eventstream`. Vertex now sends the Gemini `streamGenerateContent` document. Both remain experimental until a live account confirms the path ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127))
+- **`--retries` retried permanent failures.** A 400, 401, 403 or 404 now fails the round immediately. Retryable failures wait with full-jitter exponential backoff, and a `Retry-After` hint wins (capped at 30 seconds so a hostile header cannot stall the race)
+
+### Changed
+
+- The HTTP client negotiates HTTP/2 when the endpoint offers it, so a concurrency sweep against a cloud API multiplexes on one connection instead of one TCP connection per stream. HTTP/1.1 servers (local daemons) are unchanged. Saturation numbers against HTTP/2 providers can differ from 1.6.0 for that reason
+
 ## [1.6.0] - 2026-11-19
 
 The platform release: llmrace grows from a benchmark CLI into a complete
@@ -402,7 +424,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/dfbustosus/llmrace/compare/v1.6.0...v1.7.0
 [0.5.0]: https://github.com/dfbustosus/llmrace/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/dfbustosus/llmrace/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/dfbustosus/llmrace/compare/v0.4.0...v0.4.1
