@@ -15,8 +15,16 @@ pub struct RunMetrics {
     /// Sum of token byte lengths.
     pub chars: u64,
     /// Provider-reported prompt tokens. `0` when the provider did not
-    /// report usage; cost then falls back to a text estimate.
+    /// report usage; cost then falls back to a text estimate. Includes
+    /// cache reads and cache writes.
     pub prompt_tokens: u64,
+    /// Cache-read tokens included in [`Self::prompt_tokens`]. `0` when the
+    /// provider reported none.
+    pub cache_read_tokens: u64,
+    /// Short-TTL cache-write tokens included in [`Self::prompt_tokens`].
+    pub cache_write_tokens: u64,
+    /// 1-hour cache-write tokens included in [`Self::prompt_tokens`].
+    pub cache_write_1h_tokens: u64,
     /// Accumulated tool-call argument JSON (empty when the run had none).
     pub tool_args: String,
     /// Provider-reported server-side processing time in milliseconds,
