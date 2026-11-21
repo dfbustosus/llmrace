@@ -24,8 +24,9 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
         }
     }
     if cfg.winner {
-        let scored = llmrace::score::score_lanes(summaries, &cfg.weights);
-        let block = llmrace::score::podium(&scored, &cfg.weights);
+        let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
+        let scored = llmrace::score::score_lanes(summaries, &weights);
+        let block = llmrace::score::podium(&scored, &weights);
         if !block.is_empty() {
             md.push_str("\n## Podium\n");
             md.push_str(&block);
