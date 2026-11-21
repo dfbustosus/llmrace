@@ -94,7 +94,13 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
         out.push_str("\n† at least one round was a 3-sigma latency outlier\n");
     }
 
-    out.push_str("\n> Tokens/s is measured over the generation window (total time minus time-to-first-byte), summed across concurrent requests per round. Token counts use provider-reported usage when available.\n");
+    out.push_str("\n> Tokens/s is measured over the generation window (total time minus time-to-first-byte), summed across concurrent requests per round. Token counts use provider-reported usage when available. Latency, tokens/s and cost/run use successful rounds only.\n");
+    if summaries.iter().any(|s| !s.failures.is_empty()) {
+        out.push_str("> Fail is failed/measured rounds. Rank is goodput: tokens/s × the success rate, so a lane that dropped rounds does not outrank one that answered every round.\n");
+    }
+    if summaries.iter().any(|s| s.retry_attempts > 0) {
+        out.push_str("> Retries are extra attempts before a round settled. They are counted and not priced: a failed attempt does not return token usage.\n");
+    }
     out.push_str("> Cost/run uses billed input and output tokens when the provider reported them. Cache reads and cache writes use the published discount when this crate has one for the model; hourly cache storage is not in the per-request usage and is not included. A trailing ~ means input tokens were estimated from the user prompt, which leaves out a system prompt and tool schemas.\n");
     let undiscounted: Vec<&str> = summaries
         .iter()
@@ -132,8 +138,8 @@ fn group_by_variant(summaries: &[LaneSummary]) -> Vec<(Option<String>, Vec<&Lane
 pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
     let ranked = rank(lanes);
     let mut out = String::new();
-    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | ITL p95 | Stutters | Tokens/s | Cost/run |\n");
-    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|--------:|---------:|---------:|---------:|\n");
+    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | ITL p95 | Stutters | Tokens/s | Fail | Cost/run |\n");
+    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|--------:|---------:|---------:|-----:|---------:|\n");
     for (i, s) in ranked.iter().enumerate() {
         let mean = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("{:.0} ± {:.0} ms", s.mean_total_ms(), (hi - lo) / 2.0),
@@ -153,8 +159,9 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
             .itl_p95_ms()
             .map(|v| format!("{v:.0} ms"))
             .unwrap_or_else(|| "—".into());
+        let fail = format!("{}/{}", s.failures.len(), s.measured_rounds());
         out.push_str(&format!(
-            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             i + 1,
             s.name,
             outlier_mark,
@@ -181,13 +188,17 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
             } else {
                 format!("**{:.1}**", s.mean_tokens_per_sec())
             },
+            fail,
             cost
         ));
     }
     out
 }
 
-/// Lanes ranked best-first by aggregate throughput; failed lanes drop out.
+/// Lanes ranked best-first by goodput (tokens/s × success rate).
+///
+/// Fully failed lanes drop out. With no failed rounds, goodput equals
+/// tokens/s, so a clean race keeps the previous order.
 fn rank<L: std::borrow::Borrow<LaneSummary>>(lanes: &[L]) -> Vec<&LaneSummary> {
     let mut ranked: Vec<&LaneSummary> = lanes
         .iter()
@@ -195,9 +206,15 @@ fn rank<L: std::borrow::Borrow<LaneSummary>>(lanes: &[L]) -> Vec<&LaneSummary> {
         .map(|s| s.borrow())
         .collect();
     ranked.sort_by(|a, b| {
-        b.mean_tokens_per_sec()
-            .partial_cmp(&a.mean_tokens_per_sec())
+        b.goodput_tokens_per_sec()
+            .partial_cmp(&a.goodput_tokens_per_sec())
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.failure_rate()
+                    .unwrap_or(0.0)
+                    .partial_cmp(&b.failure_rate().unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
     });
     ranked
 }
@@ -303,6 +320,17 @@ pub fn json_report_with_region(
                 "concurrency": s.concurrency,
                 "successful": s.successful(),
                 "error": s.error,
+                "measured_rounds": s.measured_rounds(),
+                "failed_rounds": s.failures.len(),
+                "failure_rate": s.failure_rate(),
+                "retry_attempts": s.retry_attempts,
+                "goodput_tokens_per_sec": s.goodput_tokens_per_sec(),
+                "failures": s.failures.iter().map(|f| serde_json::json!({
+                    "elapsed_ms": f.elapsed_ms,
+                    "class": f.class.as_str(),
+                    "attempts": f.attempts,
+                    "message": f.message,
+                })).collect::<Vec<_>>(),
                 "runs": s.runs.iter().map(|r| serde_json::json!({
                     "total_ms": r.total_ms,
                     "ttfb_ms": r.ttfb_ms,
@@ -428,7 +456,7 @@ fn top_two_significance(summaries: &[LaneSummary]) -> Option<(String, String, f6
 pub fn terminal_table(summaries: &[LaneSummary]) -> String {
     let ranked = rank(summaries);
     let mut out = format!(
-        "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>7}\n",
+        "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>5} {:>7}\n",
         "#",
         "Provider",
         "Model",
@@ -439,6 +467,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
         "Server",
         "Network",
         "ITLp95",
+        "Fail",
         "Tok/s"
     );
     out.push_str(&"-".repeat(out.len()));
@@ -470,8 +499,9 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
         } else {
             String::new()
         };
+        let fail = format!("{}/{}", s.failures.len(), s.measured_rounds());
         out.push_str(&format!(
-            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>8.1}{}{}\n",
+            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>5} {:>8.1}{}{}\n",
             i + 1,
             s.name,
             crate::util::truncate(&s.model, 26),
@@ -486,6 +516,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
                 .map(|v| format!("{v:+.0}"))
                 .unwrap_or_else(|| "—".into()),
             itl,
+            fail,
             s.mean_tokens_per_sec(),
             reasoning,
             mark
@@ -644,14 +675,14 @@ pub fn html_report_grouped(
         body.push_str("</ol></section>");
     }
 
-    body.push_str("<section><h2>Results</h2><table><tr><th>#</th><th>Provider</th><th>Model</th><th>C</th><th>Latency (mean ± 95% CI)</th><th>p95</th><th>TTFB</th><th>ITL p95</th><th>Tokens/s</th></tr>");
+    body.push_str("<section><h2>Results</h2><table><tr><th>#</th><th>Provider</th><th>Model</th><th>C</th><th>Latency (mean ± 95% CI)</th><th>p95</th><th>TTFB</th><th>ITL p95</th><th>Fail</th><th>Tokens/s</th></tr>");
     for (i, s) in rank(summaries).iter().enumerate() {
         let ci = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("±{:.0}", (hi - lo) / 2.0),
             None => "—".to_string(),
         };
         body.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0} ms {}</td><td>{:.0} ms</td><td>{}</td><td>{}</td><td><b>{:.1}</b></td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0} ms {}</td><td>{:.0} ms</td><td>{}</td><td>{}</td><td>{}/{}</td><td><b>{:.1}</b></td></tr>",
             i + 1,
             crate::util::html_escape(&s.name),
             crate::util::html_escape(&s.model),
@@ -661,6 +692,8 @@ pub fn html_report_grouped(
             s.p95_total_ms(),
             fmt_ms(s.mean_ttfb_ms()),
             s.itl_p95_ms().map(|v| format!("{v:.0} ms")).unwrap_or_else(|| "—".into()),
+            s.failures.len(),
+            s.measured_rounds(),
             s.mean_tokens_per_sec(),
         ));
     }
