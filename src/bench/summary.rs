@@ -130,23 +130,51 @@ impl LaneSummary {
         self.total_sample().outliers_3sigma()
     }
 
-    /// Mean provider-reported prompt tokens per round.
+    /// Mean of `pick` over rounds that reported a prompt-token count.
     ///
-    /// `None` when no round reported usage. With `--concurrency N` a round's
-    /// count is the sum across the N requests, matching [`Self::mean_tokens`].
-    #[must_use]
-    pub fn mean_prompt_tokens(&self) -> Option<f64> {
+    /// `None` when no round reported usage. The denominator is the number of
+    /// rounds that reported, so a round with a measured prompt and zero
+    /// cache tokens still counts.
+    fn mean_measured(&self, pick: impl Fn(&RunMetrics) -> u64) -> Option<f64> {
         let measured: Vec<f64> = self
             .runs
             .iter()
             .filter(|r| r.prompt_tokens > 0)
-            .map(|r| r.prompt_tokens as f64)
+            .map(|r| pick(r) as f64)
             .collect();
         if measured.is_empty() {
             None
         } else {
             Some(measured.iter().sum::<f64>() / measured.len() as f64)
         }
+    }
+
+    /// Mean provider-reported prompt tokens per round.
+    ///
+    /// `None` when no round reported usage. With `--concurrency N` a round's
+    /// count is the sum across the N requests, matching [`Self::mean_tokens`].
+    #[must_use]
+    pub fn mean_prompt_tokens(&self) -> Option<f64> {
+        self.mean_measured(|r| r.prompt_tokens)
+    }
+
+    /// Mean cache-read tokens per measured round. `Some(0.0)` when usage was
+    /// reported and no token was a cache read.
+    #[must_use]
+    pub fn mean_cache_read_tokens(&self) -> Option<f64> {
+        self.mean_measured(|r| r.cache_read_tokens)
+    }
+
+    /// Mean short-TTL cache-write tokens per measured round.
+    #[must_use]
+    pub fn mean_cache_write_tokens(&self) -> Option<f64> {
+        self.mean_measured(|r| r.cache_write_tokens)
+    }
+
+    /// Mean 1-hour cache-write tokens per measured round.
+    #[must_use]
+    pub fn mean_cache_write_1h_tokens(&self) -> Option<f64> {
+        self.mean_measured(|r| r.cache_write_1h_tokens)
     }
 
     /// `true` when cost can use billed input tokens rather than the
@@ -156,19 +184,43 @@ impl LaneSummary {
         self.mean_prompt_tokens().is_some()
     }
 
+    fn priced_usage(&self) -> crate::cost::UsageTokens {
+        let measured = self.prompt_tokens_measured();
+        let bucket = |mean: Option<f64>| if measured { mean.unwrap_or(0.0) } else { 0.0 };
+        crate::cost::UsageTokens {
+            prompt: self
+                .mean_prompt_tokens()
+                .unwrap_or_else(|| crate::cost::estimate_prompt_tokens(&self.prompt)),
+            cache_read: bucket(self.mean_cache_read_tokens()),
+            cache_write: bucket(self.mean_cache_write_tokens()),
+            cache_write_1h: bucket(self.mean_cache_write_1h_tokens()),
+            output: self.mean_tokens(),
+        }
+    }
+
     /// Cost per round in USD, when the model has known pricing.
     ///
     /// Input tokens are the provider-reported count when any round carried
-    /// usage (that count includes the system prompt and tool schemas).
-    /// Otherwise the user prompt is estimated and the markdown report marks
-    /// the figure with `~`.
+    /// usage (that count includes the system prompt, tool schemas, cache
+    /// reads and cache writes). Cache buckets use the published cached-input
+    /// rate when this crate has one, and the uncached input rate otherwise.
+    /// When the provider omits usage, the user prompt is estimated and the
+    /// markdown report marks the figure with `~`. Hourly cache storage is
+    /// not part of the per-request usage and is not included.
     #[must_use]
     pub fn cost_per_run_usd(&self) -> Option<f64> {
-        let (pin, pout) = crate::cost::pricing(&self.name, &self.model)?;
-        let prompt_tokens = self
-            .mean_prompt_tokens()
-            .unwrap_or_else(|| crate::cost::estimate_prompt_tokens(&self.prompt));
-        Some((self.mean_tokens() * pout + prompt_tokens * pin) / 1_000_000.0)
+        let rates = crate::cost::token_rates(&self.name, &self.model)?;
+        Some(crate::cost::usage_cost_usd(rates, self.priced_usage()))
+    }
+
+    /// `false` when the lane reported cache tokens and the price table has
+    /// no rate for that bucket, so those tokens were billed at the input rate.
+    #[must_use]
+    pub fn cache_discount_applied(&self) -> bool {
+        match crate::cost::token_rates(&self.name, &self.model) {
+            Some(rates) => crate::cost::cache_rates_cover(rates, self.priced_usage()),
+            None => true,
+        }
     }
 
     /// `(valid, total)` tool-argument validity across rounds that produced
