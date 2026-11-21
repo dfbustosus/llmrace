@@ -821,6 +821,10 @@ fn cli_contract_every_documented_flag_exists() {
         "--concurrency",
         "--model",
         "--max-tokens",
+        "--temperature",
+        "--top-p",
+        "--seed",
+        "--system",
         "--timeout",
         "--retries",
         "--ramp",
@@ -863,6 +867,13 @@ fn cli_contract_every_documented_flag_exists() {
         "--region",
         "--winner",
         "--weights",
+        "--recommend",
+        "--suite",
+        "--prom-output",
+        "--alert-webhook",
+        "--notify-desktop",
+        "--alert-test",
+        "--version-json",
     ];
     let missing: Vec<&str> = flags
         .iter()
@@ -963,6 +974,69 @@ fn recommend_json_is_structured() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
     assert_eq!(parsed["mode"], "recommend");
     assert!(parsed["providers"].as_array().is_some());
+}
+
+#[test]
+fn sampling_flags_are_stamped_and_out_of_range_values_fail() {
+    let path = std::env::temp_dir().join(format!("llmrace-sampling-{}.md", std::process::id()));
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("mock")
+        .arg("--no-tui")
+        .arg("-n")
+        .arg("1")
+        .arg("--warmup")
+        .arg("0")
+        .arg("--quiet")
+        .arg("--json")
+        .arg("--html")
+        .arg("--temperature")
+        .arg("0")
+        .arg("--top-p")
+        .arg("1")
+        .arg("--seed")
+        .arg("7")
+        .arg("--system")
+        .arg("Be brief.")
+        .arg("--out")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json_path = path.with_extension("json");
+    let body = std::fs::read_to_string(&json_path).unwrap();
+    assert!(body.contains("\"temperature\": 0.0"), "{body}");
+    assert!(body.contains("\"top_p\": 1.0"), "{body}");
+    assert!(body.contains("\"seed\": 7"), "{body}");
+    assert!(body.contains("Be brief."), "{body}");
+    let md = std::fs::read_to_string(&path).unwrap();
+    assert!(md.contains("**Sampling**:"), "{md}");
+    assert!(md.contains("temperature 0"), "{md}");
+    let html = std::fs::read_to_string(path.with_extension("html")).unwrap();
+    assert!(html.contains("temperature 0"), "{html}");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&json_path);
+    let _ = std::fs::remove_file(path.with_extension("html"));
+
+    let bad = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--temperature",
+            "9",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    let err = String::from_utf8_lossy(&bad.stderr);
+    assert!(err.contains("temperature"), "{err}");
 }
 
 #[test]
