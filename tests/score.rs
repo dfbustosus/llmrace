@@ -16,6 +16,8 @@ fn lane_with_model(name: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> La
             tokens: (tps * gen_s).round().max(1.0) as u64,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -130,6 +132,8 @@ fn priced_lane(name: &str, tps: f64, p95: f64) -> LaneSummary {
             tokens: (tps * gen_s).round().max(1.0) as u64,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
