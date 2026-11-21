@@ -57,6 +57,7 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
         }
     };
     if cfg.json {
+        let request = race_request_sha256(cfg);
         let j = report::insert_sampling_json(
             &report::json_report_cited(
                 summaries,
@@ -69,6 +70,7 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
                     workload: &cfg.bench.workload,
                     warmup: cfg.bench.warmup,
                 },
+                &request,
             ),
             &cfg.bench.sampling,
         );
@@ -124,18 +126,34 @@ pub(super) async fn export_metrics(summaries: &[LaneSummary], cfg: &RunConfig) -
     Ok(())
 }
 
+fn race_request_sha256(cfg: &RunConfig) -> String {
+    let tools = cfg.bench.tools.then_some(cfg.bench.tool_task.as_str());
+    report::request_sha256(
+        &cfg.bench.prompt,
+        &cfg.bench.workload,
+        &cfg.bench.sampling,
+        cfg.bench.max_tokens,
+        tools,
+    )
+}
+
 /// Appends lanes to the persistent history (jsonl or sqlite backend).
-pub(super) fn record_history(summaries: &[LaneSummary], storage: &str) -> Result<()> {
+pub(super) fn record_history(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let request = race_request_sha256(cfg);
     let records: Vec<llmrace::history::HistoryRecord> = summaries
         .iter()
         .filter(|s| s.successful())
-        .map(|s| llmrace::history::record_from_summary(s, now))
+        .map(|s| {
+            let mut record = llmrace::history::record_from_summary(s, now);
+            record.request_sha256 = Some(request.clone());
+            record
+        })
         .collect();
-    match storage {
+    match cfg.storage.as_str() {
         "jsonl" => {
             let path = llmrace::history::history_path();
             llmrace::history::append(&path, &records)
@@ -189,8 +207,17 @@ pub(super) fn regression_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> Res
         .with_context(|| format!("reading baseline {baseline_path}"))?;
     let baseline = llmrace::regression::BaselineReport::from_json_str(&raw)
         .with_context(|| format!("parsing baseline {baseline_path}"))?;
-    let regression = llmrace::regression::evaluate(summaries, &baseline, cfg.max_regression);
+    let request = race_request_sha256(cfg);
+    let regression = llmrace::regression::evaluate_request(
+        summaries,
+        &baseline,
+        cfg.max_regression,
+        Some(&request),
+    );
     println!("\n{}", regression.terminal_table(cfg.max_regression));
+    if regression.request_mismatch {
+        return Ok(false);
+    }
     if cfg.require_significance {
         if regression.any_regressed() && !regression.any_regressed_significant() {
             println!("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
