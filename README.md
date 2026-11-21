@@ -266,7 +266,7 @@ llmrace openai groq --out race.md --json --csv --html
 ```
 
 - `race.md` — ranked table with **mean ± 95% CI**, p50/p95, TTFB, tokens/s and cost, ready to paste into GitHub issues or blog posts
-- `race.json` — full per-run data, confidence intervals and outliers for CI pipelines. It names `pricing_as_of`, the workload ids in measured-round order (empty for one prompt), `prompt_sha256` of the prompt texts those rounds sent, and `request_sha256` of the whole request (prompt or workload, `expect`, `max_tokens`, sampling, system prompt, tool task). A baseline that recorded a different `request_sha256` fails the gate without comparing metrics. A baseline that omitted the field still compares. `--trend` only averages rows that share the latest request
+- `race.json` — full per-run data, confidence intervals and outliers for CI pipelines. It names `pricing_as_of`, the workload ids in measured-round order (empty for one prompt), `prompt_sha256` of the prompt texts those rounds sent, and `request_sha256` of the whole request (prompt or workload, `expect`, `max_tokens`, sampling, system prompt, tool task). When `--baseline` is set it also writes `regression`: `ok`, `request_mismatch`, and each failure's provider, metric, and prompt id. A baseline that recorded a different `request_sha256` fails the gate without comparing metrics. A baseline that omitted the field still compares. `--trend` only averages rows that share the latest request
 - `race.csv` — per-run rows for spreadsheets and dashboards
 - `race.html` — self-contained dark-theme page with podium, ranked table and per-run latency bars (TTFB vs generation split), shareable as a single file
 
@@ -348,15 +348,23 @@ llmrace openai groq --notify-desktop
 
 ## Using llmrace as a CI quality gate
 
-Record a baseline once, then fail your pipeline when a provider regresses:
+Record a baseline of the workload once, then fail the pipeline when a prompt's success falls. A race with no `expect` has no task, so that gate does not move.
 
 ```bash
-# 1. Record the baseline (commit llmrace-report.json to your repo)
-llmrace openai groq --json --out llmrace-report.json
+# 1. Record the baseline. --json writes the sibling JSON; commit that file.
+llmrace openai groq -n 10 --warmup 2 \
+  --workload examples/workloads/short-answer.jsonl \
+  --json --out baseline/llmrace-report.md
 
-# 2. In CI: race again and compare — exits 1 on regression
-llmrace openai groq --baseline llmrace-report.json --max-regression 15
+# 2. In CI: the same workload. Exits 1 when a prompt falls or the request changed.
+llmrace openai groq -n 10 --warmup 2 \
+  --workload examples/workloads/short-answer.jsonl \
+  --baseline baseline/llmrace-report.json \
+  --max-regression 15 --require-significance \
+  --json --out llmrace-report.md
 ```
+
+`llmrace-report.json` then has `regression.ok`, `regression.request_mismatch`, and `regression.failures[]` with `provider`, `metric`, and `prompt_id`. Read that object. The terminal table is for a person.
 
 The check compares mean latency, p95 and TTFT (increases) and tokens/s (decreases) against the threshold. When the baseline recorded them, it also fails if the failure rate rises by more than the threshold in percentage points, if goodput or task success falls by more than the threshold, or if cost/run rises by more than the threshold. A baseline that omits those fields skips them. When both the baseline and this race record `request_sha256` and the hashes differ, the gate fails and does not compare metrics. A baseline that omitted the hash still compares. A race with no task has no task-success metric, so a plain latency gate does not move. The report prints an old → new diff table with per-metric Welch p-values, and flags providers that are new or missing from the baseline. With `--require-significance`, a latency or tokens/s breach fails the gate only when the difference is statistically significant (p < 0.05 on per-run data). Failure rate, goodput, cost and task success are ratios of the whole sample, so a threshold breach on those counts without a t-test:
 
@@ -401,6 +409,7 @@ PRs with results from other regions are welcome — record with `--json` and ext
 | Reasoning-model honesty (🧠 split) | ✅ built-in | ❌ | ❌ | ❌ |
 | Live terminal race view | ✅ | ❌ | ❌ | ❌ |
 | CI regression gate with significance | ✅ `--require-significance` | ❌ | ✝ heavy scripting | ❌ |
+| The gate names the prompt that fell, and refuses a different request | ✅ | ❌ | ❌ | ❌ |
 | Saturation curves (`--ramp`) | ✅ built-in | ❌ | ✝ complex | ❌ |
 | Longitudinal trends + model-swap detection | ✅ | ❌ | ❌ | partial |
 | Cost per run from billed input, cached input and output tokens | ✅ | ❌ | ❌ | partial |
