@@ -1,6 +1,6 @@
 use llmrace::bench::{spawn_lane, BenchConfig, LaneSummary, RunMetrics};
 use llmrace::provider::ProviderSpec;
-use llmrace::workload::{parse, WorkloadPrompt};
+use llmrace::workload::{parse, ExpectMatch, WorkloadPrompt};
 
 #[test]
 fn jsonl_skips_blank_lines_and_keeps_expect() {
@@ -51,11 +51,13 @@ fn race_json_names_the_price_date_the_workload_and_the_prompt_hash() {
             id: "a".into(),
             prompt: "one".into(),
             expect: None,
+            expect_match: ExpectMatch::Exact,
         },
         WorkloadPrompt {
             id: "b".into(),
             prompt: "two".into(),
             expect: None,
+            expect_match: ExpectMatch::Exact,
         },
     ];
     let json: serde_json::Value = serde_json::from_str(&llmrace::report::json_report_cited(
@@ -139,11 +141,13 @@ async fn every_lane_draws_the_same_prompt_each_round() {
                 id: "a".into(),
                 prompt: "one".into(),
                 expect: None,
+                expect_match: ExpectMatch::Exact,
             },
             WorkloadPrompt {
                 id: "b".into(),
                 prompt: "two".into(),
                 expect: None,
+                expect_match: ExpectMatch::Exact,
             },
         ],
         ..BenchConfig::default()
@@ -183,6 +187,7 @@ async fn an_expected_answer_is_checked_without_failing_the_http_call() {
             id: "sum".into(),
             prompt: "2+2".into(),
             expect: Some(expect.into()),
+            expect_match: ExpectMatch::Exact,
         }],
         ..BenchConfig::default()
     };
@@ -199,4 +204,74 @@ async fn an_expected_answer_is_checked_without_failing_the_http_call() {
     assert_eq!(summary.task_pass(), Some((1, 1)));
     let md = llmrace::report::markdown(std::slice::from_ref(&summary), "w", 1, 256);
     assert!(md.contains("| 1/1 |"), "{md}");
+}
+
+#[test]
+fn match_rejects_an_unknown_mode_and_a_bad_regex_before_any_request() {
+    let unknown = parse("{\"id\":\"a\",\"prompt\":\"q\",\"expect\":\"x\",\"match\":\"fuzzy\"}");
+    assert!(unknown.is_err(), "{unknown:?}");
+    let bad = parse("{\"id\":\"a\",\"prompt\":\"q\",\"expect\":\"(\",\"match\":\"regex\"}");
+    assert!(bad.is_err(), "{bad:?}");
+    let exact = parse("{\"id\":\"a\",\"prompt\":\"q\",\"expect\":\"Paris\"}").unwrap();
+    assert_eq!(exact[0].expect_match, ExpectMatch::Exact);
+    let contains =
+        parse("{\"id\":\"a\",\"prompt\":\"q\",\"expect\":\"Paris\",\"match\":\"contains\"}")
+            .unwrap();
+    assert_eq!(contains[0].expect_match, ExpectMatch::Contains);
+}
+
+#[test]
+fn an_exact_workload_keeps_its_request_hash() {
+    let exact = parse("{\"id\":\"a\",\"prompt\":\"one\",\"expect\":\"Paris\"}").unwrap();
+    let marked =
+        parse("{\"id\":\"a\",\"prompt\":\"one\",\"expect\":\"Paris\",\"match\":\"exact\"}")
+            .unwrap();
+    let contains =
+        parse("{\"id\":\"a\",\"prompt\":\"one\",\"expect\":\"Paris\",\"match\":\"contains\"}")
+            .unwrap();
+    let sampling = llmrace::provider::Sampling::default();
+    let exact_hash = llmrace::report::request_sha256("one", &exact, &sampling, 32, None);
+    assert_eq!(
+        exact_hash,
+        llmrace::report::request_sha256("one", &marked, &sampling, 32, None)
+    );
+    assert_ne!(
+        exact_hash,
+        llmrace::report::request_sha256("one", &contains, &sampling, 32, None)
+    );
+}
+
+#[tokio::test]
+async fn contains_and_regex_score_the_mock_answer() {
+    async fn once(expect: &str, mode: ExpectMatch) -> Option<bool> {
+        let config = BenchConfig {
+            prompt: "unused".into(),
+            runs: 1,
+            warmup: 0,
+            workload: vec![WorkloadPrompt {
+                id: "sum".into(),
+                prompt: "2+2".into(),
+                expect: Some(expect.into()),
+                expect_match: mode,
+            }],
+            ..BenchConfig::default()
+        };
+        let (handle, progress) = spawn_lane(
+            reqwest::Client::new(),
+            ProviderSpec::mock(),
+            "mock-1".into(),
+            config,
+        );
+        drop(progress);
+        let summary = handle.await.unwrap();
+        assert!(summary.successful());
+        summary.runs[0].task_ok
+    }
+    assert_eq!(once("token", ExpectMatch::Contains).await, Some(true));
+    assert_eq!(once("TOKEN", ExpectMatch::Contains).await, Some(false));
+    assert_eq!(
+        once(r"^token( token)*$", ExpectMatch::Regex).await,
+        Some(true)
+    );
+    assert_eq!(once("nope", ExpectMatch::Regex).await, Some(false));
 }
