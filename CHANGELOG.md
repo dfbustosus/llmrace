@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-11-20
+
+A fast wrong answer can lose. Task success is a successful request that failed the check, not a failed HTTP call, and a race with no task keeps the previous podium.
+
+### Added
+
+- Pass column (`ok/measured`) in the markdown and HTML tables. JSON adds `task_pass`. `—` when the race had no task
+- `--tools` checks tool-argument validity. A workload `expect` checks an exact short answer: the trimmed text, a JSON object (key order does not matter), or a number
+- `--winner` weights gain `task` (default 40). It is ignored when no scored lane had a task, the same way `cost` is ignored when a lane has no price. A plain latency race scores as before
+- `tools::answer_matches`, `tools::task_ok`, `LaneSummary::task_pass` and `LaneSummary::task_rate`
+- `RunMetrics::task_ok`
+
 ## [1.12.0] - 2026-11-20
 
 One prompt is a demo. A race, a suite and a ramp can now share a workload, and a slow prompt shows up on its own row.
@@ -504,7 +516,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/dfbustosus/llmrace/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/dfbustosus/llmrace/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/dfbustosus/llmrace/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/dfbustosus/llmrace/compare/v1.9.0...v1.10.0
