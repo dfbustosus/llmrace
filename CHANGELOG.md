@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-20
+
+Cost uses the bill the provider sent. Input tokens were previously a
+character estimate of the user prompt, so a system prompt or a tool schema
+never appeared in the dollar figure.
+
+### Fixed
+
+- **Billed input tokens.** OpenAI `usage.prompt_tokens`, Anthropic `message_start` / `message_delta` `input_tokens`, Gemini `promptTokenCount`, Cohere billed input units, and Bedrock `usage.inputTokens` are kept on the run. `cost_per_run_usd` uses that count when any round reported it. A usage-only event does not start the TTFB clock
+- Markdown cost cells that still fall back to the prompt-text estimate are marked with a trailing `~`. The estimate does not include a system prompt or tool schemas
+
+### Added
+
+- `StreamEvent::prompt_tokens`, `LaneSummary::mean_prompt_tokens` and `LaneSummary::prompt_tokens_measured`
+- JSON reports add per-run `prompt_tokens` plus lane `prompt_tokens` and `prompt_tokens_measured`
+
 ## [1.7.0] - 2026-11-20
 
 Reproducible races. Sampling is now part of the measurement, retries behave
@@ -424,7 +440,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/dfbustosus/llmrace/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/dfbustosus/llmrace/compare/v1.6.0...v1.7.0
 [0.5.0]: https://github.com/dfbustosus/llmrace/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/dfbustosus/llmrace/compare/v0.4.1...v0.4.2
