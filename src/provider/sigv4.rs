@@ -210,7 +210,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn sha256_hex(data: &[u8]) -> String {
+/// Hex SHA-256 of `data`. Shared by SigV4 and the report's prompt identifier.
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
     hex(&hmac_sha256::sha256::digest(data))
 }
 
