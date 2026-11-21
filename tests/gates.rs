@@ -15,6 +15,8 @@ fn lane(name: &str, ttfb: f64, successful: bool) -> LaneSummary {
         } else {
             Vec::new()
         },
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: if successful {
             None
         } else {
