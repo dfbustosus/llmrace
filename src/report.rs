@@ -105,7 +105,9 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
     if summaries.iter().any(|s| s.retry_attempts > 0) {
         out.push_str("> Retries are extra attempts before a round settled. They are counted and not priced: a failed attempt does not return token usage.\n");
     }
-    out.push_str("> Cost/run uses billed input and output tokens when the provider reported them. Cache reads and cache writes use the published discount when this crate has one for the model; hourly cache storage is not in the per-request usage and is not included. A trailing ~ means input tokens were estimated from the user prompt, which leaves out a system prompt and tool schemas.\n");
+    out.push_str("> Cost/run uses billed input and output tokens when the provider reported them. Cache reads and cache writes use the published discount when this crate has one for the model; hourly cache storage is not in the per-request usage and is not included. A trailing ~ means input tokens were estimated from the user prompt, which leaves out a system prompt and tool schemas. ");
+    out.push_str(&crate::cost::pricing_stamp());
+    out.push('\n');
     let undiscounted: Vec<&str> = summaries
         .iter()
         .filter(|s| s.successful() && !s.cache_discount_applied())
