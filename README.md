@@ -241,7 +241,8 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 
 Methodology notes:
 
-- One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes
+- One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes. A warmup failure is not a measured failure
+- **Failed measured rounds stay in the report.** Latency, tokens/s and cost/run use successful rounds only. The rank uses goodput (tokens/s × the success rate), so a provider that timed out half its calls cannot win on the calls that happened to succeed. Retries are counted and not priced: a failed attempt does not return token usage
 - Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other. Exception: `provider=model` lanes of the *same* provider race concurrently — the provider's rate limits and capacity are then shared between those lanes, which is exactly what a mixed-model race measures in practice
 - Rounds with 3σ latency outliers are flagged with `†`
 - **ITL caveat**: inter-token gaps are timestamped when the runtime polls the event, so they include local scheduling jitter (sub-millisecond on a quiet machine, more under heavy concurrent load) — compare ITL across providers measured in the *same* race, not across machines
@@ -388,6 +389,7 @@ PRs with results from other regions are welcome — record with `--json` and ext
 | Alert webhooks (Slack/Discord) | ✅ `--alert-webhook` | ❌ | ✝ custom | ❌ |
 | Desktop notifications | ✅ `--notify-desktop` | ❌ | ❌ | ❌ |
 | TTFB / tokens/s / p95 / t-CI / ITL | ✅ built-in | varies | ✝ you build it | ✅ but only routed traffic |
+| Failed rounds kept; rank is goodput (tokens/s × success rate) | ✅ | ❌ | partial | partial |
 | Reasoning-model honesty (🧠 split) | ✅ built-in | ❌ | ❌ | ❌ |
 | Live terminal race view | ✅ | ❌ | ❌ | ❌ |
 | CI regression gate with significance | ✅ `--require-significance` | ❌ | ✝ heavy scripting | ❌ |
