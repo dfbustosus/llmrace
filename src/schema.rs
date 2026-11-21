@@ -117,6 +117,7 @@ pub fn race_report_schema() -> String {
           "reasoning_tokens": {"type": "integer", "minimum": 0},
           "thinking_ms_estimate": {"type": ["number", "null"]},
           "request_id": {"type": ["string", "null"]},
+          "task_pass_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
           "task_pass": {
             "type": ["array", "null"],
             "items": {"type": "integer", "minimum": 0},
