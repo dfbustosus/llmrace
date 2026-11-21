@@ -1,6 +1,6 @@
 [package]
 name = "llmrace"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Race LLM providers head-to-head in your terminal: latency, TTFB, tokens/s, p95 and cost — live."
@@ -28,6 +28,10 @@ exclude = [
 [package.metadata.cargo-semver-checks.lints]
 constructible_struct_adds_field = { level = "warn", required-update = "minor" }
 enum_variant_added = { level = "warn", required-update = "minor" }
+# `Error::Http` gained `retry_after` the same way structs gain fields:
+# additive, optional, and a minor. Exhaustive field matches are the
+# known trade-off, same as `constructible_struct_adds_field`.
+enum_struct_variant_field_added = { level = "warn", required-update = "minor" }
 # Wire is a plain fieldless enum whose implicit discriminants shift when a
 # variant is inserted; no downstream numeric casts exist for it (it is a
 # protocol tag), and the alternative — hard-coding discriminants — would
@@ -46,7 +50,7 @@ sqlite = ["dep:rusqlite"]
 [dependencies]
 rusqlite = { version = "0.42", optional = true, features = ["bundled"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
 futures-util = "0.3"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
