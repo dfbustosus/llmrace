@@ -20,6 +20,32 @@ fn tool_schemas_per_wire() {
 }
 
 #[test]
+fn exact_match_accepts_a_number_and_a_json_object() {
+    assert!(llmrace::tools::answer_matches("  4\n", "4"));
+    assert!(llmrace::tools::answer_matches(
+        "{\"color\":\"blue\"}",
+        "{\"color\":\"blue\"}"
+    ));
+    assert!(llmrace::tools::answer_matches(
+        "{\"b\":1,\"a\":2}",
+        "{\"a\":2,\"b\":1}"
+    ));
+    assert!(!llmrace::tools::answer_matches("the answer is 4", "4"));
+    assert_eq!(
+        llmrace::tools::task_ok(true, "weather", r#"{"city":"Paris"}"#, None, ""),
+        Some(true)
+    );
+    assert_eq!(
+        llmrace::tools::task_ok(false, "weather", "", Some("4"), "4"),
+        Some(true)
+    );
+    assert_eq!(
+        llmrace::tools::task_ok(false, "weather", "", None, "4"),
+        None
+    );
+}
+
+#[test]
 fn validate_args_accepts_city_only() {
     assert!(validate_args(r#"{"city":"Paris","units":"celsius"}"#));
     assert!(validate_args(r#"{"city":"Paris"}"#));
