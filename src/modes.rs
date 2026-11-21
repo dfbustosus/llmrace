@@ -221,14 +221,27 @@ pub(crate) async fn run_suite(
             entry.description
         );
 
-        // resolve the prompt
-        let prompt = if let Some(p) = &entry.prompt {
+        // resolve the prompt. A workload replaces the single string.
+        let workload = if let Some(path) = &entry.workload {
+            llmrace::workload::load(std::path::Path::new(path))
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        } else {
+            Vec::new()
+        };
+        let prompt = if let Some(first) = workload.first() {
+            first.prompt.clone()
+        } else if let Some(p) = &entry.prompt {
             p.clone()
         } else if let Some(pf) = &entry.prompt_file {
             std::fs::read_to_string(pf)
                 .map_err(|e| anyhow::anyhow!("reading prompt file {pf}: {e}"))?
         } else {
             cli.prompt.clone()
+        };
+        let prompt_label = if let Some(path) = &entry.workload {
+            format!("workload {path} ({} prompts)", workload.len())
+        } else {
+            prompt.clone()
         };
 
         // resolve providers (positional args override the file)
@@ -244,9 +257,10 @@ pub(crate) async fn run_suite(
             entry.concurrency,
         )?;
 
-        let bench_prompt = prompt.clone();
+        let bench_prompt = prompt_label;
         let mut bench = llmrace::bench::BenchConfig {
             prompt,
+            workload,
             runs: entry.runs.max(1),
             warmup: entry.warmup,
             concurrency: entry.concurrency.max(1),
