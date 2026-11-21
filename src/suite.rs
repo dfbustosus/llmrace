@@ -48,9 +48,13 @@ pub struct SuiteEntry {
     /// Prompt text.
     #[serde(default)]
     pub prompt: Option<String>,
-    /// Prompt file path (alternative to `prompt`).
+    /// Prompt file path (alternative to `prompt`). The whole file is one prompt.
     #[serde(default)]
     pub prompt_file: Option<String>,
+    /// JSONL workload path. One `{"id","prompt","expect"?}` per line, shared
+    /// by every lane. When set, this replaces `prompt` and `prompt_file`.
+    #[serde(default)]
+    pub workload: Option<String>,
     /// Prompt-variant sweep spec (e.g. `"short,json"`).
     #[serde(default)]
     pub sweep: Option<String>,
