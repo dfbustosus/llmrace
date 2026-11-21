@@ -75,7 +75,12 @@ impl RegressionReport {
                     // Failure rate, goodput and cost are ratios of the whole
                     // sample, not means of a noisy series. A threshold breach
                     // is the gate; there is no t-test to wait on.
-                    None => matches!(m.label, "failure rate" | "goodput" | "cost/run"),
+                    None => {
+                        matches!(
+                            m.label,
+                            "failure rate" | "goodput" | "cost/run" | "task success"
+                        )
+                    }
                 }
             })
         })
@@ -172,6 +177,10 @@ pub struct BaselineProvider {
     /// Cost of one successful round. Absent when the model had no price.
     #[serde(default)]
     pub cost_per_run_usd: Option<f64>,
+    /// Fraction of measured rounds that passed the task. Absent when the
+    /// baseline had no task; the metric is then skipped.
+    #[serde(default)]
+    pub task_pass_rate: Option<f64>,
     /// Per-run measurements, when the report was saved with them.
     #[serde(default)]
     pub runs: Vec<BaselineRun>,
@@ -244,6 +253,7 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                 failure_rate: s.failure_rate(),
                 goodput_tokens_per_sec: Some(s.goodput_tokens_per_sec()),
                 cost_per_run_usd: s.cost_per_run_usd(),
+                task_pass_rate: s.task_rate(),
                 runs: s
                     .runs
                     .iter()
@@ -371,6 +381,14 @@ pub fn compare_baselines(
                 None,
             ));
         }
+        if let (Some(base_task), Some(current_task)) = (base.task_pass_rate, current.task_pass_rate)
+        {
+            metrics.push(task_pass_metric(
+                base_task,
+                current_task,
+                max_regression_pct,
+            ));
+        }
         report.comparisons.push(ProviderComparison {
             name: current.provider.clone(),
             baseline_model: base.model.clone(),
@@ -416,6 +434,20 @@ fn latency_metric(
 /// Failure rate is a fraction. The delta is percentage points, so a rise
 /// from 0 to 0.20 reads as +20. A zero baseline is not treated as "no
 /// change": any rise past the threshold is a regression.
+/// Task success is a fraction. The delta is percentage points. A fall
+/// from 1.0 to 0.80 reads as -20 and regresses once it passes the threshold.
+fn task_pass_metric(baseline: f64, current: f64, threshold: f64) -> MetricComparison {
+    let points = (current - baseline) * 100.0;
+    MetricComparison {
+        label: "task success",
+        baseline,
+        current,
+        delta_pct: points,
+        regressed: points < -threshold,
+        p_value: None,
+    }
+}
+
 fn failure_rate_metric(baseline: f64, current: f64, threshold: f64) -> MetricComparison {
     let points = (current - baseline) * 100.0;
     MetricComparison {
