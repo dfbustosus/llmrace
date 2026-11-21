@@ -21,6 +21,7 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> H
         goodput_tokens_per_sec: None,
         retry_attempts: 0,
         cost_per_run_usd: None,
+        task_pass_rate: None,
     }
 }
 
@@ -124,6 +125,7 @@ fn old_history_without_goodput_still_loads() {
     assert!(record.goodput_tokens_per_sec.is_none());
     assert_eq!(record.retry_attempts, 0);
     assert!(record.cost_per_run_usd.is_none());
+    assert!(record.task_pass_rate.is_none());
 }
 
 #[test]
