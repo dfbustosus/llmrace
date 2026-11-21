@@ -147,7 +147,10 @@ fn gemini_input(v: &serde_json::Value) -> InputUsage {
 fn bedrock_input(usage: &serde_json::Value) -> InputUsage {
     let uncached = field_u64(usage, &["inputTokens", "input_tokens"]);
     let cache_read = field_u64(usage, &["cacheReadInputTokens", "cache_read_input_tokens"]);
-    let cache_write = field_u64(usage, &["cacheWriteInputTokens", "cache_write_input_tokens"]);
+    let cache_write = field_u64(
+        usage,
+        &["cacheWriteInputTokens", "cache_write_input_tokens"],
+    );
     summed_input(uncached, cache_read, cache_write, None)
 }
 
@@ -419,9 +422,8 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 })
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            let usage = json_u64(v.pointer("/response/meta/billed_units/output_tokens")).or_else(
-                || json_u64(v.pointer("/usage/tokens/output_tokens")),
-            );
+            let usage = json_u64(v.pointer("/response/meta/billed_units/output_tokens"))
+                .or_else(|| json_u64(v.pointer("/usage/tokens/output_tokens")));
             let prompt_tokens = json_u64(v.pointer("/response/meta/billed_units/input_tokens"))
                 .or_else(|| json_u64(v.pointer("/usage/tokens/input_tokens")));
             let input = InputUsage {
