@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-21
+
+A lane score of 2/3 no longer hides which prompt missed. The per-prompt table names the pass count, and the gate fails when one prompt's success falls.
+
+### Added
+
+- The markdown per-prompt table has a Pass column (`ok/n`, or `—` when that prompt had no task). JSON `prompts` items carry `task_pass` as `[ok, n]` or null, and `task_pass_rate`. Both fields are optional, so an older report still validates
+- A failed round records its prompt id. That round counts in the prompt's denominator, so a dropped round is not a pass
+- The regression gate compares `prompts[].task_pass_rate` for every id present on both sides, beside the lane's task success, using the same threshold. A missing p-value counts. A prompt the baseline omitted is skipped. A baseline with no per-prompt rates still gates the lane only
+
 ## [1.20.0] - 2026-11-21
 
 The repository's own CI now runs the task-success gate, and a tag whose crate is already on crates.io no longer fails the publish job.
@@ -591,7 +601,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.20.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.21.0...HEAD
+[1.21.0]: https://github.com/dfbustosus/llmrace/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/dfbustosus/llmrace/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/dfbustosus/llmrace/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/dfbustosus/llmrace/compare/v1.17.0...v1.18.0
