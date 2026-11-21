@@ -117,6 +117,20 @@ pub fn race_report_schema() -> String {
           "reasoning_tokens": {"type": "integer", "minimum": 0},
           "thinking_ms_estimate": {"type": ["number", "null"]},
           "request_id": {"type": ["string", "null"]},
+          "prompts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "rounds", "mean_total_ms", "mean_ttfb_ms", "mean_tokens_per_sec"],
+              "properties": {
+                "id": {"type": "string"},
+                "rounds": {"type": "integer", "minimum": 1},
+                "mean_total_ms": {"type": "number"},
+                "mean_ttfb_ms": {"type": "number"},
+                "mean_tokens_per_sec": {"type": "number"}
+              }
+            }
+          },
           "tool_validity": {
             "type": ["array", "null"],
             "items": {"type": "integer", "minimum": 0},
