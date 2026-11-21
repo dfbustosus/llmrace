@@ -1,13 +1,42 @@
 //! A shared prompt workload: one JSON object per line.
 //!
 //! A race, a suite entry and a ramp all draw from the same file, so the
-//! winner is not an artifact of one sentence. `expect` is kept for a later
-//! exact-match check and is not scored here.
+//! winner is not an artifact of one sentence. `expect` is scored after the
+//! round. `match` chooses how: exact (the default), a substring, or a regex.
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
+
+/// How `expect` is compared to the trimmed answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExpectMatch {
+    /// Trimmed text, or a JSON object or number. The default when `match` is absent.
+    #[default]
+    Exact,
+    /// Case-sensitive substring of the trimmed answer.
+    Contains,
+    /// Regex against the trimmed answer. Compiled when the file is read.
+    Regex,
+}
+
+impl ExpectMatch {
+    /// The wire name recorded in the request hash.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Contains => "contains",
+            Self::Regex => "regex",
+        }
+    }
+
+    fn is_exact(&self) -> bool {
+        *self == Self::Exact
+    }
+}
 
 /// One prompt in a workload file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,10 +45,16 @@ pub struct WorkloadPrompt {
     pub id: String,
     /// The user prompt sent on this round.
     pub prompt: String,
-    /// Optional exact answer. Present so a workload can name the expected
-    /// short answer; scoring it is a separate step.
+    /// Optional expected answer. Absent means this prompt has no text check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect: Option<String>,
+    /// How [`expect`](Self::expect) is compared. Absent means exact.
+    #[serde(
+        default,
+        rename = "match",
+        skip_serializing_if = "ExpectMatch::is_exact"
+    )]
+    pub expect_match: ExpectMatch,
 }
 
 /// Parses a JSONL workload. Blank lines are skipped. Ids must be unique
@@ -45,6 +80,20 @@ pub fn parse(text: &str) -> Result<Vec<WorkloadPrompt>> {
                 "workload line {}: prompt is empty",
                 line_no + 1
             )));
+        }
+        if item.expect_match != ExpectMatch::Exact && item.expect.is_none() {
+            return Err(Error::Config(format!(
+                "workload line {}: {} match needs expect",
+                line_no + 1,
+                item.expect_match.as_str()
+            )));
+        }
+        if item.expect_match == ExpectMatch::Regex {
+            if let Some(pattern) = &item.expect {
+                crate::tools::compile_answer_regex(pattern).map_err(|e| {
+                    Error::Config(format!("workload line {}: invalid regex: {e}", line_no + 1))
+                })?;
+            }
         }
         if !seen.insert(item.id.clone()) {
             return Err(Error::Config(format!(
