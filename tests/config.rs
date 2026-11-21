@@ -34,6 +34,26 @@ fn parses_profiles_and_fields() {
     assert_eq!(overnight.max_tokens, Some(1024));
     assert_eq!(overnight.timeout, Some(300));
     assert!(overnight.prompt.is_none());
+    assert!(overnight.temperature.is_none());
+}
+
+#[test]
+fn profile_sampling_accepts_integer_temperature() {
+    let config = Config::from_toml_str(
+        r#"
+[profiles.repro]
+temperature = 0
+top_p = 1
+seed = 7
+system = "Be brief."
+"#,
+    )
+    .expect("parse");
+    let repro = config.profile("repro").expect("repro");
+    assert_eq!(repro.temperature, Some(0.0));
+    assert_eq!(repro.top_p, Some(1.0));
+    assert_eq!(repro.seed, Some(7));
+    assert_eq!(repro.system.as_deref(), Some("Be brief."));
 }
 
 #[test]
