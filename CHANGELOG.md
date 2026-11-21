@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-11-21
+
+`race.json` names the price date, the workload, and the prompts that were sent. The 2026-11-15 results table was not re-run.
+
+### Added
+
+- `pricing_as_of` is the price-table date (`2026-11-20`)
+- `workload` is the prompt ids in measured-round order. It is empty when the race was one string
+- `prompt_sha256` is the hex SHA-256 of the prompt texts those rounds sent, joined with a newline. It identifies the workload; it is not a signature
+
 ## [1.16.0] - 2026-11-21
 
 `llmrace gemini` and `llmrace vertex` call `gemini-2.5-flash`. Google shut `gemini-2.0-flash` down on 2026-06-01. `gpt-4o-mini` and `claude-3-5-haiku-latest` stay the OpenAI and Anthropic defaults: both still serve, and changing them would change every existing race's latency and bill.
@@ -550,7 +560,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.17.0...HEAD
+[1.17.0]: https://github.com/dfbustosus/llmrace/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/dfbustosus/llmrace/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/dfbustosus/llmrace/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/dfbustosus/llmrace/compare/v1.13.0...v1.14.0
