@@ -20,6 +20,7 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64) -> HistoryReco
         retry_attempts: 0,
         cost_per_run_usd: None,
         task_pass_rate: None,
+        request_sha256: None,
     }
 }
 
@@ -86,6 +87,7 @@ fn dashboard_escapes_hostile_names() {
         retry_attempts: 0,
         cost_per_run_usd: None,
         task_pass_rate: None,
+        request_sha256: None,
     };
     let html = llmrace::dashboard::render_html(std::slice::from_ref(&record), 30, 1_700_000_060);
     assert!(!html.contains("<script>p"), "unescaped provider: {html}");
