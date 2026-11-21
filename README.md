@@ -203,7 +203,7 @@ Every provider with a matching env var races automatically — no config file:
 |----------|---------|---------------|
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest` |
-| `gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | `mistral` | `MISTRAL_API_KEY` | `mistral-small-latest` |
@@ -218,7 +218,7 @@ Every provider with a matching env var races automatically — no config file:
 | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
 | `ollama` | — (local) | `llama3.2` |
 | `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` | `anthropic.claude-3-5-haiku-20241022-v1:0` — **experimental**¹ |
-| `vertex` | `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_REGION` | `gemini-2.0-flash` — **experimental**¹ |
+| `vertex` | `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_REGION` | `gemini-2.5-flash` — **experimental**¹ |
 | `lmstudio` | — (opt-in local, port 1234) | loaded model |
 | `llamacpp` | — (opt-in local, port 8080) | loaded model |
 | azure | `AZURE_OPENAI_API_KEY` (library: `ProviderSpec::azure_openai`) | per deployment |
@@ -226,7 +226,7 @@ Every provider with a matching env var races automatically — no config file:
 
 Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, so they never pollute auto-detected runs with error lanes.
 
-¹ Bedrock speaks the Converse Stream API (one request body for every model family) and Vertex speaks Gemini `streamGenerateContent`. SigV4, the event-stream decoder and the Vertex JWT are verified against published test vectors. The live account path has not been run here — no AWS or Google credentials were available — so both stay experimental ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
+¹ Bedrock speaks the Converse Stream API (one request body for every model family) and Vertex speaks Gemini `streamGenerateContent`. SigV4, the event-stream decoder and the Vertex JWT are verified against published test vectors. The Gemini and Vertex default model id is now `gemini-2.5-flash`; Google shut `gemini-2.0-flash` down on 2026-06-01. The live account path has still not been run here — no AWS or Google credentials were available — so both stay experimental ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
 
 ## What it measures
 
