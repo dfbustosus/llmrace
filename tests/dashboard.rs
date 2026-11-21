@@ -15,6 +15,10 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64) -> HistoryReco
         itl_p95_ms: None,
         reasoning_tokens: None,
         thinking_ms_estimate: None,
+        failure_rate: None,
+        goodput_tokens_per_sec: None,
+        retry_attempts: 0,
+        cost_per_run_usd: None,
     }
 }
 
@@ -76,6 +80,10 @@ fn dashboard_escapes_hostile_names() {
         itl_p95_ms: None,
         reasoning_tokens: None,
         thinking_ms_estimate: None,
+        failure_rate: None,
+        goodput_tokens_per_sec: None,
+        retry_attempts: 0,
+        cost_per_run_usd: None,
     };
     let html = llmrace::dashboard::render_html(std::slice::from_ref(&record), 30, 1_700_000_060);
     assert!(!html.contains("<script>p"), "unescaped provider: {html}");
