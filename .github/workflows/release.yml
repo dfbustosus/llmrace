@@ -102,14 +102,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Verify version is not already published
+        id: published
         run: |
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
           if curl -sf -A "llmrace-ci" "https://crates.io/api/v1/crates/llmrace/$version" > /dev/null; then
-            echo "::error::llmrace v$version is already on crates.io — bump Cargo.toml version before tagging"
-            exit 1
+            echo "llmrace v$version is already on crates.io — skipping publish"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "ready to publish v$version"
           fi
-          echo "ready to publish v$version"
       - name: Packaging dry-run
+        if: steps.published.outputs.skip != 'true'
         run: cargo publish --dry-run --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
       - name: Publish
+        if: steps.published.outputs.skip != 'true'
         run: cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
