@@ -94,7 +94,7 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
         out.push_str("\n† at least one round was a 3-sigma latency outlier\n");
     }
 
-    out.push_str("\n> Tokens/s is measured over the generation window (total time minus time-to-first-byte), summed across concurrent requests per round. Token counts use provider-reported usage when available. Latency, tokens/s and cost/run use successful rounds only.\n");
+    out.push_str("\n> TTFT is time to first token, the same clock as TTFB. Tokens/s is measured over the generation window (total time minus TTFT), summed across concurrent requests per round. TPOT is that window divided by output tokens; the JSON report gives its median and p95. Token counts use provider-reported usage when available. Latency, tokens/s and cost/run use successful rounds only.\n");
     if summaries.iter().any(|s| !s.failures.is_empty()) {
         out.push_str("> Fail is failed/measured rounds. Rank is goodput: tokens/s × the success rate, so a lane that dropped rounds does not outrank one that answered every round.\n");
     }
@@ -138,7 +138,7 @@ fn group_by_variant(summaries: &[LaneSummary]) -> Vec<(Option<String>, Vec<&Lane
 pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
     let ranked = rank(lanes);
     let mut out = String::new();
-    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFB | Server | Network | ITL p95 | Stutters | Tokens/s | Fail | Cost/run |\n");
+    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFT | Server | Network | ITL p95 | Stutters | Tokens/s | Fail | Cost/run |\n");
     out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|--------:|---------:|---------:|-----:|---------:|\n");
     for (i, s) in ranked.iter().enumerate() {
         let mean = match s.ci95_total_ms() {
@@ -313,7 +313,8 @@ pub fn json_report_with_region(
     let providers: Vec<serde_json::Value> = summaries
         .iter()
         .map(|s| {
-            serde_json::json!({
+            let tpot = s.tpot_ms();
+            let mut value = serde_json::json!({
                 "provider": s.name,
                 "model": s.model,
                 "variant": s.variant,
@@ -368,7 +369,11 @@ pub fn json_report_with_region(
                 "thinking_ms_estimate": s.thinking_ms_estimate(),
                 "request_id": s.last_request_id(),
                 "tool_validity": s.tool_validity(),
-            })
+            });
+            value["ttft_ms"] = serde_json::json!(s.mean_ttfb_ms());
+            value["tpot_p50_ms"] = serde_json::json!(tpot.map(|(p50, _)| p50));
+            value["tpot_p95_ms"] = serde_json::json!(tpot.map(|(_, p95)| p95));
+            value
         })
         .collect();
     serde_json::to_string_pretty(&serde_json::json!({
@@ -463,7 +468,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
         "C",
         "Lat (mean±CI)",
         "p95",
-        "TTFB",
+        "TTFT",
         "Server",
         "Network",
         "ITLp95",
@@ -575,7 +580,7 @@ pub fn histogram_section(summaries: &[LaneSummary]) -> String {
     // TTFB ladder: first-token latency distribution, distinct from the
     // time-to-last-token ladder above
     let ps = [10.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.0];
-    out.push_str("\n## TTFB distribution\n\n");
+    out.push_str("\n## TTFB distribution (TTFT)\n\n");
     out.push_str("| Provider | p10 | p25 | p50 | p75 | p90 | p95 | p99 |\n");
     out.push_str("|--|--:|--:|--:|--:|--:|--:|--:|\n");
     for s in &lanes {
@@ -675,7 +680,7 @@ pub fn html_report_grouped(
         body.push_str("</ol></section>");
     }
 
-    body.push_str("<section><h2>Results</h2><table><tr><th>#</th><th>Provider</th><th>Model</th><th>C</th><th>Latency (mean ± 95% CI)</th><th>p95</th><th>TTFB</th><th>ITL p95</th><th>Fail</th><th>Tokens/s</th></tr>");
+    body.push_str("<section><h2>Results</h2><table><tr><th>#</th><th>Provider</th><th>Model</th><th>C</th><th>Latency (mean ± 95% CI)</th><th>p95</th><th>TTFT</th><th>ITL p95</th><th>Fail</th><th>Tokens/s</th></tr>");
     for (i, s) in rank(summaries).iter().enumerate() {
         let ci = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("±{:.0}", (hi - lo) / 2.0),
