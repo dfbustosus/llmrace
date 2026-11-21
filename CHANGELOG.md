@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-11-21
+
+The repository's own CI now runs the task-success gate, and a tag whose crate is already on crates.io no longer fails the publish job.
+
+### Added
+
+- CI races the mock provider. A drop in task success fails the job. The same request passes
+
+### Changed
+
+- The crates.io publish job skips a version that is already published, instead of failing the tag
+
 ## [1.19.0] - 2026-11-21
 
 A saved race and a new race are compared only when they made the same request. `prompt_sha256` is still the prompt texts. `request_sha256` also covers `expect`, `max_tokens`, sampling, the system prompt, and the tool task.
@@ -579,7 +591,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.19.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.20.0...HEAD
+[1.20.0]: https://github.com/dfbustosus/llmrace/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/dfbustosus/llmrace/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/dfbustosus/llmrace/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/dfbustosus/llmrace/compare/v1.16.0...v1.17.0
