@@ -422,6 +422,20 @@ fn cost_estimates_and_pricing_sane() {
         Some((3.0, 15.0))
     );
     assert_eq!(cost::pricing("custom-anything", "whatever"), None);
+    assert_eq!(cost::pricing("openai", "gpt-5.4"), Some((2.50, 15.00)));
+    assert_eq!(
+        cost::token_rates("openai", "gpt-5.4").and_then(|r| r.cache_read),
+        Some(0.25)
+    );
+    assert_eq!(
+        cost::pricing("anthropic", "claude-haiku-4-5"),
+        Some((1.0, 5.0))
+    );
+    assert_eq!(
+        cost::pricing("gemini", "gemini-2.5-flash"),
+        Some((0.30, 2.50))
+    );
+    assert!(cost::pricing_stamp().contains(cost::PRICING_AS_OF));
     assert_eq!(cost::format_usd(0.000234), "$0.000234");
 }
 
