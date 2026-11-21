@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-11-21
+
+`expect` can be a substring or a regex. A line that only has `expect` stays an exact check, and its request hash does not change.
+
+### Added
+
+- A workload line may set `match` to `exact` (the default), `contains`, or `regex`. An unknown value is rejected when the file is read
+- `contains` is a case-sensitive substring of the trimmed answer. `regex` is compiled then, with a 1 MiB size limit, against the trimmed answer. An invalid pattern fails before any request
+- The request hash records `match` only when it is not `exact`, so a 1.19 baseline of an unchanged exact file still compares
+
 ## [1.21.0] - 2026-11-21
 
 A lane score of 2/3 no longer hides which prompt missed. The per-prompt table names the pass count, and the gate fails when one prompt's success falls.
@@ -601,7 +611,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.21.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.22.0...HEAD
+[1.22.0]: https://github.com/dfbustosus/llmrace/compare/v1.21.0...v1.22.0
 [1.21.0]: https://github.com/dfbustosus/llmrace/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/dfbustosus/llmrace/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/dfbustosus/llmrace/compare/v1.18.0...v1.19.0
