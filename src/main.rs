@@ -68,6 +68,26 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Race", long, default_value_t = 256)]
     max_tokens: u64,
 
+    /// Sampling temperature (0.0..=2.0), passed through to the provider.
+    /// Omit to keep the provider default. Ignored for OpenAI reasoning
+    /// models (gpt-5, o-series), which reject the field. Anthropic only
+    /// accepts 0..=1.
+    #[arg(help_heading = "Prompt shaping", long)]
+    temperature: Option<f64>,
+
+    /// Nucleus sampling top-p (0.0..=1.0). Omit to keep the provider default.
+    #[arg(help_heading = "Prompt shaping", long)]
+    top_p: Option<f64>,
+
+    /// Deterministic seed for OpenAI-compatible and Gemini wires.
+    /// Other providers ignore it. Omit to leave sampling unseeded.
+    #[arg(help_heading = "Prompt shaping", long)]
+    seed: Option<u64>,
+
+    /// System prompt sent with every request. Omit to send only the user prompt.
+    #[arg(help_heading = "Prompt shaping", long)]
+    system: Option<String>,
+
     /// Per-request timeout in seconds.
     #[arg(help_heading = "Race", long, default_value_t = 120)]
     timeout: u64,
@@ -305,10 +325,23 @@ async fn main() -> Result<()> {
 }
 
 /// Routes to a standalone mode or the race; returns the process exit code.
+pub(crate) fn sampling_from_cli(cli: &Cli) -> Result<llmrace::provider::Sampling> {
+    llmrace::provider::Sampling {
+        temperature: cli.temperature,
+        top_p: cli.top_p,
+        seed: cli.seed,
+        system: cli.system.clone(),
+    }
+    .checked()
+    .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 async fn dispatch(
     cli: Cli,
     custom_variants: std::collections::BTreeMap<String, String>,
 ) -> Result<i32> {
+    // Reject impossible sampling before any mode, including --suite.
+    let _ = sampling_from_cli(&cli)?;
     if let Some(suite_path) = &cli.suite {
         let suite = llmrace::suite::load(std::path::Path::new(suite_path))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -514,10 +547,11 @@ fn build_run_config(
             }
         }
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
-        .build()
-        .context("failed to build http client")?;
+    let client = llmrace::provider::benchmark_client(
+        std::time::Duration::from_secs(cli.timeout),
+        cli.concurrency,
+    )?;
+    let sampling = sampling_from_cli(&cli)?;
 
     let runs = if cli.duration.is_some() {
         100_000
@@ -544,6 +578,7 @@ fn build_run_config(
         variant: None,
         duration_secs: cli.duration,
         retries: cli.retries,
+        sampling,
     };
     let weights = match &cli.weights {
         Some(spec) => llmrace::score::Weights::parse(spec)
@@ -711,6 +746,26 @@ fn apply_profile(
     if !explicit("retries") {
         if let Some(v) = profile.retries {
             cli.retries = v;
+        }
+    }
+    if !explicit("temperature") {
+        if let Some(v) = profile.temperature {
+            cli.temperature = Some(v);
+        }
+    }
+    if !explicit("top_p") {
+        if let Some(v) = profile.top_p {
+            cli.top_p = Some(v);
+        }
+    }
+    if !explicit("seed") {
+        if let Some(v) = profile.seed {
+            cli.seed = Some(v);
+        }
+    }
+    if !explicit("system") {
+        if let Some(v) = &profile.system {
+            cli.system = Some(v.clone());
         }
     }
     println!("\u{2699}  profile '{name}' loaded");
