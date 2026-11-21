@@ -22,6 +22,7 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> H
         retry_attempts: 0,
         cost_per_run_usd: None,
         task_pass_rate: None,
+        request_sha256: None,
     }
 }
 
@@ -73,6 +74,24 @@ fn trends_window_filter_and_model_swaps() {
     let openai = trends.iter().find(|t| t.name == "openai").unwrap();
     assert!(!openai.model_swapped());
     assert!((openai.ttfb_delta_pct() - 2.439).abs() < 0.01);
+
+    let mut other = rec(now - 3 * 86_400, "groq", "llama-3", 25.0, 390.0, 550.0);
+    other.request_sha256 = Some("other-request".into());
+    let mut same_a = rec(now - 2 * 86_400, "groq", "llama-3", 30.0, 380.0, 600.0);
+    same_a.request_sha256 = Some("same".into());
+    let mut same_b = rec(now - 86_400, "groq", "llama-3", 40.0, 360.0, 700.0);
+    same_b.request_sha256 = Some("same".into());
+    let mixed = build_trends(&[other, same_a, same_b], 30, now, &[]);
+    assert_eq!(mixed.len(), 1);
+    assert!(mixed[0].request_changed);
+    assert_eq!(mixed[0].records.len(), 2);
+    let table = llmrace::history::render_trend_table(&mixed, 30);
+    assert!(table.contains("request changed"), "{table}");
+
+    let lone = rec(now - 86_400, "solo", "m", 10.0, 50.0, 100.0);
+    let mut different = rec(now - 2 * 86_400, "solo", "m", 12.0, 48.0, 110.0);
+    different.request_sha256 = Some("only-one".into());
+    assert!(build_trends(&[lone, different], 30, now, &[]).is_empty());
 
     let filtered = build_trends(&records, 30, now, &["groq".to_string()]);
     assert_eq!(filtered.len(), 1);
@@ -126,6 +145,7 @@ fn old_history_without_goodput_still_loads() {
     assert_eq!(record.retry_attempts, 0);
     assert!(record.cost_per_run_usd.is_none());
     assert!(record.task_pass_rate.is_none());
+    assert!(record.request_sha256.is_none());
 }
 
 #[test]
