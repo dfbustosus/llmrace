@@ -287,8 +287,24 @@ impl LaneSummary {
             cache_read: bucket(self.mean_cache_read_tokens()),
             cache_write: bucket(self.mean_cache_write_tokens()),
             cache_write_1h: bucket(self.mean_cache_write_1h_tokens()),
-            output: self.mean_tokens(),
+            output: self.mean_tokens() + self.mean_extra_reasoning(),
         }
+    }
+
+    /// Mean reasoning tokens that are billed on top of completion tokens.
+    /// Gemini thoughts are this case. OpenAI reasoning is already inside
+    /// `tokens`, so it contributes nothing here.
+    fn mean_extra_reasoning(&self) -> f64 {
+        if self.runs.is_empty() {
+            return 0.0;
+        }
+        let extra: u64 = self
+            .runs
+            .iter()
+            .filter(|r| r.reasoning_billed_separately)
+            .filter_map(|r| r.reasoning_tokens)
+            .sum();
+        extra as f64 / self.runs.len() as f64
     }
 
     /// Cost per round in USD, when the model has known pricing.
@@ -373,12 +389,39 @@ impl LaneSummary {
         self.runs.iter().map(|r| r.visible_tokens).sum()
     }
 
-    /// Hidden reasoning tokens: provider-reported usage minus the visible
-    /// stream estimate. Zero for classic models and providers without
-    /// usage reporting.
+    /// Reasoning tokens. Uses the provider count (`thoughtsTokenCount`,
+    /// OpenAI `reasoning_tokens`) when any round carried one. Otherwise
+    /// the visible-stream estimate: usage minus streamed tokens.
     #[must_use]
     pub fn reasoning_tokens(&self) -> u64 {
+        let reported: Vec<u64> = self
+            .runs
+            .iter()
+            .filter_map(|r| r.reasoning_tokens)
+            .collect();
+        if !reported.is_empty() {
+            return reported.iter().sum();
+        }
         self.total_tokens().saturating_sub(self.visible_tokens())
+    }
+
+    /// Time per output token, in milliseconds: the effective generation
+    /// window divided by completion tokens. Median and p95 across rounds.
+    /// This is the inverse of the decode rate inside tokens/s. `None` when
+    /// no round produced tokens.
+    #[must_use]
+    pub fn tpot_ms(&self) -> Option<(f64, f64)> {
+        let values: Vec<f64> = self
+            .runs
+            .iter()
+            .filter(|r| r.tokens > 0)
+            .map(|r| r.effective_gen_ms() / r.tokens as f64)
+            .collect();
+        if values.is_empty() {
+            return None;
+        }
+        let sample = Sample::from_values(values);
+        Some((sample.median(), sample.percentile(95.0)))
     }
 
     /// Total provider-reported tokens across rounds.
