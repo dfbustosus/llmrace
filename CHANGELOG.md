@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-11-20
+
+The number on the screen and the number in CI are the same number. Failure rate, goodput, retries and cost now survive `--record`, `--baseline` and `--recommend`, and a reasoning model's bill includes the tokens the provider actually charged.
+
+### Fixed
+
+- **The production loop keeps failed rounds.** History records `failure_rate`, `goodput_tokens_per_sec`, `retry_attempts` and `cost_per_run_usd`. Older JSONL still loads. SQLite adds the same columns
+- `--baseline` fails when the failure rate rises (percentage points), when goodput falls, or when a priced cost/run rises, beside the latency and tokens/s checks. A baseline that never recorded the field skips it. `--require-significance` still filters the noisy means; failure rate, goodput and cost are whole-sample ratios, so a threshold breach on those counts
+- `--recommend` ranks throughput on goodput and says when a provider's failure rate is why it lost the lead. A recorded cost is used instead of re-estimating one
+- **Gemini thoughts are billed as output.** `thoughtsTokenCount` is not inside `candidatesTokenCount`, so it is added to the output bill. OpenAI `completion_tokens` already includes `reasoning_tokens`, which is recorded and not added twice. The visible-stream estimate remains only when the provider sent no count
+- `--ramp` marks the concurrency where goodput peaks, and JSON names the first level whose failure rate crosses 5%
+
+### Added
+
+- Reports print TTFT for the existing TTFB clock. JSON adds `ttft_ms`, `tpot_p50_ms` and `tpot_p95_ms` (time per output token: the generation window divided by completion tokens)
+- `HistoryRecord` and `BaselineProvider` carry the new fields, all serde-default
+- `ProviderProfile::median_goodput`, `median_failure_rate` and `rank_throughput`
+- `StreamEvent` and `RunMetrics` carry `reasoning_tokens` and `reasoning_billed_separately`
+- `LaneSummary::tpot_ms`
+
 ## [1.10.0] - 2026-11-20
 
 A failed round used to disappear. Latency, tokens/s and the winner were computed from whatever survived, so a provider that timed out half its calls could beat one that answered every call.
@@ -473,7 +493,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/dfbustosus/llmrace/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/dfbustosus/llmrace/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/dfbustosus/llmrace/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/dfbustosus/llmrace/compare/v1.7.0...v1.8.0
