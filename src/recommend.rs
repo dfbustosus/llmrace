@@ -37,6 +37,8 @@ pub struct ProviderProfile {
     pub median_goodput: Option<f64>,
     /// Median failure rate across races that recorded it.
     pub median_failure_rate: Option<f64>,
+    /// Median task-pass rate across races that recorded one.
+    pub median_task_pass: Option<f64>,
 }
 
 impl ProviderProfile {
@@ -91,6 +93,7 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                 .filter_map(|r| r.goodput_tokens_per_sec)
                 .collect();
             let rates: Vec<f64> = races.iter().filter_map(|r| r.failure_rate).collect();
+            let tasks: Vec<f64> = races.iter().filter_map(|r| r.task_pass_rate).collect();
             let recorded_costs: Vec<f64> =
                 races.iter().filter_map(|r| r.cost_per_run_usd).collect();
             let sample = Sample::from_values(latencies.clone());
@@ -138,6 +141,7 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                     .then(|| Sample::from_values(goodputs).median()),
                 median_failure_rate: (!rates.is_empty())
                     .then(|| Sample::from_values(rates).median()),
+                median_task_pass: (!tasks.is_empty()).then(|| Sample::from_values(tasks).median()),
             })
         })
         .collect()
@@ -200,6 +204,32 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
                     raw.median_tokens_per_sec,
                     rate * 100.0
                 ));
+            }
+        }
+    }
+    if let (Some(fast), Some(careful)) = (
+        profiles.iter().max_by(|a, b| {
+            a.rank_throughput()
+                .partial_cmp(&b.rank_throughput())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        profiles.iter().max_by(|a, b| {
+            a.median_task_pass
+                .unwrap_or(0.0)
+                .partial_cmp(&b.median_task_pass.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+    ) {
+        if fast.name != careful.name {
+            if let (Some(rate), Some(best)) = (fast.median_task_pass, careful.median_task_pass) {
+                if best > rate {
+                    out.push_str(&format!(
+                        "  {} leads on goodput ({:.0}) but loses on task success because its pass rate is {:.0}%.\n",
+                        fast.name,
+                        fast.rank_throughput(),
+                        rate * 100.0
+                    ));
+                }
             }
         }
     }
