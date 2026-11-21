@@ -49,6 +49,24 @@ pub fn race_report_schema() -> String {
           "concurrency": {"type": "integer", "minimum": 1},
           "successful": {"type": "boolean"},
           "error": {"type": ["string", "null"]},
+          "measured_rounds": {"type": "integer", "minimum": 0},
+          "failed_rounds": {"type": "integer", "minimum": 0},
+          "failure_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "retry_attempts": {"type": "integer", "minimum": 0},
+          "goodput_tokens_per_sec": {"type": "number", "minimum": 0},
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["elapsed_ms", "class", "attempts", "message"],
+              "properties": {
+                "elapsed_ms": {"type": "number", "minimum": 0},
+                "class": {"type": "string"},
+                "attempts": {"type": "integer", "minimum": 1},
+                "message": {"type": "string"}
+              }
+            }
+          },
           "runs": {
             "type": "array",
             "items": {
