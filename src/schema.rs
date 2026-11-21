@@ -60,6 +60,9 @@ pub fn race_report_schema() -> String {
                 "tokens": {"type": "integer", "minimum": 0},
                 "chars": {"type": "integer", "minimum": 0},
                 "prompt_tokens": {"type": "integer", "minimum": 0},
+                "cache_read_tokens": {"type": "integer", "minimum": 0},
+                "cache_write_tokens": {"type": "integer", "minimum": 0},
+                "cache_write_1h_tokens": {"type": "integer", "minimum": 0},
                 "tokens_per_sec": {"type": "number", "minimum": 0}
               }
             }
@@ -80,6 +83,10 @@ pub fn race_report_schema() -> String {
           "cost_per_run_usd": {"type": ["number", "null"]},
           "prompt_tokens": {"type": ["number", "null"]},
           "prompt_tokens_measured": {"type": "boolean"},
+          "cache_read_tokens": {"type": ["number", "null"]},
+          "cache_write_tokens": {"type": ["number", "null"]},
+          "cache_write_1h_tokens": {"type": ["number", "null"]},
+          "cache_discount_applied": {"type": "boolean"},
           "server_ms": {"type": ["number", "null"]},
           "network_overhead_ms": {"type": ["number", "null"]},
           "itl_p50_ms": {"type": ["number", "null"]},
