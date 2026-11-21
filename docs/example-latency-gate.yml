@@ -1,12 +1,13 @@
-# Example: llmrace as a CI latency gate.
+# Example: llmrace as a CI race gate.
 #
-# Copy into .github/workflows/latency.yml of any project. It records a
-# baseline once (committed to the repo), then fails the pipeline only when
-# a provider regresses beyond the threshold AND the difference is
-# statistically significant (--require-significance) — flaky thresholds
-# over noise do not fail builds.
+# Copy into .github/workflows/llmrace.yml of any project. It records a
+# baseline once (committed to the repo), then fails the pipeline when a
+# provider regresses beyond the threshold. Latency and tokens/s also require
+# a significant difference (--require-significance). Failure rate, goodput,
+# cost and task success are ratios of the whole sample, so a threshold
+# breach on those fails the build without a t-test.
 
-name: Latency gate
+name: Race gate
 
 on:
   pull_request:
@@ -23,8 +24,11 @@ jobs:
           tool: llmrace
 
       # Record the baseline with:
-      #   llmrace openai groq -n 10 --warmup 2 --json --out baseline/llmrace-report.json
+      #   llmrace openai groq -n 10 --warmup 2 --retries 2 \
+      #     --workload examples/workloads/short-answer.jsonl \
+      #     --json --out baseline/llmrace-report.md
       # …then commit baseline/llmrace-report.json to the repository.
+      # --json writes the sibling llmrace-report.json next to --out.
 
       - name: Race and gate
         env:
@@ -33,9 +37,11 @@ jobs:
         run: |
           llmrace openai groq \
             -n 10 --warmup 2 --retries 2 \
+            --workload examples/workloads/short-answer.jsonl \
             --baseline baseline/llmrace-report.json \
             --max-regression 15 \
             --require-significance \
+            --json \
             --out llmrace-report.md
 
       - name: Upload report
