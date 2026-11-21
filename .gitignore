@@ -1,3 +1,4 @@
 /target
 *.md.bak
 llmrace-report.*
+.env
