@@ -51,8 +51,9 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
         let table = report::terminal_table(&summaries);
         println!("\n{table}");
         if cfg.winner {
-            let groups = llmrace::score::score_groups(&summaries, &cfg.weights);
-            print!("{}", llmrace::score::podiums(&groups, &cfg.weights));
+            let weights = llmrace::score::applied_weights(&summaries, &cfg.weights);
+            let groups = llmrace::score::score_groups(&summaries, &weights);
+            print!("{}", llmrace::score::podiums(&groups, &weights));
         }
     }
 
