@@ -421,6 +421,7 @@ pub fn json_report_with_region(
                 Some((ok, n)) => serde_json::json!([ok, n]),
                 None => serde_json::Value::Null,
             };
+            value["task_pass_rate"] = serde_json::json!(s.task_rate());
             value["ttft_ms"] = serde_json::json!(s.mean_ttfb_ms());
             value["tpot_p50_ms"] = serde_json::json!(tpot.map(|(p50, _)| p50));
             value["tpot_p95_ms"] = serde_json::json!(tpot.map(|(_, p95)| p95));
