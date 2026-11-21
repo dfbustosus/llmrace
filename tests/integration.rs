@@ -602,6 +602,16 @@ fn regression_names_the_prompt_that_fell() {
     );
     assert!(report.any_regressed_significant());
     assert!(report.terminal_table(70.0).contains("prompt sum"));
+    let verdict = report.verdict_json(70.0, true);
+    assert_eq!(verdict["ok"], false);
+    let failed_ids: Vec<&str> = verdict["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|failure| failure["prompt_id"].as_str())
+        .collect();
+    assert_eq!(failed_ids, ["sum"]);
+    assert_eq!(verdict["failures"][0]["metric"], "task success");
     let sum = lane
         .prompt_rows()
         .into_iter()
@@ -640,6 +650,10 @@ fn regression_refuses_a_different_request_and_still_reads_an_old_baseline() {
     assert!(report.request_mismatch);
     assert!(report.comparisons.is_empty());
     assert!(report.terminal_table(15.0).contains("REQUEST CHANGED"));
+    let verdict = report.verdict_json(15.0, false);
+    assert_eq!(verdict["ok"], false);
+    assert_eq!(verdict["request_mismatch"], true);
+    assert!(verdict["failures"].as_array().unwrap().is_empty());
 
     let same = evaluate_request(std::slice::from_ref(&lane), &changed, 15.0, Some("abc"));
     assert!(!same.request_mismatch);
