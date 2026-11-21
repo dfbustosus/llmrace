@@ -164,6 +164,7 @@ async fn irregular_chunk_boundaries_survive_the_full_stack() {
             max_tokens: 16,
             tools: false,
             tool_task: None,
+            sampling: llmrace::provider::Sampling::default(),
         },
     )
     .await
@@ -267,6 +268,7 @@ async fn azure_style_auth_sends_api_key_header_not_bearer() {
             max_tokens: 8,
             tools: false,
             tool_task: None,
+            sampling: llmrace::provider::Sampling::default(),
         },
     )
     .await
@@ -381,6 +383,7 @@ async fn gpt5_models_send_max_completion_tokens() {
                 max_tokens: 8,
                 tools: false,
                 tool_task: None,
+                sampling: llmrace::provider::Sampling::default(),
             },
         )
         .await
@@ -498,5 +501,37 @@ async fn model_not_found_errors_point_at_discovery() {
     assert!(
         err.to_string().contains("llmrace --models openai-ish"),
         "hint missing: {err}"
+    );
+}
+
+#[tokio::test]
+async fn permanent_client_errors_are_not_retried() {
+    let (endpoint, server) = spawn_server(Script::Error {
+        status: 400,
+        body: r#"{"error":"bad request"}"#.into(),
+    })
+    .await;
+    let spec = ProviderSpec::custom("bad", &endpoint, None, "nope");
+    let started = std::time::Instant::now();
+    let (handle, _progress) = spawn_lane(
+        reqwest::Client::new(),
+        spec,
+        "nope".into(),
+        BenchConfig {
+            prompt: "hi".into(),
+            runs: 1,
+            warmup: 0,
+            retries: 5,
+            timeout_secs: 5,
+            ..BenchConfig::default()
+        },
+    );
+    let summary = handle.await.expect("lane task");
+    let elapsed = started.elapsed();
+    server.abort();
+    assert!(!summary.successful(), "{summary:?}");
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "a 400 was retried; elapsed {elapsed:?}"
     );
 }
