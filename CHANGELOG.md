@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-20
+
+A failed round used to disappear. Latency, tokens/s and the winner were computed from whatever survived, so a provider that timed out half its calls could beat one that answered every call.
+
+### Fixed
+
+- **Failed measured rounds are kept.** Each one records its class (`timeout`, `rate_limit`, `server`, `client`, `stream`, `protocol`, `io`, `config`), the wall time of the attempt that failed, and how many attempts the round used. Warmup failures stay outside the sample
+- Rank and `--winner` use goodput: successful-round tokens/s × the success rate. A race with no failures ranks exactly as before. Latency, tokens/s and cost/run stay on the successful rounds and the report says so
+- A retry that later succeeds increments `retry_attempts` and is not a failed round. Retries are counted and not priced, because a failed attempt does not return token usage
+
+### Added
+
+- `LaneSummary::failures`, `retry_attempts`, `measured_rounds`, `failure_rate` and `goodput_tokens_per_sec`
+- `FailureClass` and `RoundFailure`
+- Markdown, terminal and HTML tables gain a Fail column (`failed/measured`). JSON adds the same counts plus the failure list. Prometheus gains `llmrace_failure_rate`, `llmrace_goodput_tokens_per_second` and `llmrace_retry_attempts`
+
 ## [1.9.0] - 2026-11-20
 
 Cost follows the cache split the provider already billed. A cache read was priced as a fresh input token, and Anthropic's `input_tokens` (which excludes cache reads and cache writes) was treated as the whole prompt.
@@ -457,7 +473,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/dfbustosus/llmrace/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/dfbustosus/llmrace/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/dfbustosus/llmrace/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/dfbustosus/llmrace/compare/v1.6.0...v1.7.0
