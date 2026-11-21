@@ -1362,7 +1362,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "llmrace"
-version = "1.21.0"
+version = "1.22.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1373,6 +1373,7 @@ dependencies = [
  "crossterm",
  "futures-util",
  "ratatui",
+ "regex",
  "reqwest",
  "rsa",
  "rusqlite",
