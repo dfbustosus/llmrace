@@ -34,6 +34,13 @@ pub struct StreamEvent {
     /// Tokens billed at the 1-hour cache-write rate, when the payload
     /// distinguishes that TTL. A subset of [`Self::prompt_tokens`].
     pub cache_write_1h_tokens: Option<u64>,
+    /// Provider-reported reasoning tokens (`thoughtsTokenCount`, OpenAI
+    /// `reasoning_tokens`). `None` when the provider sent no count.
+    pub reasoning_tokens: Option<u64>,
+    /// `true` when [`Self::reasoning_tokens`] is billed on top of
+    /// [`Self::completion_tokens`]. Gemini thoughts are separate.
+    /// OpenAI `completion_tokens` already includes reasoning.
+    pub reasoning_billed_separately: bool,
 }
 
 /// Input-side usage, normalized so every cache bucket is a subset of
@@ -76,6 +83,8 @@ impl InputUsage {
             cache_read_tokens: self.cache_read_tokens,
             cache_write_tokens: self.cache_write_tokens,
             cache_write_1h_tokens: self.cache_write_1h_tokens,
+            reasoning_tokens: None,
+            reasoning_billed_separately: false,
         }
     }
 }
@@ -293,7 +302,8 @@ impl SseStream {
                     || event.prompt_tokens.is_some()
                     || event.cache_read_tokens.is_some()
                     || event.cache_write_tokens.is_some()
-                    || event.cache_write_1h_tokens.is_some();
+                    || event.cache_write_1h_tokens.is_some()
+                    || event.reasoning_tokens.is_some();
                 if carries_output {
                     self.pending.push_back(event);
                 }
@@ -362,7 +372,12 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
             let usage = json_u64(v.pointer("/usage/completion_tokens"));
-            Some(openai_input(&v).into_event(token, tool_args, usage))
+            let mut event = openai_input(&v).into_event(token, tool_args, usage);
+            // Already inside completion_tokens, so it is recorded and not
+            // added to the bill a second time.
+            event.reasoning_tokens =
+                json_u64(v.pointer("/usage/completion_tokens_details/reasoning_tokens"));
+            Some(event)
         }
         Wire::Anthropic => {
             let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -404,10 +419,20 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 .map(|a| a.to_string());
             let usage = json_u64(v.pointer("/usageMetadata/candidatesTokenCount"));
             let input = gemini_input(&v);
-            if token.is_none() && usage.is_none() && tool_args.is_none() && input.is_empty() {
+            // Thoughts are billed as output and are not inside candidatesTokenCount.
+            let thoughts = json_u64(v.pointer("/usageMetadata/thoughtsTokenCount"));
+            if token.is_none()
+                && usage.is_none()
+                && tool_args.is_none()
+                && input.is_empty()
+                && thoughts.is_none()
+            {
                 return None;
             }
-            Some(input.into_event(token, tool_args, usage))
+            let mut event = input.into_event(token, tool_args, usage);
+            event.reasoning_tokens = thoughts;
+            event.reasoning_billed_separately = thoughts.is_some();
+            Some(event)
         }
         Wire::Cohere => {
             let token = v
