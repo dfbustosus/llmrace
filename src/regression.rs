@@ -66,9 +66,18 @@ impl RegressionReport {
     #[must_use]
     pub fn any_regressed_significant(&self) -> bool {
         self.comparisons.iter().any(|c| {
-            c.metrics
-                .iter()
-                .any(|m| m.regressed && m.p_value.is_some_and(|p| p < 0.05))
+            c.metrics.iter().any(|m| {
+                if !m.regressed {
+                    return false;
+                }
+                match m.p_value {
+                    Some(p) => p < 0.05,
+                    // Failure rate, goodput and cost are ratios of the whole
+                    // sample, not means of a noisy series. A threshold breach
+                    // is the gate; there is no t-test to wait on.
+                    None => matches!(m.label, "failure rate" | "goodput" | "cost/run"),
+                }
+            })
         })
     }
 
@@ -153,6 +162,16 @@ pub struct BaselineProvider {
     /// Aggregate throughput in tokens per second.
     #[serde(default)]
     pub mean_tokens_per_sec: f64,
+    /// Fraction of measured rounds that failed. Absent on baselines saved
+    /// before failed rounds were gated; the metric is then skipped.
+    #[serde(default)]
+    pub failure_rate: Option<f64>,
+    /// Tokens/s times the success rate. Absent on older baselines.
+    #[serde(default)]
+    pub goodput_tokens_per_sec: Option<f64>,
+    /// Cost of one successful round. Absent when the model had no price.
+    #[serde(default)]
+    pub cost_per_run_usd: Option<f64>,
     /// Per-run measurements, when the report was saved with them.
     #[serde(default)]
     pub runs: Vec<BaselineRun>,
@@ -222,6 +241,9 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                 p95_total_ms: s.p95_total_ms(),
                 mean_ttfb_ms: s.mean_ttfb_ms(),
                 mean_tokens_per_sec: s.mean_tokens_per_sec(),
+                failure_rate: s.failure_rate(),
+                goodput_tokens_per_sec: Some(s.goodput_tokens_per_sec()),
+                cost_per_run_usd: s.cost_per_run_usd(),
                 runs: s
                     .runs
                     .iter()
@@ -288,7 +310,7 @@ pub fn compare_baselines(
             continue;
         };
         compared.push((current.provider.clone(), current.variant.clone()));
-        let metrics = vec![
+        let mut metrics = vec![
             latency_metric(
                 "mean latency",
                 base.mean_total_ms,
@@ -318,6 +340,37 @@ pub fn compare_baselines(
                 metric_p_value(&base.runs, &current.runs, |r| r.tokens_per_sec),
             ),
         ];
+        // Older baselines omit these. A missing baseline value is not a
+        // zero, so the gate skips the metric instead of inventing a change.
+        if let (Some(base_rate), Some(current_rate)) = (base.failure_rate, current.failure_rate) {
+            metrics.push(failure_rate_metric(
+                base_rate,
+                current_rate,
+                max_regression_pct,
+            ));
+        }
+        if let (Some(base_goodput), Some(current_goodput)) =
+            (base.goodput_tokens_per_sec, current.goodput_tokens_per_sec)
+        {
+            metrics.push(throughput_metric(
+                "goodput",
+                base_goodput,
+                current_goodput,
+                max_regression_pct,
+                None,
+            ));
+        }
+        if let (Some(base_cost), Some(current_cost)) =
+            (base.cost_per_run_usd, current.cost_per_run_usd)
+        {
+            metrics.push(latency_metric(
+                "cost/run",
+                base_cost,
+                current_cost,
+                max_regression_pct,
+                None,
+            ));
+        }
         report.comparisons.push(ProviderComparison {
             name: current.provider.clone(),
             baseline_model: base.model.clone(),
@@ -357,6 +410,21 @@ fn latency_metric(
         delta_pct,
         regressed: delta_pct > threshold,
         p_value,
+    }
+}
+
+/// Failure rate is a fraction. The delta is percentage points, so a rise
+/// from 0 to 0.20 reads as +20. A zero baseline is not treated as "no
+/// change": any rise past the threshold is a regression.
+fn failure_rate_metric(baseline: f64, current: f64, threshold: f64) -> MetricComparison {
+    let points = (current - baseline) * 100.0;
+    MetricComparison {
+        label: "failure rate",
+        baseline,
+        current,
+        delta_pct: points,
+        regressed: points > threshold,
+        p_value: None,
     }
 }
 
