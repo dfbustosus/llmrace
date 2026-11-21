@@ -95,6 +95,7 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
     }
 
     out.push_str("\n> Tokens/s is measured over the generation window (total time minus time-to-first-byte), summed across concurrent requests per round. Token counts use provider-reported usage when available.\n");
+    out.push_str("> Cost/run uses billed input tokens when the provider reported them. A trailing ~ means input tokens were estimated from the user prompt, which leaves out a system prompt and tool schemas.\n");
     out.push_str("> Generated with [llmrace](https://github.com/dfbustosus/llmrace) 🦀\n");
     out
 }
@@ -127,10 +128,11 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
             Some((lo, hi)) => format!("{:.0} ± {:.0} ms", s.mean_total_ms(), (hi - lo) / 2.0),
             None => format!("{:.0} ms", s.mean_total_ms()),
         };
-        let cost = s
-            .cost_per_run_usd()
-            .map(cost::format_usd)
-            .unwrap_or_else(|| "—".to_string());
+        let cost = match (s.cost_per_run_usd(), s.prompt_tokens_measured()) {
+            (Some(v), true) => cost::format_usd(v),
+            (Some(v), false) => format!("{}~", cost::format_usd(v)),
+            (None, _) => "—".to_string(),
+        };
         let outlier_mark = if s.outlier_runs().is_empty() {
             ""
         } else {
@@ -295,6 +297,7 @@ pub fn json_report_with_region(
                     "ttfb_ms": r.ttfb_ms,
                     "tokens": r.tokens,
                     "chars": r.chars,
+                    "prompt_tokens": r.prompt_tokens,
                     "tokens_per_sec": r.tokens_per_sec(),
                 })).collect::<Vec<_>>(),
                 "mean_total_ms": s.mean_total_ms(),
@@ -307,6 +310,8 @@ pub fn json_report_with_region(
                 "mean_tokens_per_sec": s.mean_tokens_per_sec(),
                 "outlier_runs": s.outlier_runs(),
                 "cost_per_run_usd": s.cost_per_run_usd(),
+                "prompt_tokens": s.mean_prompt_tokens(),
+                "prompt_tokens_measured": s.prompt_tokens_measured(),
                 "server_ms": s.median_server_ms(),
                 "network_overhead_ms": s.network_overhead_ms(),
                 "itl_p50_ms": s.itl_p50_ms(),
