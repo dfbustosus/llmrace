@@ -17,6 +17,16 @@ pub fn race_report_schema() -> String {
     "prompt": {"type": "string"},
     "runs": {"type": "integer", "minimum": 1},
     "max_tokens": {"type": "integer", "minimum": 1},
+    "sampling": {
+      "type": "object",
+      "description": "Present only when the race pinned sampling. Omitted controls were left at the provider default.",
+      "properties": {
+        "temperature": {"type": "number", "minimum": 0, "maximum": 2},
+        "top_p": {"type": "number", "minimum": 0, "maximum": 1},
+        "seed": {"type": "integer", "minimum": 0},
+        "system": {"type": "string"}
+      }
+    },
     "significance": {
       "type": ["object", "null"],
       "properties": {
