@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-20
+
+One prompt is a demo. A race, a suite and a ramp can now share a workload, and a slow prompt shows up on its own row.
+
+### Added
+
+- `--workload FILE` reads a JSONL file, one `{"id","prompt","expect"?}` per line. Every lane draws the same prompt on a given round, in order, and wraps. `--ramp` uses that file. A suite entry sets `workload` to the same path. `--prompt-file` is still one prompt
+- The markdown report gains a Per prompt table. JSON gains a `prompts` array on each lane (`id`, rounds, mean latency, TTFT, tokens/s) when a workload was used
+- `workload::parse`, `workload::load` and `BenchConfig::workload`
+- Built-in files `examples/workloads/short-answer.jsonl` and `examples/workloads/tool-call.jsonl`. `expect` is stored and not scored yet
+
 ## [1.11.0] - 2026-11-20
 
 The number on the screen and the number in CI are the same number. Failure rate, goodput, retries and cost now survive `--record`, `--baseline` and `--recommend`, and a reasoning model's bill includes the tokens the provider actually charged.
@@ -493,7 +504,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/dfbustosus/llmrace/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/dfbustosus/llmrace/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/dfbustosus/llmrace/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/dfbustosus/llmrace/compare/v1.8.0...v1.9.0
