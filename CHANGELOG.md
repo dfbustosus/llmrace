@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-11-21
+
+`llmrace gemini` and `llmrace vertex` call `gemini-2.5-flash`. Google shut `gemini-2.0-flash` down on 2026-06-01. `gpt-4o-mini` and `claude-3-5-haiku-latest` stay the OpenAI and Anthropic defaults: both still serve, and changing them would change every existing race's latency and bill.
+
+### Changed
+
+- Gemini and Vertex default model id is `gemini-2.5-flash`. The old id stays in the price table so a saved race still prices
+- Vertex stays experimental. The live path was not run; no Google credentials were available
+
 ## [1.15.0] - 2026-11-21
 
 A wrong answer now fails the CI gate for the same reason it loses the report. A race with no task still has no task metric, so a plain latency gate does not move.
@@ -541,7 +550,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.15.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.16.0...HEAD
+[1.16.0]: https://github.com/dfbustosus/llmrace/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/dfbustosus/llmrace/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/dfbustosus/llmrace/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/dfbustosus/llmrace/compare/v1.12.0...v1.13.0
