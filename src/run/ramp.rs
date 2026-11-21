@@ -180,6 +180,9 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
         levels,
         cfg.bench.runs
     ));
+    if let Some(note) = llmrace::report::sampling_note(&cfg.bench.sampling) {
+        md.push_str(&note);
+    }
     md.push_str("\n## Saturation curve (tokens/s by concurrency)\n\n");
     md.push_str(&curve);
     md.push_str("\n> Peak marks each provider's highest measured throughput; \u{2b07} flags degradation (>10% drop) beyond the peak.\n");
@@ -194,7 +197,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     }
 
     if cfg.json {
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "tool": "llmrace",
             "version": env!("CARGO_PKG_VERSION"),
             "mode": "ramp",
@@ -205,6 +208,9 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
             "levels": levels,
             "ramp": ramp_json,
         });
+        if let Some(sampling) = llmrace::report::sampling_json(&cfg.bench.sampling) {
+            payload["sampling"] = sampling;
+        }
         let path = crate::report_sibling(&cfg.out, "json");
         std::fs::write(&path, serde_json::to_string_pretty(&payload)?)
             .with_context(|| format!("writing {path}"))?;
