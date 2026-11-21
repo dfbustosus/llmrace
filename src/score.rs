@@ -14,7 +14,9 @@ use crate::error::{Error, Result};
 pub struct Weights {
     /// Weight of mean TTFB (lower is better).
     pub ttfb: f64,
-    /// Weight of aggregate tokens/s (higher is better).
+    /// Weight of goodput (tokens/s × success rate, higher is better).
+    ///
+    /// With no failed rounds this is tokens/s, so a clean race scores as before.
     pub tps: f64,
     /// Weight of p95 latency (lower is better).
     pub p95: f64,
@@ -143,7 +145,7 @@ pub fn score_groups(summaries: &[LaneSummary], w: &Weights) -> Vec<(Option<Strin
 fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
     let lanes: Vec<&LaneSummary> = lanes
         .iter()
-        .filter(|s| s.successful() && s.mean_tokens_per_sec() > 0.0 && s.mean_ttfb_ms() > 0.0)
+        .filter(|s| s.successful() && s.goodput_tokens_per_sec() > 0.0 && s.mean_ttfb_ms() > 0.0)
         .copied()
         .collect();
     if lanes.len() < 2 {
@@ -155,7 +157,7 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
         .fold(f64::MAX, f64::min);
     let best_tps = lanes
         .iter()
-        .map(|s| s.mean_tokens_per_sec())
+        .map(|s| s.goodput_tokens_per_sec())
         .fold(f64::MIN, f64::max);
     let best_p95 = lanes
         .iter()
@@ -175,7 +177,7 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
         .zip(&costs)
         .map(|(s, cost)| {
             let mut penalty = w.ttfb * (s.mean_ttfb_ms() / best_ttfb)
-                + w.tps * (best_tps / s.mean_tokens_per_sec())
+                + w.tps * (best_tps / s.goodput_tokens_per_sec())
                 + w.p95 * (s.p95_total_ms() / best_p95);
             if cost_w > 0.0 {
                 penalty += cost_w * (cost.unwrap_or(best_cost) / best_cost);
