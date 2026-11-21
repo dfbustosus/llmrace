@@ -94,6 +94,7 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
         out.push_str("\n† at least one round was a 3-sigma latency outlier\n");
     }
 
+    out.push_str(&prompt_table(summaries));
     out.push_str("\n> TTFT is time to first token, the same clock as TTFB. Tokens/s is measured over the generation window (total time minus TTFT), summed across concurrent requests per round. TPOT is that window divided by output tokens; the JSON report gives its median and p95. Token counts use provider-reported usage when available. Latency, tokens/s and cost/run use successful rounds only.\n");
     if summaries.iter().any(|s| !s.failures.is_empty()) {
         out.push_str("> Fail is failed/measured rounds. Rank is goodput: tokens/s × the success rate, so a lane that dropped rounds does not outrank one that answered every round.\n");
@@ -191,6 +192,26 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
             fail,
             cost
         ));
+    }
+    out
+}
+
+/// Per-prompt rows, so a slow prompt is visible. Empty when the race
+/// used one prompt.
+fn prompt_table(summaries: &[LaneSummary]) -> String {
+    if summaries.iter().all(|s| s.prompt_rows().is_empty()) {
+        return String::new();
+    }
+    let mut out = String::from(
+        "\n## Per prompt\n\n| Provider | Prompt | Rounds | TTFT | Tokens/s |\n|----------|--------|-------:|-----:|---------:|\n",
+    );
+    for s in summaries {
+        for row in s.prompt_rows() {
+            out.push_str(&format!(
+                "| {} | `{}` | {} | {:.0} ms | {:.1} |\n",
+                s.name, row.id, row.rounds, row.ttfb_ms, row.tokens_per_sec
+            ));
+        }
     }
     out
 }
@@ -370,6 +391,22 @@ pub fn json_report_with_region(
                 "request_id": s.last_request_id(),
                 "tool_validity": s.tool_validity(),
             });
+            let prompts: Vec<serde_json::Value> = s
+                .prompt_rows()
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "id": row.id,
+                        "rounds": row.rounds,
+                        "mean_total_ms": row.total_ms,
+                        "mean_ttfb_ms": row.ttfb_ms,
+                        "mean_tokens_per_sec": row.tokens_per_sec,
+                    })
+                })
+                .collect();
+            if !prompts.is_empty() {
+                value["prompts"] = serde_json::Value::Array(prompts);
+            }
             value["ttft_ms"] = serde_json::json!(s.mean_ttfb_ms());
             value["tpot_p50_ms"] = serde_json::json!(tpot.map(|(p50, _)| p50));
             value["tpot_p95_ms"] = serde_json::json!(tpot.map(|(_, p95)| p95));
