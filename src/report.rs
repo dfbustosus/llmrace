@@ -99,6 +99,9 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
     if summaries.iter().any(|s| !s.failures.is_empty()) {
         out.push_str("> Fail is failed/measured rounds. Rank is goodput: tokens/s × the success rate, so a lane that dropped rounds does not outrank one that answered every round.\n");
     }
+    if summaries.iter().any(|s| s.task_pass().is_some()) {
+        out.push_str("> Pass is task successes over measured rounds. A fast wrong answer is still a successful request. `--winner` counts it; a race with no task leaves the column blank and the podium unchanged.\n");
+    }
     if summaries.iter().any(|s| s.retry_attempts > 0) {
         out.push_str("> Retries are extra attempts before a round settled. They are counted and not priced: a failed attempt does not return token usage.\n");
     }
@@ -139,8 +142,8 @@ fn group_by_variant(summaries: &[LaneSummary]) -> Vec<(Option<String>, Vec<&Lane
 pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
     let ranked = rank(lanes);
     let mut out = String::new();
-    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFT | Server | Network | ITL p95 | Stutters | Tokens/s | Fail | Cost/run |\n");
-    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|--------:|---------:|---------:|-----:|---------:|\n");
+    out.push_str("\n| # | Provider | Model | C | Latency (mean ± 95% CI) | p50 | p95 | TTFT | Server | Network | ITL p95 | Stutters | Tokens/s | Pass | Fail | Cost/run |\n");
+    out.push_str("|--|----------|-------|--:|------------------------:|----:|-----:|-----:|-------:|--------:|--------:|---------:|---------:|-----:|---------:|---------:|\n");
     for (i, s) in ranked.iter().enumerate() {
         let mean = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("{:.0} ± {:.0} ms", s.mean_total_ms(), (hi - lo) / 2.0),
@@ -161,8 +164,12 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
             .map(|v| format!("{v:.0} ms"))
             .unwrap_or_else(|| "—".into());
         let fail = format!("{}/{}", s.failures.len(), s.measured_rounds());
+        let pass = match s.task_pass() {
+            Some((ok, n)) => format!("{ok}/{n}"),
+            None => "—".to_string(),
+        };
         out.push_str(&format!(
-            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             i + 1,
             s.name,
             outlier_mark,
@@ -189,6 +196,7 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
             } else {
                 format!("**{:.1}**", s.mean_tokens_per_sec())
             },
+            pass,
             fail,
             cost
         ));
@@ -407,6 +415,10 @@ pub fn json_report_with_region(
             if !prompts.is_empty() {
                 value["prompts"] = serde_json::Value::Array(prompts);
             }
+            value["task_pass"] = match s.task_pass() {
+                Some((ok, n)) => serde_json::json!([ok, n]),
+                None => serde_json::Value::Null,
+            };
             value["ttft_ms"] = serde_json::json!(s.mean_ttfb_ms());
             value["tpot_p50_ms"] = serde_json::json!(tpot.map(|(p50, _)| p50));
             value["tpot_p95_ms"] = serde_json::json!(tpot.map(|(_, p95)| p95));
@@ -717,14 +729,14 @@ pub fn html_report_grouped(
         body.push_str("</ol></section>");
     }
 
-    body.push_str("<section><h2>Results</h2><table><tr><th>#</th><th>Provider</th><th>Model</th><th>C</th><th>Latency (mean ± 95% CI)</th><th>p95</th><th>TTFT</th><th>ITL p95</th><th>Fail</th><th>Tokens/s</th></tr>");
+    body.push_str("<section><h2>Results</h2><table><tr><th>#</th><th>Provider</th><th>Model</th><th>C</th><th>Latency (mean ± 95% CI)</th><th>p95</th><th>TTFT</th><th>ITL p95</th><th>Pass</th><th>Fail</th><th>Tokens/s</th></tr>");
     for (i, s) in rank(summaries).iter().enumerate() {
         let ci = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("±{:.0}", (hi - lo) / 2.0),
             None => "—".to_string(),
         };
         body.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0} ms {}</td><td>{:.0} ms</td><td>{}</td><td>{}</td><td>{}/{}</td><td><b>{:.1}</b></td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.0} ms {}</td><td>{:.0} ms</td><td>{}</td><td>{}</td><td>{}</td><td>{}/{}</td><td><b>{:.1}</b></td></tr>",
             i + 1,
             crate::util::html_escape(&s.name),
             crate::util::html_escape(&s.model),
@@ -734,6 +746,10 @@ pub fn html_report_grouped(
             s.p95_total_ms(),
             fmt_ms(s.mean_ttfb_ms()),
             s.itl_p95_ms().map(|v| format!("{v:.0} ms")).unwrap_or_else(|| "—".into()),
+            match s.task_pass() {
+                Some((ok, n)) => format!("{ok}/{n}"),
+                None => "—".to_string(),
+            },
             s.failures.len(),
             s.measured_rounds(),
             s.mean_tokens_per_sec(),
