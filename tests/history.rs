@@ -17,6 +17,10 @@ fn rec(ts: u64, provider: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> H
         itl_p95_ms: None,
         reasoning_tokens: None,
         thinking_ms_estimate: None,
+        failure_rate: None,
+        goodput_tokens_per_sec: None,
+        retry_attempts: 0,
+        cost_per_run_usd: None,
     }
 }
 
@@ -107,6 +111,19 @@ async fn record_from_summary_maps_all_fields() {
     assert_eq!(record.concurrency, 2);
     assert!(record.mean_tokens_per_sec > 0.0);
     assert!(record.p95_total_ms >= record.mean_total_ms * 0.99);
+    assert_eq!(record.failure_rate, Some(0.0));
+    assert!(record.goodput_tokens_per_sec.unwrap() > 0.0);
+    assert_eq!(record.retry_attempts, 0);
+}
+
+#[test]
+fn old_history_without_goodput_still_loads() {
+    let raw = r#"{"timestamp_unix":1,"provider":"a","model":"m","concurrency":1,"mean_total_ms":1.0,"p95_total_ms":1.0,"mean_ttfb_ms":1.0,"mean_tokens_per_sec":1.0}"#;
+    let record: HistoryRecord = serde_json::from_str(raw).unwrap();
+    assert!(record.failure_rate.is_none());
+    assert!(record.goodput_tokens_per_sec.is_none());
+    assert_eq!(record.retry_attempts, 0);
+    assert!(record.cost_per_run_usd.is_none());
 }
 
 #[test]
