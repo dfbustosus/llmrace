@@ -659,6 +659,66 @@ fn ramp_conflicts_and_validation() {
 }
 
 #[test]
+fn json_report_carries_the_gate_verdict() {
+    let dir = std::env::temp_dir().join(format!("llmrace-verdict-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("baseline.md");
+    let again = dir.join("again.md");
+    let record = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock", "--no-tui", "-n", "2", "--warmup", "0", "--quiet", "--json", "--out",
+        ])
+        .arg(&baseline)
+        .output()
+        .unwrap();
+    assert!(
+        record.status.success(),
+        "{}",
+        String::from_utf8_lossy(&record.stderr)
+    );
+    let recorded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(baseline.with_extension("json")).unwrap())
+            .unwrap();
+    assert!(recorded.get("regression").is_none());
+
+    let gate = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "-n",
+            "2",
+            "--warmup",
+            "0",
+            "--quiet",
+            "--json",
+            "--max-regression",
+            "10000",
+            "--baseline",
+        ])
+        .arg(baseline.with_extension("json"))
+        .arg("--out")
+        .arg(&again)
+        .output()
+        .unwrap();
+    assert!(
+        gate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&gate.stderr)
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(again.with_extension("json")).unwrap())
+            .unwrap();
+    assert_eq!(body["regression"]["ok"], true);
+    assert_eq!(body["regression"]["request_mismatch"], false);
+    assert!(body["regression"]["failures"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn baseline_gate_end_to_end_passes_on_stable_provider() {
     // mock is deterministic: a baseline recorded now gates a replay cleanly
     let baseline_path = std::env::temp_dir().join("llmrace-baseline-e2e.json");
