@@ -313,6 +313,12 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
             CacheSchedule::Read(0.03),
         ),
         (
+            "vertex/gemini-2.5-flash",
+            0.30,
+            2.50,
+            CacheSchedule::Read(0.03),
+        ),
+        (
             "anthropic/claude-3-7-sonnet-latest",
             3.00,
             15.00,
