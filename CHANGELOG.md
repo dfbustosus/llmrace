@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-11-21
+
+`llmrace gemini` and `llmrace vertex` call `gemini-3.5-flash-lite`. On 2026-12-01 Google routes `gemini-2.5-flash` to that id and bills it at the Flash-Lite rate. `gpt-4o-mini` and `claude-3-5-haiku-latest` stay the OpenAI and Anthropic defaults.
+
+### Changed
+
+- Gemini and Vertex default model id is `gemini-3.5-flash-lite`. The paid text rate, read 2026-11-21, is $0.30 in, $2.50 out, cache read $0.03. `gemini-2.5-flash` stays in the price table
+- Vertex stays experimental. The live path was not run
+
 ## [1.17.0] - 2026-11-21
 
 `race.json` names the price date, the workload, and the prompts that were sent. The 2026-11-15 results table was not re-run.
@@ -560,7 +569,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.17.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.18.0...HEAD
+[1.18.0]: https://github.com/dfbustosus/llmrace/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/dfbustosus/llmrace/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/dfbustosus/llmrace/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/dfbustosus/llmrace/compare/v1.14.0...v1.15.0
