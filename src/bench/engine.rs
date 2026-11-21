@@ -305,6 +305,7 @@ async fn single_request(
     let mut tokens = 0u64;
     let mut chars = 0u64;
     let mut usage: Option<u64> = None;
+    let mut prompt_tokens: Option<u64> = None;
     let mut tool_args = String::new();
     let mut last_token_at: Option<Instant> = None;
     let mut itl_gaps_ms: Vec<f64> = Vec::new();
@@ -368,6 +369,11 @@ async fn single_request(
         if let Some(n) = event.completion_tokens {
             usage = Some(n);
         }
+        // A usage-only event must not start the TTFB clock. Input tokens
+        // often arrive in `message_start`, before any visible text.
+        if let Some(n) = event.prompt_tokens.filter(|n| *n > 0) {
+            prompt_tokens = Some(n);
+        }
     }
 
     let total = start.elapsed();
@@ -386,7 +392,7 @@ async fn single_request(
         ttfb_ms: ttfb.as_secs_f64() * 1000.0,
         tokens,
         chars,
-        prompt_tokens: 0,
+        prompt_tokens: prompt_tokens.unwrap_or(0),
         tool_args,
         server_ms: server_timing.processing_ms,
         request_id: server_timing.request_id,
