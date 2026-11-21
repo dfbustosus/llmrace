@@ -270,6 +270,15 @@ async fn run_round(
             cache_read_tokens: all.iter().map(|m| m.cache_read_tokens).sum(),
             cache_write_tokens: all.iter().map(|m| m.cache_write_tokens).sum(),
             cache_write_1h_tokens: all.iter().map(|m| m.cache_write_1h_tokens).sum(),
+            reasoning_tokens: {
+                let reported: Vec<u64> = all.iter().filter_map(|m| m.reasoning_tokens).collect();
+                if reported.is_empty() {
+                    None
+                } else {
+                    Some(reported.iter().sum())
+                }
+            },
+            reasoning_billed_separately: all.iter().any(|m| m.reasoning_billed_separately),
             tool_args: all
                 .iter()
                 .map(|m| m.tool_args.as_str())
@@ -346,6 +355,8 @@ async fn single_request(
     let mut cache_read_tokens = 0u64;
     let mut cache_write_tokens = 0u64;
     let mut cache_write_1h_tokens = 0u64;
+    let mut reasoning_tokens: Option<u64> = None;
+    let mut reasoning_billed_separately = false;
     let mut tool_args = String::new();
     let mut last_token_at: Option<Instant> = None;
     let mut itl_gaps_ms: Vec<f64> = Vec::new();
@@ -425,6 +436,10 @@ async fn single_request(
         if let Some(n) = event.cache_write_1h_tokens {
             cache_write_1h_tokens = n;
         }
+        if let Some(n) = event.reasoning_tokens {
+            reasoning_tokens = Some(n);
+            reasoning_billed_separately |= event.reasoning_billed_separately;
+        }
     }
 
     let total = start.elapsed();
@@ -447,6 +462,8 @@ async fn single_request(
         cache_read_tokens,
         cache_write_tokens,
         cache_write_1h_tokens,
+        reasoning_tokens,
+        reasoning_billed_separately,
         tool_args,
         server_ms: server_timing.processing_ms,
         request_id: server_timing.request_id,
