@@ -44,6 +44,17 @@ pub fn render_metrics(summaries: &[LaneSummary]) -> String {
             "llmrace_tokens_per_second{{{labels}}} {:.3}\n",
             s.mean_tokens_per_sec()
         ));
+        out.push_str(&format!(
+            "llmrace_goodput_tokens_per_second{{{labels}}} {:.3}\n",
+            s.goodput_tokens_per_sec()
+        ));
+        if let Some(rate) = s.failure_rate() {
+            out.push_str(&format!("llmrace_failure_rate{{{labels}}} {:.6}\n", rate));
+        }
+        out.push_str(&format!(
+            "llmrace_retry_attempts{{{labels}}} {}\n",
+            s.retry_attempts
+        ));
         if let Some(cost) = s.cost_per_run_usd() {
             out.push_str(&format!(
                 "llmrace_cost_per_run_usd{{{labels}}} {:.6}\n",
