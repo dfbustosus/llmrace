@@ -29,6 +29,7 @@ jobs:
       #     --json --out baseline/llmrace-report.md
       # …then commit baseline/llmrace-report.json to the repository.
       # --json writes the sibling llmrace-report.json next to --out.
+      # That JSON has regression.failures[].prompt_id when the gate fails.
 
       - name: Race and gate
         env:
