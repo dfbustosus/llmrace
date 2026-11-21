@@ -274,7 +274,7 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Modes", long)]
     init: bool,
 
-    /// Override pricing for a model: provider/model=input:output (USD per million tokens). Repeatable.
+    /// Override pricing: provider/model=input:output[:cached[:write[:write_1h]]] (USD per million tokens). Repeatable.
     #[arg(help_heading = "Prompt shaping", long = "price")]
     prices: Vec<String>,
 
@@ -496,9 +496,10 @@ async fn dispatch(
     if !cli.prices.is_empty() {
         let mut parsed = Vec::new();
         for raw in &cli.prices {
-            parsed.push(llmrace::cost::parse_override(raw)?);
+            let over = llmrace::cost::parse_price_override(raw)?;
+            parsed.push((over.key, over.rates));
         }
-        llmrace::cost::set_overrides(parsed);
+        llmrace::cost::set_rate_overrides(parsed);
     }
 
     let cfg = build_run_config(cli, custom_variants)?;
