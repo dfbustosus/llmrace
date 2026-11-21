@@ -203,7 +203,7 @@ Every provider with a matching env var races automatically — no config file:
 |----------|---------|---------------|
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest` |
-| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-3.5-flash-lite` |
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` |
 | `mistral` | `MISTRAL_API_KEY` | `mistral-small-latest` |
@@ -218,7 +218,7 @@ Every provider with a matching env var races automatically — no config file:
 | `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` |
 | `ollama` | — (local) | `llama3.2` |
 | `bedrock` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_REGION` | `anthropic.claude-3-5-haiku-20241022-v1:0` — **experimental**¹ |
-| `vertex` | `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_REGION` | `gemini-2.5-flash` — **experimental**¹ |
+| `vertex` | `GOOGLE_APPLICATION_CREDENTIALS` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_REGION` | `gemini-3.5-flash-lite` — **experimental**¹ |
 | `lmstudio` | — (opt-in local, port 1234) | loaded model |
 | `llamacpp` | — (opt-in local, port 8080) | loaded model |
 | azure | `AZURE_OPENAI_API_KEY` (library: `ProviderSpec::azure_openai`) | per deployment |
@@ -226,7 +226,7 @@ Every provider with a matching env var races automatically — no config file:
 
 Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, so they never pollute auto-detected runs with error lanes.
 
-¹ Bedrock speaks the Converse Stream API (one request body for every model family) and Vertex speaks Gemini `streamGenerateContent`. SigV4, the event-stream decoder and the Vertex JWT are verified against published test vectors. The Gemini and Vertex default model id is now `gemini-2.5-flash`; Google shut `gemini-2.0-flash` down on 2026-06-01. The live account path has still not been run here — no AWS or Google credentials were available — so both stay experimental ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
+¹ Bedrock speaks the Converse Stream API (one request body for every model family) and Vertex speaks Gemini `streamGenerateContent`. SigV4, the event-stream decoder and the Vertex JWT are verified against published test vectors. The Gemini and Vertex default model id is `gemini-3.5-flash-lite`. On 2026-12-01 Google routes `gemini-2.5-flash` to that id and bills it at the Flash-Lite rate. The live account path has still not been run here — no AWS or Google credentials were available — so both stay experimental ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
 
 ## What it measures
 
@@ -305,7 +305,7 @@ Any HTTP response counts as endpoint reachability — even a 401 proves DNS, TLS
 
 ## Pricing
 
-Cost columns use a built-in table. OpenAI, Anthropic and Gemini rows were read on 2026-11-20 from [OpenAI pricing](https://developers.openai.com/api/docs/pricing), [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) and [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing). Those rows include the models people race now (`gpt-5.4` and its mini and nano, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gemini-2.5-flash`) and are not a row for every model id. Other providers were not re-read that day. Cache reads and cache writes use the published discount for models whose cached rate is in the table. Override per model (repeatable, USD per million tokens). A two-part override replaces the whole row and does not keep the built-in cache discount; add `:cached`, `:write` and `:write_1h` when you want those rates:
+Cost columns use a built-in table. OpenAI, Anthropic and Gemini rows were read on 2026-11-20 from [OpenAI pricing](https://developers.openai.com/api/docs/pricing), [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) and [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing). Those rows include the models people race now (`gpt-5.4` and its mini and nano, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gemini-2.5-flash`). `gemini-3.5-flash-lite` was read on 2026-11-21 from the same Gemini page ($0.30 / $2.50, cache read $0.03). The table is not a row for every model id. Other providers were not re-read that day. Cache reads and cache writes use the published discount for models whose cached rate is in the table. Override per model (repeatable, USD per million tokens). A two-part override replaces the whole row and does not keep the built-in cache discount; add `:cached`, `:write` and `:write_1h` when you want those rates:
 
 ```bash
 llmrace openai --price openai/gpt-4o-mini=1.25:5
