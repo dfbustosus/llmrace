@@ -44,51 +44,88 @@ async fn spawn_server(script: Script) -> (String, tokio::task::JoinHandle<()>) {
                 }
             }
         }
-        match script {
-            Script::Sse { events, chunk_size } => {
-                socket
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
-                    )
-                    .await
-                    .expect("write headers");
-                let payload: String = events.join("\n\n") + "\n\n";
-                let bytes = payload.as_bytes();
-                for chunk in bytes.chunks(chunk_size.max(1)) {
-                    socket.write_all(chunk).await.expect("write chunk");
-                    tokio::time::sleep(Duration::from_millis(2)).await;
-                }
-            }
-            Script::Error { status, body } => {
-                let head = format!(
-                    "HTTP/1.1 {status} Err\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                socket
-                    .write_all(head.as_bytes())
-                    .await
-                    .expect("write error head");
-                socket
-                    .write_all(body.as_bytes())
-                    .await
-                    .expect("write error body");
-            }
-            Script::Stall => {
-                socket
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
-                    )
-                    .await
-                    .expect("write headers");
-                socket
-                    .write_all(b"data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n")
-                    .await
-                    .expect("write first token");
-                // hold the connection open without further data
-                std::future::pending::<()>().await;
+        respond(&mut socket, script).await;
+        socket.shutdown().await.ok();
+    });
+    (format!("http://{addr}/v1/chat/completions"), handle)
+}
+
+async fn respond(socket: &mut tokio::net::TcpStream, script: Script) {
+    match script {
+        Script::Sse { events, chunk_size } => {
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write headers");
+            let payload: String = events.join("\n\n") + "\n\n";
+            let bytes = payload.as_bytes();
+            for chunk in bytes.chunks(chunk_size.max(1)) {
+                socket.write_all(chunk).await.expect("write chunk");
+                tokio::time::sleep(Duration::from_millis(2)).await;
             }
         }
-        socket.shutdown().await.ok();
+        Script::Error { status, body } => {
+            let head = format!(
+                "HTTP/1.1 {status} Err\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket
+                .write_all(head.as_bytes())
+                .await
+                .expect("write error head");
+            socket
+                .write_all(body.as_bytes())
+                .await
+                .expect("write error body");
+        }
+        Script::Stall => {
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write headers");
+            socket
+                .write_all(b"data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\n")
+                .await
+                .expect("write first token");
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// Serves `steps` in order, one HTTP request each. Connection: close forces
+/// the client to open a new connection for the next round.
+async fn spawn_sequence(steps: Vec<Script>) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let handle = tokio::spawn(async move {
+        for script in steps {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 2048];
+            loop {
+                let n = socket.read(&mut tmp).await.expect("read request");
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(header_end) = find_header_end(&buf) {
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                    if let Some(cl) = content_length(&headers) {
+                        if buf.len() >= header_end + 4 + cl {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            respond(&mut socket, script).await;
+            socket.shutdown().await.ok();
+        }
     });
     (format!("http://{addr}/v1/chat/completions"), handle)
 }
@@ -205,12 +242,90 @@ async fn http_error_surfaces_as_lane_error() {
     let summary = handle.await.expect("lane task");
     server.await.expect("server task");
     assert!(!summary.successful());
+    assert_eq!(summary.failures.len(), 1);
+    assert_eq!(
+        summary.failures[0].class,
+        llmrace::bench::FailureClass::RateLimit
+    );
+    assert_eq!(summary.runs.len(), 0);
+    assert_eq!(summary.retry_attempts, 0);
     let err = summary.error.expect("lane error");
     assert!(err.contains("HTTP 429"), "unexpected error: {err}");
     assert!(
         err.contains("rate limited"),
         "error should include body: {err}"
     );
+}
+
+fn rate_limited() -> Script {
+    Script::Error {
+        status: 429,
+        body: r#"{"error":{"message":"rate limited"}}"#.into(),
+    }
+}
+
+fn one_success() -> Script {
+    Script::Sse {
+        events: openai_events(),
+        chunk_size: 1024,
+    }
+}
+
+#[tokio::test]
+async fn a_failed_measured_round_stays_on_the_lane() {
+    let (endpoint, server) =
+        spawn_sequence(vec![rate_limited(), rate_limited(), one_success()]).await;
+    let spec = ProviderSpec::custom("testup", &endpoint, None, "test-model");
+    let (handle, _progress) = spawn_lane(
+        reqwest::Client::new(),
+        spec,
+        "test-model".into(),
+        BenchConfig {
+            prompt: "hi".into(),
+            runs: 2,
+            warmup: 1,
+            retries: 0,
+            ..BenchConfig::default()
+        },
+    );
+    let summary = handle.await.expect("lane task");
+    server.await.expect("server task");
+    assert!(summary.successful(), "{:?}", summary.error);
+    assert!(summary.error.is_none());
+    assert_eq!(summary.runs.len(), 1);
+    assert_eq!(summary.failures.len(), 1);
+    assert_eq!(
+        summary.failures[0].class,
+        llmrace::bench::FailureClass::RateLimit
+    );
+    assert_eq!(summary.retry_attempts, 0);
+    let rate = summary.failure_rate().expect("measured");
+    assert!((rate - 0.5).abs() < 1e-12, "{rate}");
+}
+
+#[tokio::test]
+async fn a_retry_that_then_succeeds_is_not_a_failed_round() {
+    let (endpoint, server) = spawn_sequence(vec![rate_limited(), one_success()]).await;
+    let spec = ProviderSpec::custom("testup", &endpoint, None, "test-model");
+    let (handle, _progress) = spawn_lane(
+        reqwest::Client::new(),
+        spec,
+        "test-model".into(),
+        BenchConfig {
+            prompt: "hi".into(),
+            runs: 1,
+            warmup: 0,
+            retries: 1,
+            ..BenchConfig::default()
+        },
+    );
+    let summary = handle.await.expect("lane task");
+    server.await.expect("server task");
+    assert!(summary.successful(), "{:?}", summary.error);
+    assert!(summary.failures.is_empty());
+    assert_eq!(summary.runs.len(), 1);
+    assert_eq!(summary.retry_attempts, 1);
+    assert_eq!(summary.failure_rate(), Some(0.0));
 }
 
 #[test]
