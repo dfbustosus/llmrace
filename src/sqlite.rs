@@ -43,6 +43,7 @@ pub fn open(path: &std::path::Path) -> rusqlite::Result<Connection> {
     );
     let _ = conn.execute("ALTER TABLE runs ADD COLUMN retry_attempts INTEGER", []);
     let _ = conn.execute("ALTER TABLE runs ADD COLUMN cost_per_run_usd REAL", []);
+    let _ = conn.execute("ALTER TABLE runs ADD COLUMN task_pass_rate REAL", []);
     Ok(conn)
 }
 
@@ -54,8 +55,9 @@ pub fn save(conn: &Connection, records: &[HistoryRecord]) -> rusqlite::Result<()
             "INSERT INTO runs (timestamp_unix, provider, model, variant, concurrency,
                                mean_total_ms, p95_total_ms, mean_ttfb_ms, mean_tokens_per_sec,
                                itl_p95_ms, reasoning_tokens, thinking_ms,
-                               failure_rate, goodput_tokens_per_sec, retry_attempts, cost_per_run_usd)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                               failure_rate, goodput_tokens_per_sec, retry_attempts, cost_per_run_usd,
+                               task_pass_rate)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         )?;
         for r in records {
             stmt.execute(rusqlite::params![
@@ -75,6 +77,7 @@ pub fn save(conn: &Connection, records: &[HistoryRecord]) -> rusqlite::Result<()
                 r.goodput_tokens_per_sec,
                 r.retry_attempts as i64,
                 r.cost_per_run_usd,
+                r.task_pass_rate,
             ])?;
         }
         Ok(())
@@ -94,7 +97,8 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<HistoryRecord>> {
         "SELECT timestamp_unix, provider, model, variant, concurrency,
                 mean_total_ms, p95_total_ms, mean_ttfb_ms, mean_tokens_per_sec,
                 itl_p95_ms, reasoning_tokens, thinking_ms,
-                failure_rate, goodput_tokens_per_sec, retry_attempts, cost_per_run_usd
+                failure_rate, goodput_tokens_per_sec, retry_attempts, cost_per_run_usd,
+                task_pass_rate
          FROM runs ORDER BY timestamp_unix, provider",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -115,6 +119,7 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<HistoryRecord>> {
             goodput_tokens_per_sec: row.get(13)?,
             retry_attempts: row.get::<_, Option<i64>>(14)?.unwrap_or(0).max(0) as u64,
             cost_per_run_usd: row.get(15)?,
+            task_pass_rate: row.get(16)?,
         })
     })?;
     rows.collect()
