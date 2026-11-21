@@ -32,9 +32,21 @@ pub struct ProviderProfile {
     pub latency_cv: f64,
     /// Estimated cost per run in USD, when pricing is known.
     pub cost_per_run_usd: Option<f64>,
+    /// Median goodput across races that recorded it. `None` on history
+    /// written before failed rounds were kept; ranking then uses tokens/s.
+    pub median_goodput: Option<f64>,
+    /// Median failure rate across races that recorded it.
+    pub median_failure_rate: Option<f64>,
 }
 
 impl ProviderProfile {
+    /// Throughput used for ranking: goodput when history has it, otherwise
+    /// raw tokens/s.
+    #[must_use]
+    pub fn rank_throughput(&self) -> f64 {
+        self.median_goodput.unwrap_or(self.median_tokens_per_sec)
+    }
+
     /// A one-line quality summary.
     #[must_use]
     pub fn headline(&self) -> String {
@@ -74,8 +86,15 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
             let latencies: Vec<f64> = races.iter().map(|r| r.mean_total_ms).collect();
             let ttfbs: Vec<f64> = races.iter().map(|r| r.mean_ttfb_ms).collect();
             let tps: Vec<f64> = races.iter().map(|r| r.mean_tokens_per_sec).collect();
+            let goodputs: Vec<f64> = races
+                .iter()
+                .filter_map(|r| r.goodput_tokens_per_sec)
+                .collect();
+            let rates: Vec<f64> = races.iter().filter_map(|r| r.failure_rate).collect();
+            let recorded_costs: Vec<f64> =
+                races.iter().filter_map(|r| r.cost_per_run_usd).collect();
             let sample = Sample::from_values(latencies.clone());
-            let cost = crate::cost::pricing(
+            let estimated = crate::cost::pricing(
                 &name,
                 &races.last().map(|r| r.model.clone()).unwrap_or_default(),
             )
@@ -84,6 +103,13 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                     * (latencies.iter().sum::<f64>() / latencies.len() as f64 / 1000.0);
                 avg_tokens * pout / 1_000_000.0
             });
+            // A recorded bill beats the token estimate. History written
+            // before cost was stored still uses the estimate.
+            let cost = if recorded_costs.is_empty() {
+                estimated
+            } else {
+                Some(Sample::from_values(recorded_costs).median())
+            };
             let monthly_cost = cost.map(|per_run| per_run * 1000.0); // 1000 req/day * 30 days
             let median_tps = Sample::from_values(tps.clone()).median();
             let vfm = cost.map(|per_run| {
@@ -108,6 +134,10 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                     0.0
                 },
                 cost_per_run_usd: cost,
+                median_goodput: (!goodputs.is_empty())
+                    .then(|| Sample::from_values(goodputs).median()),
+                median_failure_rate: (!rates.is_empty())
+                    .then(|| Sample::from_values(rates).median()),
             })
         })
         .collect()
@@ -134,14 +164,44 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
         ));
     }
     if let Some(throughput) = profiles.iter().max_by(|a, b| {
-        a.median_tokens_per_sec
-            .partial_cmp(&b.median_tokens_per_sec)
+        a.rank_throughput()
+            .partial_cmp(&b.rank_throughput())
             .unwrap_or(std::cmp::Ordering::Equal)
     }) {
+        let label = if throughput.median_goodput.is_some() {
+            "goodput"
+        } else {
+            "tokens/s"
+        };
         out.push_str(&format!(
-            "  🚀 Highest throughput:  {} — {:.0} tokens/s ({})\n",
-            throughput.name, throughput.median_tokens_per_sec, throughput.current_model
+            "  🚀 Highest throughput:  {} — {:.0} {label} ({})\n",
+            throughput.name,
+            throughput.rank_throughput(),
+            throughput.current_model
         ));
+    }
+    if let (Some(raw), Some(good)) = (
+        profiles.iter().max_by(|a, b| {
+            a.median_tokens_per_sec
+                .partial_cmp(&b.median_tokens_per_sec)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        profiles.iter().max_by(|a, b| {
+            a.rank_throughput()
+                .partial_cmp(&b.rank_throughput())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+    ) {
+        if raw.name != good.name {
+            if let Some(rate) = raw.median_failure_rate {
+                out.push_str(&format!(
+                    "  {} leads on tokens/s ({:.0}) but loses on goodput because its failure rate is {:.0}%.\n",
+                    raw.name,
+                    raw.median_tokens_per_sec,
+                    rate * 100.0
+                ));
+            }
+        }
     }
     if let Some(stable) = profiles.iter().filter(|p| p.races >= 3).min_by(|a, b| {
         a.latency_cv
@@ -190,18 +250,25 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
         }
     }
 
-    // overall recommendation
+    // overall recommendation: goodput, with latency called out separately
+    let mut by_goodput = profiles.to_vec();
+    by_goodput.sort_by(|a, b| {
+        b.rank_throughput()
+            .partial_cmp(&a.rank_throughput())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if let Some(best) = sorted.first() {
         out.push_str(&format!(
             "\n▸ For latency-sensitive workloads: use {}.\n",
             best.name
         ));
-        if let Some(alternative) = sorted.iter().find(|p| p.name != best.name) {
-            out.push_str(&format!(
-                "  For batch/throughput workloads: consider {} ({:.0} tok/s vs {:.0} tok/s).\n",
-                alternative.name, alternative.median_tokens_per_sec, best.median_tokens_per_sec
-            ));
-        }
+    }
+    if let Some(best) = by_goodput.first() {
+        out.push_str(&format!(
+            "▸ For throughput: use {} ({:.0} goodput).\n",
+            best.name,
+            best.rank_throughput()
+        ));
     }
 
     // note unpriced providers
