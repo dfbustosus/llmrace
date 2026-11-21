@@ -151,6 +151,54 @@ pub fn validate_args(args: &str) -> bool {
     (weather().validate)(args)
 }
 
+/// Exact match for a short answer: the trimmed text, a JSON object
+/// (key order does not matter), or a JSON number.
+#[must_use]
+pub fn answer_matches(answer: &str, expect: &str) -> bool {
+    let answer = answer.trim();
+    let expect = expect.trim();
+    if answer == expect {
+        return true;
+    }
+    let Ok(got) = serde_json::from_str::<Value>(answer) else {
+        return false;
+    };
+    let Ok(want) = serde_json::from_str::<Value>(expect) else {
+        return false;
+    };
+    (got.is_object() && want.is_object() || got.is_number() && want.is_number()) && got == want
+}
+
+/// Whether this successful response passed the task.
+///
+/// `None` when the round had no task. Tool validity and an exact `expect`
+/// both apply when both are set; either failure fails the task. The HTTP
+/// call can still have succeeded.
+#[must_use]
+pub fn task_ok(
+    tools: bool,
+    tool_task: &str,
+    tool_args: &str,
+    expect: Option<&str>,
+    answer: &str,
+) -> Option<bool> {
+    let mut checks = Vec::new();
+    if tools {
+        let validate = find(tool_task)
+            .map(|task| task.validate)
+            .unwrap_or(validate_args);
+        checks.push(!tool_args.is_empty() && validate(tool_args));
+    }
+    if let Some(expect) = expect {
+        checks.push(answer_matches(answer, expect));
+    }
+    if checks.is_empty() {
+        None
+    } else {
+        Some(checks.into_iter().all(|ok| ok))
+    }
+}
+
 /// The user prompt for the default (weather) tool-calling task.
 pub fn tool_task_prompt() -> &'static str {
     weather().prompt
