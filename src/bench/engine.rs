@@ -2,7 +2,7 @@
 //! streaming measurement.
 
 use super::metrics::{BenchConfig, LaneUpdate, RunMetrics, STUTTER_MS};
-use super::summary::LaneSummary;
+use super::summary::{FailureClass, LaneSummary, RoundFailure};
 use crate::error::Error;
 use crate::provider::{stream_completion, CompletionRequest, ProviderSpec, StreamEvent};
 use futures_util::StreamExt;
@@ -76,6 +76,8 @@ pub fn spawn_lane_stoppable(
             name: spec.id.to_string(),
             model: model.clone(),
             runs: Vec::new(),
+            failures: Vec::new(),
+            retry_attempts: 0,
             error: None,
             prompt: config.prompt.clone(),
             concurrency: config.concurrency,
@@ -97,11 +99,17 @@ pub fn spawn_lane_stoppable(
                 }
             }
             let mut attempts_left = config.retries;
+            let mut attempts_used = 0u32;
             let outcome = loop {
+                attempts_used = attempts_used.saturating_add(1);
+                let started = Instant::now();
                 match run_round(&client, &spec, &model, &config, &tx).await {
                     Ok(metrics) => break Ok(metrics),
                     Err(e) if attempts_left > 0 && e.is_retryable() => {
                         attempts_left -= 1;
+                        if counted {
+                            summary.retry_attempts = summary.retry_attempts.saturating_add(1);
+                        }
                         let attempt = config.retries - attempts_left;
                         tokio::time::sleep(backoff(attempt, e.retry_after())).await;
                         let _ = tx.send(LaneUpdate {
@@ -121,7 +129,17 @@ pub fn spawn_lane_stoppable(
                         });
                         continue;
                     }
-                    Err(e) => break Err(e),
+                    Err(e) => {
+                        if counted {
+                            summary.failures.push(RoundFailure {
+                                elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                                class: FailureClass::of(&e),
+                                attempts: attempts_used,
+                                message: crate::util::truncate(&e.to_string(), 300),
+                            });
+                        }
+                        break Err(e);
+                    }
                 }
             };
             let outcome: crate::error::Result<Vec<RunMetrics>> = outcome;
@@ -139,21 +157,37 @@ pub fn spawn_lane_stoppable(
                         tokens: 0,
                         elapsed_ms: 0.0,
                         ttfb_ms: None,
-                        finished: true,
+                        finished: round + 1 == total_rounds,
                         error: Some(e.to_string()),
                         server_ms: None,
                         last_token: None,
                         ratelimit: None,
                     });
-                    if summary.runs.is_empty() && round + 1 == total_rounds {
-                        summary.error = Some(e.to_string());
-                        return summary;
-                    }
                 }
             }
         }
         if summary.runs.is_empty() {
-            summary.error = Some("no successful rounds".to_string());
+            summary.error = summary
+                .failures
+                .last()
+                .map(|failure| failure.message.clone())
+                .or_else(|| Some("no successful rounds".to_string()));
+            if summary.failures.is_empty() {
+                let _ = tx.send(LaneUpdate {
+                    provider: Arc::from(summary.name.as_str()),
+                    variant: config.variant.clone(),
+                    model: Some(Arc::clone(&model_label)),
+                    tokens: 0,
+                    elapsed_ms: 0.0,
+                    ttfb_ms: None,
+                    finished: true,
+                    error: summary.error.clone(),
+                    server_ms: None,
+                    last_token: None,
+                    ratelimit: None,
+                });
+            }
+            return summary;
         }
         let _ = tx.send(LaneUpdate {
             provider: Arc::from(summary.name.as_str()),
