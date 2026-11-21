@@ -32,6 +32,8 @@ pub struct RunMetrics {
     pub reasoning_billed_separately: bool,
     /// Accumulated tool-call argument JSON (empty when the run had none).
     pub tool_args: String,
+    /// Workload prompt id for this round. Empty when the race used one prompt.
+    pub prompt_id: String,
     /// Provider-reported server-side processing time in milliseconds,
     /// from response headers (e.g. OpenAI's `openai-processing-ms`).
     pub server_ms: Option<f64>,
@@ -130,6 +132,9 @@ pub struct BenchConfig {
     pub retries: usize,
     /// Sampling controls forwarded to every request in the lane.
     pub sampling: crate::provider::Sampling,
+    /// Prompts drawn one per measured round, in order, shared by every
+    /// lane. Empty means every round uses [`Self::prompt`].
+    pub workload: Vec<crate::workload::WorkloadPrompt>,
 }
 
 impl Default for BenchConfig {
@@ -147,6 +152,7 @@ impl Default for BenchConfig {
             duration_secs: None,
             retries: 0,
             sampling: crate::provider::Sampling::default(),
+            workload: Vec::new(),
         }
     }
 }
