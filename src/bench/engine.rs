@@ -238,6 +238,12 @@ async fn run_round(
                 .iter()
                 .find(|item| item.id == prompt_id)
                 .and_then(|item| item.expect.clone()),
+            expect_match: config
+                .workload
+                .iter()
+                .find(|item| item.id == prompt_id)
+                .map(|item| item.expect_match)
+                .unwrap_or_default(),
             max_tokens: config.max_tokens,
             timeout: Duration::from_secs(config.timeout_secs),
             tools: config.tools,
@@ -331,6 +337,7 @@ struct RequestJob {
     prompt: String,
     prompt_id: String,
     expect: Option<String>,
+    expect_match: crate::workload::ExpectMatch,
     max_tokens: u64,
     timeout: Duration,
     tools: bool,
@@ -352,6 +359,7 @@ async fn single_request(
         prompt,
         prompt_id,
         expect,
+        expect_match,
         max_tokens,
         timeout,
         tools,
@@ -479,7 +487,14 @@ async fn single_request(
     } else {
         tokens = visible_tokens;
     }
-    let task_ok = crate::tools::task_ok(tools, &tool_task, &tool_args, expect.as_deref(), &answer);
+    let task_ok = crate::tools::task_ok_match(
+        tools,
+        &tool_task,
+        &tool_args,
+        expect.as_deref(),
+        expect_match,
+        &answer,
+    );
     Ok(RunMetrics {
         total_ms: total.as_secs_f64() * 1000.0,
         ttfb_ms: ttfb.as_secs_f64() * 1000.0,
