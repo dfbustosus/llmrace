@@ -4,6 +4,8 @@ mod event_stream;
 mod gcp_oauth;
 mod request;
 mod sigv4;
+
+pub(crate) use sigv4::sha256_hex;
 mod spec;
 mod stream;
 
