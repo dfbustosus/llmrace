@@ -82,6 +82,8 @@ pub struct RoundFailure {
     pub attempts: u32,
     /// Truncated error text.
     pub message: String,
+    /// Workload prompt id this round drew. Empty when the race was one string.
+    pub prompt_id: String,
 }
 
 /// Aggregated results for one provider lane.
@@ -533,6 +535,7 @@ impl LaneSummary {
                     total_ms: run.total_ms,
                     ttfb_ms: run.ttfb_ms,
                     tokens_per_sec: run.tokens_per_sec(),
+                    task_pass: None,
                 });
             }
         }
@@ -541,6 +544,31 @@ impl LaneSummary {
             row.total_ms /= n;
             row.ttfb_ms /= n;
             row.tokens_per_sec /= n;
+        }
+        let checked: Vec<String> = rows
+            .iter()
+            .filter(|row| {
+                self.runs
+                    .iter()
+                    .any(|run| run.prompt_id == row.id && run.task_ok.is_some())
+            })
+            .map(|row| row.id.clone())
+            .collect();
+        for id in checked {
+            let ok = self
+                .runs
+                .iter()
+                .filter(|run| run.prompt_id == id && run.task_ok == Some(true))
+                .count();
+            let failed = self
+                .failures
+                .iter()
+                .filter(|failure| failure.prompt_id == id)
+                .count();
+            let measured = self.runs.iter().filter(|run| run.prompt_id == id).count() + failed;
+            if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                row.task_pass = Some((ok, measured));
+            }
         }
         rows
     }
@@ -580,4 +608,8 @@ pub struct PromptRow {
     pub ttfb_ms: f64,
     /// Mean tokens per second.
     pub tokens_per_sec: f64,
+    /// `(passed, measured)` when this prompt was checked. The denominator
+    /// includes an HTTP failure of this id, so a dropped round is not a pass.
+    /// `None` when no successful round of this prompt had a task.
+    pub task_pass: Option<(usize, usize)>,
 }
