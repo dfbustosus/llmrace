@@ -102,6 +102,15 @@ fn openai_wire_decodes_deltas_and_usage() {
     )
     .unwrap();
     assert_eq!(usage.completion_tokens, Some(2));
+    assert_eq!(usage.prompt_tokens, None);
+
+    let billed = decode_payload(
+        r#"{"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":2}}"#,
+        Wire::OpenAiCompat,
+    )
+    .unwrap();
+    assert_eq!(billed.prompt_tokens, Some(42));
+    assert_eq!(billed.completion_tokens, Some(2));
 
     assert!(decode_payload("[DONE]", Wire::OpenAiCompat).is_none());
 }
@@ -121,6 +130,14 @@ fn anthropic_wire_decodes_events() {
     )
     .unwrap();
     assert_eq!(usage.completion_tokens, Some(17));
+
+    let started = decode_payload(
+        r#"{"type":"message_start","message":{"usage":{"input_tokens":31,"output_tokens":1}}}"#,
+        Wire::Anthropic,
+    )
+    .unwrap();
+    assert_eq!(started.prompt_tokens, Some(31));
+    assert!(started.token.is_none());
 
     assert!(decode_payload(r#"{"type":"ping"}"#, Wire::Anthropic).is_none());
 }
@@ -250,6 +267,39 @@ fn run_metrics_generation_math() {
 }
 
 #[test]
+fn measured_prompt_tokens_price_the_bill_not_the_guess() {
+    use llmrace::bench::LaneSummary;
+    let lane = LaneSummary {
+        name: "openai".into(),
+        model: "gpt-4o-mini".into(),
+        prompt: "hi".into(),
+        runs: vec![RunMetrics {
+            tokens: 100,
+            prompt_tokens: 1_000,
+            ..RunMetrics::default()
+        }],
+        ..LaneSummary::default()
+    };
+    // 1000 * $0.15 + 100 * $0.60, per million.
+    let cost = lane.cost_per_run_usd().unwrap();
+    assert!((cost - 0.00021).abs() < 1e-12, "{cost}");
+    assert!(lane.prompt_tokens_measured());
+
+    let guessed = LaneSummary {
+        name: "openai".into(),
+        model: "gpt-4o-mini".into(),
+        prompt: "hi".into(),
+        runs: vec![RunMetrics {
+            tokens: 100,
+            ..RunMetrics::default()
+        }],
+        ..LaneSummary::default()
+    };
+    assert!(!guessed.prompt_tokens_measured());
+    assert!(guessed.cost_per_run_usd().unwrap() < cost);
+}
+
+#[test]
 fn cost_estimates_and_pricing_sane() {
     let t = cost::estimate_prompt_tokens("Explain zero-knowledge proofs in two paragraphs.");
     assert!(t > 5.0 && t < 20.0, "estimate: {t}");
@@ -353,6 +403,13 @@ fn gemini_wire_decodes_deltas_and_usage() {
     )
     .unwrap();
     assert_eq!(usage.completion_tokens, Some(42));
+    let billed = decode_payload(
+        r#"{"usageMetadata":{"promptTokenCount":18,"candidatesTokenCount":42}}"#,
+        Wire::Gemini,
+    )
+    .unwrap();
+    assert_eq!(billed.prompt_tokens, Some(18));
+    assert_eq!(billed.completion_tokens, Some(42));
 
     assert!(
         decode_payload(
@@ -524,6 +581,12 @@ fn cohere_wire_decodes_v2_and_v1_shapes() {
     )
     .unwrap();
     assert_eq!(usage_v1.completion_tokens, Some(42));
+    let billed = decode_payload(
+        r#"{"event_type":"stream-end","response":{"meta":{"billed_units":{"input_tokens":11,"output_tokens":42}}}}"#,
+        Wire::Cohere,
+    )
+    .unwrap();
+    assert_eq!(billed.prompt_tokens, Some(11));
 
     let usage_v2 = decode_payload(
         r#"{"type":"usage","usage":{"tokens":{"output_tokens":7}}}"#,
