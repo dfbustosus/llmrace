@@ -35,8 +35,13 @@ pub(crate) struct Cli {
     prompt: String,
 
     /// Read the prompt from a file (use `-` for stdin).
-    #[arg(help_heading = "Race", long)]
+    #[arg(help_heading = "Race", long, conflicts_with = "workload")]
     prompt_file: Option<String>,
+
+    /// JSONL workload shared by every lane and by `--ramp`. Each line is
+    /// `{"id","prompt","expect"?}`. Rounds walk the file in order and wrap.
+    #[arg(help_heading = "Race", long, value_name = "FILE")]
+    workload: Option<String>,
 
     /// Measured rounds per provider.
     #[arg(help_heading = "Race", short = 'n', long, default_value_t = 3)]
@@ -559,8 +564,20 @@ fn build_run_config(
     } else {
         cli.runs
     };
-    let bench = BenchConfig {
-        prompt: match &cli.tools {
+    let workload = match &cli.workload {
+        Some(path) => llmrace::workload::load(std::path::Path::new(path))
+            .map_err(|e| anyhow::anyhow!("{e}"))?,
+        None => Vec::new(),
+    };
+    let prompt_label = if let Some(path) = &cli.workload {
+        format!("workload {path} ({} prompts)", workload.len())
+    } else {
+        cli.prompt.clone()
+    };
+    let bench_prompt = if let Some(first) = workload.first() {
+        first.prompt.clone()
+    } else {
+        match &cli.tools {
             Some(task) => {
                 let t = llmrace::tools::find(task).with_context(|| {
                     format!("unknown tool task '{task}' (weather, math, lookup)")
@@ -568,7 +585,11 @@ fn build_run_config(
                 t.prompt.to_string()
             }
             None => cli.prompt.clone(),
-        },
+        }
+    };
+    let bench = BenchConfig {
+        prompt: bench_prompt,
+        workload,
         max_tokens: cli.max_tokens,
         runs: runs.max(1),
         warmup: cli.warmup,
@@ -591,7 +612,7 @@ fn build_run_config(
         providers: selected,
         model_overrides: cli.model,
         bench,
-        prompt: cli.prompt,
+        prompt: prompt_label,
         sweep: cli.sweep,
         custom_variants,
         ramp: cli.ramp,
