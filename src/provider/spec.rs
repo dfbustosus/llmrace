@@ -15,7 +15,7 @@ pub enum Wire {
     Gemini,
     /// Cohere `/v2/chat` streaming.
     Cohere,
-    /// Amazon Bedrock `invoke-with-response-stream` (binary event-stream).
+    /// Amazon Bedrock `converse-stream` (binary event-stream).
     Bedrock,
     /// Google Vertex AI `streamGenerateContent` (SSE, Gemini shape).
     Vertex,
@@ -262,18 +262,18 @@ impl ProviderSpec {
         p
     }
 
-    /// Amazon Bedrock (ConverseStream-era invoke-with-response-stream).
+    /// Amazon Bedrock Converse Stream.
     ///
     /// **Experimental**: the SigV4 signer and binary event-stream decoder
-    /// are unit-tested against published AWS vectors, but the end-to-end
-    /// path has not been verified against a live Bedrock account — see
-    /// issue #126. Credentials: `AWS_ACCESS_KEY_ID`,
-    /// `AWS_SECRET_ACCESS_KEY` (optional `AWS_SESSION_TOKEN`) and
-    /// `AWS_REGION`.
+    /// are unit-tested against published AWS vectors, and the request body
+    /// is the model-agnostic Converse document, but the end-to-end path
+    /// has not been verified against a live Bedrock account — see issue
+    /// #126. Credentials: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+    /// (optional `AWS_SESSION_TOKEN`) and `AWS_REGION`.
     pub fn bedrock() -> Self {
         let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
         let endpoint = format!(
-            "https://bedrock-runtime.{region}.amazonaws.com/model/{{model}}/invoke-with-response-stream"
+            "https://bedrock-runtime.{region}.amazonaws.com/model/{{model}}/converse-stream"
         );
         let mut p = spec(
             "bedrock",
