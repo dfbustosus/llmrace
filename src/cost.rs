@@ -182,6 +182,35 @@ enum CacheSchedule {
     Anthropic,
 }
 
+/// Day the OpenAI, Anthropic and Gemini rows were read from the pages
+/// named in [`pricing_sources`]. Other providers' rows were not re-read
+/// that day.
+pub const PRICING_AS_OF: &str = "2026-11-20";
+
+/// Pages the dated rows were read from. `(publisher, url)`.
+#[must_use]
+pub fn pricing_sources() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("OpenAI", "https://developers.openai.com/api/docs/pricing"),
+        (
+            "Anthropic",
+            "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
+        ("Gemini", "https://ai.google.dev/gemini-api/docs/pricing"),
+    ]
+}
+
+/// One sentence a report can print under the cost column.
+#[must_use]
+pub fn pricing_stamp() -> String {
+    let pages = pricing_sources()
+        .iter()
+        .map(|(name, url)| format!("{name} ({url})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("OpenAI, Anthropic and Gemini rates were read on {PRICING_AS_OF} from {pages}.")
+}
+
 /// Returns `(input, output)` USD per million tokens, when known.
 ///
 /// ```
@@ -219,11 +248,17 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
         }
     }
     // Input and output are the standard public list prices, USD per million
-    // tokens. OpenAI cached-input figures are the standard-tier "Cached
-    // input" column. gpt-4.1-nano has no cached column on that page, so its
-    // cache rate stays unset. Gemini cached rates are the context-cache
-    // price for text; gemini-2.0-flash-lite has none here. The Vertex lane
-    // copies the Gemini Developer API cached rate for the same model.
+    // tokens, read 2026-11-20. OpenAI rates are the standard short-context
+    // column on https://developers.openai.com/api/docs/pricing (cached input
+    // is that page's cached column; gpt-4.1-nano has none). Anthropic rates
+    // are https://platform.claude.com/docs/en/about-claude/pricing ; the
+    // cache schedule is 0.1× read, 1.25× 5-minute write, 2× 1-hour write.
+    // Gemini rates are the paid text tier on
+    // https://ai.google.dev/gemini-api/docs/pricing . Hourly cache storage
+    // is not a per-request token count and is not priced. Rows for other
+    // providers were not re-read on that date. The Vertex lane copies the
+    // Gemini Developer API cached rate for the same model. Not every model
+    // id is listed: pass `--price` for one that is missing.
     let table: &[(&str, f64, f64, CacheSchedule)] = &[
         ("openai/gpt-4o", 2.50, 10.00, CacheSchedule::Read(1.25)),
         ("openai/gpt-4o-mini", 0.15, 0.60, CacheSchedule::Read(0.075)),
@@ -232,6 +267,14 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
         ("openai/gpt-5-mini", 0.25, 2.00, CacheSchedule::Read(0.025)),
         ("openai/gpt-5", 1.25, 10.00, CacheSchedule::Read(0.125)),
         ("openai/gpt-5-nano", 0.05, 0.40, CacheSchedule::Read(0.005)),
+        ("openai/gpt-5.4", 2.50, 15.00, CacheSchedule::Read(0.25)),
+        (
+            "openai/gpt-5.4-mini",
+            0.75,
+            4.50,
+            CacheSchedule::Read(0.075),
+        ),
+        ("openai/gpt-5.4-nano", 0.20, 1.25, CacheSchedule::Read(0.02)),
         ("openai/gpt-4.1-nano", 0.10, 0.40, CacheSchedule::None),
         (
             "anthropic/claude-3-5-haiku-latest",
@@ -264,6 +307,12 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
             CacheSchedule::Read(0.125),
         ),
         (
+            "gemini/gemini-2.5-flash",
+            0.30,
+            2.50,
+            CacheSchedule::Read(0.03),
+        ),
+        (
             "anthropic/claude-3-7-sonnet-latest",
             3.00,
             15.00,
@@ -279,6 +328,18 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
             "anthropic/claude-sonnet-4-5",
             3.00,
             15.00,
+            CacheSchedule::Anthropic,
+        ),
+        (
+            "anthropic/claude-sonnet-4-6",
+            3.00,
+            15.00,
+            CacheSchedule::Anthropic,
+        ),
+        (
+            "anthropic/claude-haiku-4-5",
+            1.00,
+            5.00,
             CacheSchedule::Anthropic,
         ),
         (
