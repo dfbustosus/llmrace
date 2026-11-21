@@ -40,6 +40,29 @@ pub struct MetricComparison {
     pub prompt_id: Option<String>,
 }
 
+impl MetricComparison {
+    /// Whether this metric fails the process, under the significance rule.
+    fn fails_the_gate(&self, require_significance: bool) -> bool {
+        if !self.regressed {
+            return false;
+        }
+        if !require_significance {
+            return true;
+        }
+        match self.p_value {
+            Some(p) => p < 0.05,
+            // Failure rate, goodput, cost and task success are ratios of the
+            // whole sample. A threshold breach is the gate; there is no t-test.
+            None => {
+                matches!(
+                    self.label,
+                    "failure rate" | "goodput" | "cost/run" | "task success"
+                )
+            }
+        }
+    }
+}
+
 /// Outcome of a full baseline comparison.
 #[derive(Debug, Clone, Default)]
 pub struct RegressionReport {
@@ -70,24 +93,61 @@ impl RegressionReport {
     /// flake-resistant gate for CI.
     #[must_use]
     pub fn any_regressed_significant(&self) -> bool {
-        self.comparisons.iter().any(|c| {
-            c.metrics.iter().any(|m| {
-                if !m.regressed {
-                    return false;
-                }
-                match m.p_value {
-                    Some(p) => p < 0.05,
-                    // Failure rate, goodput and cost are ratios of the whole
-                    // sample, not means of a noisy series. A threshold breach
-                    // is the gate; there is no t-test to wait on.
-                    None => {
-                        matches!(
-                            m.label,
-                            "failure rate" | "goodput" | "cost/run" | "task success"
-                        )
-                    }
-                }
+        self.comparisons
+            .iter()
+            .any(|c| c.metrics.iter().any(|m| m.fails_the_gate(true)))
+    }
+
+    /// `true` when this comparison is the one the process exits on.
+    ///
+    /// A request mismatch fails before any metric. With
+    /// `require_significance`, a latency or throughput breach fails only
+    /// when it is significant. Failure rate, goodput, cost and task success
+    /// have no t-test, so a threshold breach on those counts.
+    #[must_use]
+    pub fn gate_failed(&self, require_significance: bool) -> bool {
+        self.request_mismatch
+            || self.comparisons.iter().any(|c| {
+                c.metrics
+                    .iter()
+                    .any(|m| m.fails_the_gate(require_significance))
             })
+    }
+
+    /// The `regression` object written into `race.json` when `--baseline` is set.
+    ///
+    /// `ok` is false exactly when [`Self::gate_failed`] is true. `failures`
+    /// names each metric that caused that, including the prompt id when the
+    /// metric is one prompt. A request mismatch leaves `failures` empty.
+    #[must_use]
+    pub fn verdict_json(
+        &self,
+        threshold_pct: f64,
+        require_significance: bool,
+    ) -> serde_json::Value {
+        let mut failures = Vec::new();
+        if !self.request_mismatch {
+            for comparison in &self.comparisons {
+                for metric in &comparison.metrics {
+                    if !metric.fails_the_gate(require_significance) {
+                        continue;
+                    }
+                    failures.push(serde_json::json!({
+                        "provider": comparison.name,
+                        "metric": metric.label,
+                        "prompt_id": metric.prompt_id,
+                        "baseline": metric.baseline,
+                        "current": metric.current,
+                        "delta_pct": metric.delta_pct,
+                    }));
+                }
+            }
+        }
+        serde_json::json!({
+            "ok": !self.gate_failed(require_significance),
+            "request_mismatch": self.request_mismatch,
+            "threshold_pct": threshold_pct,
+            "failures": failures,
         })
     }
 
