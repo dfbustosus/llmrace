@@ -130,11 +130,44 @@ impl LaneSummary {
         self.total_sample().outliers_3sigma()
     }
 
-    /// Estimated cost per round in USD, when the model has known pricing.
+    /// Mean provider-reported prompt tokens per round.
+    ///
+    /// `None` when no round reported usage. With `--concurrency N` a round's
+    /// count is the sum across the N requests, matching [`Self::mean_tokens`].
+    #[must_use]
+    pub fn mean_prompt_tokens(&self) -> Option<f64> {
+        let measured: Vec<f64> = self
+            .runs
+            .iter()
+            .filter(|r| r.prompt_tokens > 0)
+            .map(|r| r.prompt_tokens as f64)
+            .collect();
+        if measured.is_empty() {
+            None
+        } else {
+            Some(measured.iter().sum::<f64>() / measured.len() as f64)
+        }
+    }
+
+    /// `true` when cost can use billed input tokens rather than the
+    /// character estimate of the user prompt.
+    #[must_use]
+    pub fn prompt_tokens_measured(&self) -> bool {
+        self.mean_prompt_tokens().is_some()
+    }
+
+    /// Cost per round in USD, when the model has known pricing.
+    ///
+    /// Input tokens are the provider-reported count when any round carried
+    /// usage (that count includes the system prompt and tool schemas).
+    /// Otherwise the user prompt is estimated and the markdown report marks
+    /// the figure with `~`.
     #[must_use]
     pub fn cost_per_run_usd(&self) -> Option<f64> {
         let (pin, pout) = crate::cost::pricing(&self.name, &self.model)?;
-        let prompt_tokens = crate::cost::estimate_prompt_tokens(&self.prompt);
+        let prompt_tokens = self
+            .mean_prompt_tokens()
+            .unwrap_or_else(|| crate::cost::estimate_prompt_tokens(&self.prompt));
         Some((self.mean_tokens() * pout + prompt_tokens * pin) / 1_000_000.0)
     }
 
