@@ -226,7 +226,7 @@ Every provider with a matching env var races automatically — no config file:
 
 Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, so they never pollute auto-detected runs with error lanes.
 
-¹ Bedrock speaks the Converse Stream API (one request body for every model family) and Vertex speaks Gemini `streamGenerateContent`. SigV4, the event-stream decoder and the Vertex JWT are verified against published test vectors; the live account path is not, so both stay experimental — reports are especially welcome ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
+¹ Bedrock speaks the Converse Stream API (one request body for every model family) and Vertex speaks Gemini `streamGenerateContent`. SigV4, the event-stream decoder and the Vertex JWT are verified against published test vectors. The live account path has not been run here — no AWS or Google credentials were available — so both stay experimental ([#126](https://github.com/dfbustosus/llmrace/issues/126), [#127](https://github.com/dfbustosus/llmrace/issues/127)).
 
 ## What it measures
 
@@ -305,7 +305,7 @@ Any HTTP response counts as endpoint reachability — even a 401 proves DNS, TLS
 
 ## Pricing
 
-Cost columns use a built-in table that can drift as providers change prices. Cache reads and cache writes use the published discount for models whose cached rate is in that table. Override per model (repeatable, USD per million tokens). A two-part override replaces the whole row and does not keep the built-in cache discount; add `:cached`, `:write` and `:write_1h` when you want those rates:
+Cost columns use a built-in table. OpenAI, Anthropic and Gemini rows were read on 2026-11-20 from [OpenAI pricing](https://developers.openai.com/api/docs/pricing), [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) and [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing). Those rows include the models people race now (`gpt-5.4` and its mini and nano, `claude-sonnet-4-6`, `claude-haiku-4-5`, `gemini-2.5-flash`) and are not a row for every model id. Other providers were not re-read that day. Cache reads and cache writes use the published discount for models whose cached rate is in the table. Override per model (repeatable, USD per million tokens). A two-part override replaces the whole row and does not keep the built-in cache discount; add `:cached`, `:write` and `:write_1h` when you want those rates:
 
 ```bash
 llmrace openai --price openai/gpt-4o-mini=1.25:5
