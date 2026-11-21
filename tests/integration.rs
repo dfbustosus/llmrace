@@ -490,6 +490,28 @@ fn regression_fails_beyond_threshold() {
 }
 
 #[test]
+fn regression_fails_when_failure_rate_rises_or_goodput_falls() {
+    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,"failure_rate":0.0,"goodput_tokens_per_sec":80.0}]}"#;
+    let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
+    let mut flaky = regression_summary("mock", 100.0, 120.0, 20.0, 80.0);
+    flaky.failures.push(llmrace::bench::RoundFailure {
+        elapsed_ms: 100.0,
+        class: llmrace::bench::FailureClass::Timeout,
+        attempts: 1,
+        message: "timed out".into(),
+    });
+    let report = evaluate(std::slice::from_ref(&flaky), &baseline, 15.0);
+    let rate = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.label == "failure rate")
+        .unwrap();
+    assert!(rate.regressed, "a rise from 0 to 50% is a regression");
+    assert!(report.any_regressed());
+    assert!(report.any_regressed_significant());
+}
+
+#[test]
 fn regression_reports_new_and_skipped_providers() {
     let baseline_raw = r#"{"providers":[{"provider":"groq","model":"m","mean_total_ms":100.0,"mean_tokens_per_sec":80.0}]}"#;
     let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
@@ -532,6 +554,20 @@ fn gemini_wire_decodes_deltas_and_usage() {
     assert_eq!(cached.prompt_tokens, Some(11500));
     assert_eq!(cached.cache_read_tokens, Some(10000));
     assert_eq!(billed.completion_tokens, Some(42));
+    let thoughts = decode_payload(
+        r#"{"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":50,"thoughtsTokenCount":1000}}"#,
+        Wire::Gemini,
+    )
+    .unwrap();
+    assert_eq!(thoughts.reasoning_tokens, Some(1000));
+    assert!(thoughts.reasoning_billed_separately);
+    let openai = decode_payload(
+        r#"{"choices":[{"delta":{"content":"Hi"}}],"usage":{"completion_tokens":100,"completion_tokens_details":{"reasoning_tokens":80}}}"#,
+        Wire::OpenAiCompat,
+    )
+    .unwrap();
+    assert_eq!(openai.reasoning_tokens, Some(80));
+    assert!(!openai.reasoning_billed_separately);
 
     assert!(
         decode_payload(
@@ -546,6 +582,60 @@ fn gemini_wire_decodes_deltas_and_usage() {
             .map(|e| e.token.is_none())
             .unwrap_or(true)
     );
+}
+
+#[test]
+fn gemini_thoughts_are_priced_as_output_and_openai_reasoning_is_not_added_twice() {
+    let gemini = llmrace::bench::LaneSummary {
+        name: "gemini".into(),
+        model: "gemini-2.0-flash".into(),
+        runs: vec![RunMetrics {
+            total_ms: 1000.0,
+            ttfb_ms: 100.0,
+            tokens: 50,
+            prompt_tokens: 100,
+            reasoning_tokens: Some(1000),
+            reasoning_billed_separately: true,
+            visible_tokens: 50,
+            ..RunMetrics::default()
+        }],
+        failures: Vec::new(),
+        retry_attempts: 0,
+        error: None,
+        prompt: "p".into(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    // 100 input at $0.10 and 1050 output (50 visible + 1000 thoughts) at $0.40.
+    let cost = gemini.cost_per_run_usd().unwrap();
+    assert!((cost - 0.00043).abs() < 1e-9, "{cost}");
+    assert_eq!(gemini.reasoning_tokens(), 1000);
+
+    let openai = llmrace::bench::LaneSummary {
+        name: "openai".into(),
+        model: "gpt-4o-mini".into(),
+        runs: vec![RunMetrics {
+            total_ms: 1000.0,
+            ttfb_ms: 100.0,
+            tokens: 100,
+            prompt_tokens: 1000,
+            reasoning_tokens: Some(80),
+            reasoning_billed_separately: false,
+            ..RunMetrics::default()
+        }],
+        failures: Vec::new(),
+        retry_attempts: 0,
+        error: None,
+        prompt: "p".into(),
+        concurrency: 1,
+        variant: None,
+        tool_task: None,
+    };
+    // completion_tokens already includes the 80 reasoning tokens.
+    let cost = openai.cost_per_run_usd().unwrap();
+    assert!((cost - 0.00021).abs() < 1e-9, "{cost}");
+    assert_eq!(openai.reasoning_tokens(), 80);
 }
 
 #[test]
@@ -1667,6 +1757,10 @@ fn recommend_profiles_and_renders_from_history() {
                     itl_p95_ms: None,
                     reasoning_tokens: None,
                     thinking_ms_estimate: None,
+                    failure_rate: None,
+                    goodput_tokens_per_sec: None,
+                    retry_attempts: 0,
+                    cost_per_run_usd: None,
                 },
                 llmrace::history::HistoryRecord {
                     timestamp_unix: 1_700_000_000 + i * 3_600,
@@ -1681,6 +1775,10 @@ fn recommend_profiles_and_renders_from_history() {
                     itl_p95_ms: None,
                     reasoning_tokens: None,
                     thinking_ms_estimate: None,
+                    failure_rate: None,
+                    goodput_tokens_per_sec: None,
+                    retry_attempts: 0,
+                    cost_per_run_usd: None,
                 },
             ]
         })
@@ -1702,6 +1800,45 @@ fn recommend_profiles_and_renders_from_history() {
         fast_profile.cost_per_run_usd.is_some(),
         "gpt-4o-mini is priced"
     );
+}
+
+fn rec_hist(provider: &str, tps: f64) -> llmrace::history::HistoryRecord {
+    llmrace::history::HistoryRecord {
+        timestamp_unix: 1_700_000_000,
+        provider: provider.into(),
+        model: "m".into(),
+        variant: None,
+        concurrency: 1,
+        mean_total_ms: 100.0,
+        p95_total_ms: 120.0,
+        mean_ttfb_ms: 20.0,
+        mean_tokens_per_sec: tps,
+        itl_p95_ms: None,
+        reasoning_tokens: None,
+        thinking_ms_estimate: None,
+        failure_rate: None,
+        goodput_tokens_per_sec: None,
+        retry_attempts: 0,
+        cost_per_run_usd: None,
+    }
+}
+
+#[test]
+fn recommend_says_when_failure_rate_costs_the_goodput_lead() {
+    let mut fast = rec_hist("flaky", 400.0);
+    fast.failure_rate = Some(0.5);
+    fast.goodput_tokens_per_sec = Some(200.0);
+    let mut steady = rec_hist("steady", 300.0);
+    steady.failure_rate = Some(0.0);
+    steady.goodput_tokens_per_sec = Some(300.0);
+    let text = llmrace::recommend::render_recommendation(&llmrace::recommend::build_profiles(&[
+        fast, steady,
+    ]));
+    assert!(
+        text.contains("loses on goodput because its failure rate is 50%"),
+        "{text}"
+    );
+    assert!(text.contains("For throughput: use steady"), "{text}");
 }
 
 #[test]
