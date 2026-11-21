@@ -59,6 +59,7 @@ pub fn race_report_schema() -> String {
                 "ttfb_ms": {"type": "number", "minimum": 0},
                 "tokens": {"type": "integer", "minimum": 0},
                 "chars": {"type": "integer", "minimum": 0},
+                "prompt_tokens": {"type": "integer", "minimum": 0},
                 "tokens_per_sec": {"type": "number", "minimum": 0}
               }
             }
@@ -77,6 +78,8 @@ pub fn race_report_schema() -> String {
           "mean_tokens_per_sec": {"type": "number"},
           "outlier_runs": {"type": "array", "items": {"type": "integer"}},
           "cost_per_run_usd": {"type": ["number", "null"]},
+          "prompt_tokens": {"type": ["number", "null"]},
+          "prompt_tokens_measured": {"type": "boolean"},
           "server_ms": {"type": ["number", "null"]},
           "network_overhead_ms": {"type": ["number", "null"]},
           "itl_p50_ms": {"type": ["number", "null"]},
