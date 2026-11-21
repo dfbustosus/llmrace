@@ -14,7 +14,8 @@ pub struct RunMetrics {
     pub tokens: u64,
     /// Sum of token byte lengths.
     pub chars: u64,
-    /// Estimated prompt tokens (0 when unknown).
+    /// Provider-reported prompt tokens. `0` when the provider did not
+    /// report usage; cost then falls back to a text estimate.
     pub prompt_tokens: u64,
     /// Accumulated tool-call argument JSON (empty when the run had none).
     pub tool_args: String,
