@@ -23,6 +23,10 @@ pub struct Weights {
     /// Weight of cost per run (lower is better). Applied only when every
     /// scored lane has pricing data; otherwise the weight is ignored.
     pub cost: f64,
+    /// Weight of task success (higher is better). Applied only when every
+    /// scored lane had a task (`expect` or `--tools`); otherwise ignored,
+    /// so a plain latency race keeps the previous podium.
+    pub task: f64,
 }
 
 impl Default for Weights {
@@ -32,6 +36,7 @@ impl Default for Weights {
             tps: 40.0,
             p95: 30.0,
             cost: 0.0,
+            task: 40.0,
         }
     }
 }
@@ -68,14 +73,15 @@ impl Weights {
                 "tps" => w.tps = value,
                 "p95" => w.p95 = value,
                 "cost" => w.cost = value,
+                "task" => w.task = value,
                 other => {
                     return Err(Error::Config(format!(
-                        "unknown weight key '{other}' (expected ttfb, tps, p95 or cost)"
+                        "unknown weight key '{other}' (expected ttfb, tps, p95, cost or task)"
                     )))
                 }
             }
         }
-        if w.ttfb + w.tps + w.p95 + w.cost <= 0.0 {
+        if w.ttfb + w.tps + w.p95 + w.cost + w.task <= 0.0 {
             return Err(Error::Config(
                 "all weights are zero — at least one must be positive".into(),
             ));
@@ -84,7 +90,18 @@ impl Weights {
     }
 
     fn total(&self) -> f64 {
-        self.ttfb + self.tps + self.p95 + self.cost
+        self.ttfb + self.tps + self.p95 + self.cost + self.task
+    }
+}
+
+/// Weights actually used for this race. Task is dropped when no scored
+/// lane had a task, the same way cost is dropped when a lane has no price.
+#[must_use]
+pub fn applied_weights(summaries: &[LaneSummary], w: &Weights) -> Weights {
+    let tasked = summaries.iter().any(|s| s.task_pass().is_some());
+    Weights {
+        task: if tasked { w.task } else { 0.0 },
+        ..*w
     }
 }
 
@@ -170,7 +187,13 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
     let all_priced = costs.iter().all(|c| c.is_some_and(|v| v > 0.0));
     let cost_w = if all_priced { w.cost } else { 0.0 };
     let best_cost = costs.iter().filter_map(|c| *c).fold(f64::MAX, f64::min);
-    let effective_total = w.total() - (w.cost - cost_w);
+    let all_tasked = lanes.iter().all(|s| s.task_rate().is_some());
+    let task_w = if all_tasked { w.task } else { 0.0 };
+    let best_task = lanes
+        .iter()
+        .filter_map(|s| s.task_rate())
+        .fold(0.0_f64, f64::max);
+    let effective_total = w.total() - (w.cost - cost_w) - (w.task - task_w);
 
     let mut scored: Vec<Scored> = lanes
         .iter()
@@ -181,6 +204,17 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
                 + w.p95 * (s.p95_total_ms() / best_p95);
             if cost_w > 0.0 {
                 penalty += cost_w * (cost.unwrap_or(best_cost) / best_cost);
+            }
+            if task_w > 0.0 {
+                let rate = s.task_rate().unwrap_or(0.0);
+                let ratio = if best_task <= 1e-9 {
+                    1.0
+                } else if rate <= 1e-9 {
+                    best_task / 1e-2
+                } else {
+                    best_task / rate
+                };
+                penalty += task_w * ratio;
             }
             Scored {
                 name: s.name.clone(),
@@ -217,9 +251,13 @@ pub fn podium(scored: &[Scored], w: &Weights) -> String {
     }
     let medals = ["🥇", "🥈", "🥉"];
     let mut out = format!(
-        "\n🏆 podium — weights: ttfb {:.0} / tps {:.0} / p95 {:.0}\n",
+        "\n🏆 podium — weights: ttfb {:.0} / tps {:.0} / p95 {:.0}",
         w.ttfb, w.tps, w.p95
     );
+    if w.task > 0.0 {
+        out.push_str(&format!(" / task {:.0}", w.task));
+    }
+    out.push('\n');
     for (i, s) in scored.iter().enumerate() {
         let medal = medals.get(i).copied().unwrap_or(" ");
         out.push_str(&format!("  {medal} {:<22} score {:.1}\n", s.name, s.score));
