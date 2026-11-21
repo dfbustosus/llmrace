@@ -21,6 +21,7 @@ fn rec(ts: u64, provider: &str, model: &str) -> HistoryRecord {
         goodput_tokens_per_sec: None,
         retry_attempts: 0,
         cost_per_run_usd: None,
+        task_pass_rate: None,
     }
 }
 
