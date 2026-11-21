@@ -352,6 +352,13 @@ pub fn json_report_with_region(
             workload: &[],
             warmup: 0,
         },
+        &request_sha256(
+            prompt,
+            &[],
+            &crate::provider::Sampling::default(),
+            max_tokens,
+            None,
+        ),
     )
 }
 
@@ -377,8 +384,75 @@ pub fn json_report_cited(
     max_tokens: u64,
     region: Option<&str>,
     sent: &SentPrompts<'_>,
+    request_sha256: &str,
 ) -> String {
-    render_json(summaries, prompt, runs, max_tokens, region, sent)
+    render_json(
+        summaries,
+        prompt,
+        runs,
+        max_tokens,
+        region,
+        sent,
+        request_sha256,
+    )
+}
+
+/// Hex SHA-256 of the request a race made: the prompt or workload (including
+/// `expect`), `max_tokens`, sampling, the system prompt, and the tool task.
+///
+/// `tools` is the task name when `--tools` is set, and absent otherwise.
+/// Unset sampling fields are empty. Round count is not part of the hash:
+/// a longer sample of the same request stays the same request.
+#[must_use]
+pub fn request_sha256(
+    sent_prompt: &str,
+    workload: &[crate::workload::WorkloadPrompt],
+    sampling: &crate::provider::Sampling,
+    max_tokens: u64,
+    tools: Option<&str>,
+) -> String {
+    let mut body = String::from("llmrace-request-v1\n");
+    push_field(&mut body, "max_tokens", &max_tokens.to_string());
+    push_field(&mut body, "temperature", &fmt_opt_f64(sampling.temperature));
+    push_field(&mut body, "top_p", &fmt_opt_f64(sampling.top_p));
+    push_field(
+        &mut body,
+        "seed",
+        &sampling.seed.map(|s| s.to_string()).unwrap_or_default(),
+    );
+    push_field(
+        &mut body,
+        "system",
+        sampling.system.as_deref().unwrap_or(""),
+    );
+    push_field(&mut body, "tools", tools.unwrap_or(""));
+    if workload.is_empty() {
+        push_field(&mut body, "prompt", sent_prompt);
+        push_field(&mut body, "workload", "");
+    } else {
+        push_field(&mut body, "prompt", "");
+        let mut blob = String::new();
+        for item in workload {
+            push_field(&mut blob, "id", &item.id);
+            push_field(&mut blob, "prompt", &item.prompt);
+            push_field(&mut blob, "expect", item.expect.as_deref().unwrap_or(""));
+        }
+        push_field(&mut body, "workload", &blob);
+    }
+    crate::provider::sha256_hex(body.as_bytes())
+}
+
+fn push_field(out: &mut String, name: &str, value: &str) {
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(&value.len().to_string());
+    out.push('\n');
+    out.push_str(value);
+    out.push('\n');
+}
+
+fn fmt_opt_f64(value: Option<f64>) -> String {
+    value.map(|v| format!("{v:?}")).unwrap_or_default()
 }
 
 /// Prompt ids in measured-round order, and the SHA-256 of the prompt
@@ -421,6 +495,7 @@ fn render_json(
     max_tokens: u64,
     region: Option<&str>,
     sent: &SentPrompts<'_>,
+    request_sha256: &str,
 ) -> String {
     let (workload_ids, prompt_sha256) = citation(sent, counted_rounds(summaries, runs));
     let providers: Vec<serde_json::Value> = summaries
@@ -518,6 +593,7 @@ fn render_json(
         "pricing_as_of": crate::cost::PRICING_AS_OF,
         "workload": workload_ids,
         "prompt_sha256": prompt_sha256,
+        "request_sha256": request_sha256,
         "runs": runs,
         "max_tokens": max_tokens,
         "significance": top_two_significance(summaries).map(
