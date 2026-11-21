@@ -20,6 +20,7 @@
 //! - [`merge`]: cross-region merging
 //! - [`notify`]: alert webhooks and desktop notifications of distributed probe reports
 //! - [`variants`]: built-in prompt variants for multi-shape sweeps
+//! - [`workload`]: a shared JSONL prompt file for a race, a suite and a ramp
 //! - [`tui`]: the live terminal race view
 //! - [`util`]: shared helpers for truncation, dates, ranking
 //!
@@ -85,3 +86,4 @@ pub mod tui;
 pub mod util;
 pub mod variants;
 pub mod watch;
+pub mod workload;
