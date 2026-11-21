@@ -25,6 +25,18 @@ runs = 5
 warmup = 1
 concurrency = 8
 
+# Reproducible comparison: pin sampling and stamp it into the report.
+# `temperature = 0` (an integer) is accepted; Anthropic only allows 0..=1.
+[profiles.repro]
+providers = ["openai", "groq"]
+prompt = "Reply with a single word."
+temperature = 0
+top_p = 1
+seed = 1
+system = "Answer with the fewest tokens that satisfy the request."
+runs = 5
+warmup = 1
+
 # Deterministic CI lane (no keys required).
 [profiles.ci]
 providers = ["mock"]
