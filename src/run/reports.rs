@@ -16,6 +16,13 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
         .max()
         .unwrap_or(cfg.bench.runs);
     let mut md = report::markdown(summaries, &cfg.prompt, actual_runs, cfg.bench.max_tokens);
+    if let Some(note) = report::sampling_note(&cfg.bench.sampling) {
+        if let Some(pos) = md.find("- **Generated**:") {
+            md.insert_str(pos, &note);
+        } else {
+            md.push_str(&note);
+        }
+    }
     if cfg.winner {
         let scored = llmrace::score::score_lanes(summaries, &cfg.weights);
         let block = llmrace::score::podium(&scored, &cfg.weights);
@@ -49,12 +56,15 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
         }
     };
     if cfg.json {
-        let j = report::json_report_with_region(
-            summaries,
-            &cfg.prompt,
-            actual_runs,
-            cfg.bench.max_tokens,
-            cfg.region.as_deref(),
+        let j = report::insert_sampling_json(
+            &report::json_report_with_region(
+                summaries,
+                &cfg.prompt,
+                actual_runs,
+                cfg.bench.max_tokens,
+                cfg.region.as_deref(),
+            ),
+            &cfg.bench.sampling,
         );
         let path = sibling("json");
         std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
@@ -72,13 +82,17 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
         } else {
             Vec::new()
         };
-        let h = report::html_report(
+        let mut h = report::html_report(
             summaries,
             &cfg.prompt,
             cfg.bench.runs,
             cfg.bench.max_tokens,
             &scored,
         );
+        if let Some(inline) = report::sampling_inline(&cfg.bench.sampling) {
+            let escaped = llmrace::util::html_escape(&inline);
+            h = h.replacen("</code> ·", &format!("</code> · {escaped} ·"), 1);
+        }
         let path = sibling("html");
         std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
         println!("\u{1f310} html report saved to {path}");
