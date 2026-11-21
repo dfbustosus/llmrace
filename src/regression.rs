@@ -36,6 +36,8 @@ pub struct MetricComparison {
     /// Welch p-value for the difference, when both sides carry per-run
     /// samples (`None` for reports saved without per-run data).
     pub p_value: Option<f64>,
+    /// Workload prompt this metric belongs to. `None` for a lane metric.
+    pub prompt_id: Option<String>,
 }
 
 /// Outcome of a full baseline comparison.
@@ -105,9 +107,13 @@ impl RegressionReport {
                     Some(p) => format!(" p={p:.2} n.s."),
                     None => String::new(),
                 };
+                let label = match &m.prompt_id {
+                    Some(id) => format!("prompt {id}"),
+                    None => m.label.to_string(),
+                };
                 out.push_str(&format!(
                     "{:<14} {:<16} {:>16.1} \u{2192} {:<16.1} {:>+8.1}%{}{}\n",
-                    c.name, m.label, m.baseline, m.current, m.delta_pct, p_note, mark
+                    c.name, label, m.baseline, m.current, m.delta_pct, p_note, mark
                 ));
             }
         }
@@ -192,9 +198,25 @@ pub struct BaselineProvider {
     /// baseline had no task; the metric is then skipped.
     #[serde(default)]
     pub task_pass_rate: Option<f64>,
+    /// Per-prompt task rates. Absent on baselines saved before a prompt
+    /// could fail the gate on its own. A prompt omitted here is skipped.
+    #[serde(default)]
+    pub prompts: Vec<BaselinePrompt>,
     /// Per-run measurements, when the report was saved with them.
     #[serde(default)]
     pub runs: Vec<BaselineRun>,
+}
+
+/// One workload prompt in a baseline.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct BaselinePrompt {
+    /// Workload id.
+    #[serde(default)]
+    pub id: String,
+    /// Fraction of this prompt's measured rounds that passed. Absent when
+    /// the prompt had no task.
+    #[serde(default)]
+    pub task_pass_rate: Option<f64>,
 }
 
 impl BaselineReport {
@@ -280,6 +302,20 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                 goodput_tokens_per_sec: Some(s.goodput_tokens_per_sec()),
                 cost_per_run_usd: s.cost_per_run_usd(),
                 task_pass_rate: s.task_rate(),
+                prompts: s
+                    .prompt_rows()
+                    .into_iter()
+                    .map(|row| BaselinePrompt {
+                        id: row.id,
+                        task_pass_rate: row.task_pass.map(|(ok, n)| {
+                            if n == 0 {
+                                0.0
+                            } else {
+                                ok as f64 / n as f64
+                            }
+                        }),
+                    })
+                    .collect(),
                 runs: s
                     .runs
                     .iter()
@@ -421,6 +457,25 @@ pub fn compare_baselines(
                 max_regression_pct,
             ));
         }
+        for base_prompt in &base.prompts {
+            let Some(base_rate) = base_prompt.task_pass_rate else {
+                continue;
+            };
+            let Some(current_rate) = current
+                .prompts
+                .iter()
+                .find(|prompt| prompt.id == base_prompt.id)
+                .and_then(|prompt| prompt.task_pass_rate)
+            else {
+                continue;
+            };
+            metrics.push(prompt_task_metric(
+                &base_prompt.id,
+                base_rate,
+                current_rate,
+                max_regression_pct,
+            ));
+        }
         report.comparisons.push(ProviderComparison {
             name: current.provider.clone(),
             baseline_model: base.model.clone(),
@@ -460,6 +515,7 @@ fn latency_metric(
         delta_pct,
         regressed: delta_pct > threshold,
         p_value,
+        prompt_id: None,
     }
 }
 
@@ -469,6 +525,19 @@ fn latency_metric(
 /// Task success is a fraction. The delta is percentage points. A fall
 /// from 1.0 to 0.80 reads as -20 and regresses once it passes the threshold.
 fn task_pass_metric(baseline: f64, current: f64, threshold: f64) -> MetricComparison {
+    prompt_task_metric_inner(None, baseline, current, threshold)
+}
+
+fn prompt_task_metric(id: &str, baseline: f64, current: f64, threshold: f64) -> MetricComparison {
+    prompt_task_metric_inner(Some(id.to_string()), baseline, current, threshold)
+}
+
+fn prompt_task_metric_inner(
+    prompt_id: Option<String>,
+    baseline: f64,
+    current: f64,
+    threshold: f64,
+) -> MetricComparison {
     let points = (current - baseline) * 100.0;
     MetricComparison {
         label: "task success",
@@ -477,6 +546,7 @@ fn task_pass_metric(baseline: f64, current: f64, threshold: f64) -> MetricCompar
         delta_pct: points,
         regressed: points < -threshold,
         p_value: None,
+        prompt_id,
     }
 }
 
@@ -489,6 +559,7 @@ fn failure_rate_metric(baseline: f64, current: f64, threshold: f64) -> MetricCom
         delta_pct: points,
         regressed: points > threshold,
         p_value: None,
+        prompt_id: None,
     }
 }
 
@@ -511,6 +582,7 @@ fn throughput_metric(
         delta_pct,
         regressed: delta_pct < -threshold,
         p_value,
+        prompt_id: None,
     }
 }
 
