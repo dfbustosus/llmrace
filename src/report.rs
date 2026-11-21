@@ -440,6 +440,9 @@ pub fn request_sha256(
             push_field(&mut blob, "id", &item.id);
             push_field(&mut blob, "prompt", &item.prompt);
             push_field(&mut blob, "expect", item.expect.as_deref().unwrap_or(""));
+            if item.expect_match != crate::workload::ExpectMatch::Exact {
+                push_field(&mut blob, "match", item.expect_match.as_str());
+            }
         }
         push_field(&mut body, "workload", &blob);
     }
