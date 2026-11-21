@@ -13,17 +13,14 @@ pub(crate) fn init() -> Result<()> {
     }
     std::fs::write(path, include_str!("../examples/llmrace.toml"))
         .with_context(|| "writing llmrace.toml")?;
-    println!("Created llmrace.toml with example profiles (fast, overnight, saturation, ci)");
+    println!("Created llmrace.toml with example profiles (fast, overnight, saturation, repro, ci)");
     println!("Edit it, then run: llmrace --profile fast");
     Ok(())
 }
 
 /// `llmrace --doctor [--json]`
 pub(crate) async fn doctor(json: bool) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .context("failed to build http client")?;
+    let client = llmrace::provider::benchmark_client(std::time::Duration::from_secs(5), 1)?;
     let mut checks = vec![
         llmrace::doctor::check_config(),
         llmrace::doctor::check_history(),
@@ -192,10 +189,7 @@ fn unix_now() -> u64 {
 
 /// `llmrace --models [provider]`
 pub(crate) async fn models(providers: Vec<llmrace::provider::ProviderSpec>) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .context("failed to build http client")?;
+    let client = llmrace::provider::benchmark_client(std::time::Duration::from_secs(10), 1)?;
     for spec in providers {
         match llmrace::provider::list_models(&client, &spec).await {
             Ok(ids) if ids.is_empty() => println!("{}: no models reported", spec.id),
@@ -245,13 +239,13 @@ pub(crate) async fn run_suite(
         };
 
         // build a mini RunConfig for this entry
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(cli.timeout.max(1)))
-            .build()
-            .context("failed to build http client")?;
+        let client = llmrace::provider::benchmark_client(
+            std::time::Duration::from_secs(cli.timeout),
+            entry.concurrency,
+        )?;
 
         let bench_prompt = prompt.clone();
-        let bench = llmrace::bench::BenchConfig {
+        let mut bench = llmrace::bench::BenchConfig {
             prompt,
             runs: entry.runs.max(1),
             warmup: entry.warmup,
@@ -265,6 +259,7 @@ pub(crate) async fn run_suite(
                 .unwrap_or_else(|| "weather".to_string()),
             ..llmrace::bench::BenchConfig::default()
         };
+        bench.sampling = crate::sampling_from_cli(cli)?;
 
         // resolve provider specs
         let mut specs: Vec<llmrace::provider::ProviderSpec> = Vec::new();
