@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-11-21
+
+The JSON a pipeline uploads now carries the gate verdict. The README's first CI commands are the workload race.
+
+### Added
+
+- When `--baseline` is set, `race.json` writes `regression`: `ok`, `request_mismatch`, `threshold_pct`, and `failures` with `provider`, `metric`, `prompt_id`, `baseline`, `current`, and `delta_pct`. `ok` is false exactly when the process exits 1 for the gate. A request mismatch leaves `failures` empty. The field is optional, so an older report still validates
+- The terminal table stays for a person. A pipeline reads `regression`
+
+### Changed
+
+- The CI section records a workload baseline and compares the same workload. A race with no `expect` still has no task-success metric
+
 ## [1.23.0] - 2026-11-21
 
 `--reproducible` pins sampling only when asked. A race that omits it still uses each provider's own default.
@@ -622,7 +635,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.23.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.24.0...HEAD
+[1.24.0]: https://github.com/dfbustosus/llmrace/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/dfbustosus/llmrace/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/dfbustosus/llmrace/compare/v1.21.0...v1.22.0
 [1.21.0]: https://github.com/dfbustosus/llmrace/compare/v1.20.0...v1.21.0
