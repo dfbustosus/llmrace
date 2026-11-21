@@ -100,10 +100,12 @@ pub fn spawn_lane_stoppable(
             }
             let mut attempts_left = config.retries;
             let mut attempts_used = 0u32;
+            let (prompt_id, prompt) =
+                crate::workload::prompt_for(&config.prompt, &config.workload, config.warmup, round);
             let outcome = loop {
                 attempts_used = attempts_used.saturating_add(1);
                 let started = Instant::now();
-                match run_round(&client, &spec, &model, &config, &tx).await {
+                match run_round(&client, &spec, &model, &config, prompt_id, prompt, &tx).await {
                     Ok(metrics) => break Ok(metrics),
                     Err(e) if attempts_left > 0 && e.is_retryable() => {
                         attempts_left -= 1;
@@ -216,6 +218,8 @@ async fn run_round(
     spec: &ProviderSpec,
     model: &str,
     config: &BenchConfig,
+    prompt_id: &str,
+    prompt: &str,
     progress: &mpsc::Sender<LaneUpdate>,
 ) -> crate::error::Result<Vec<RunMetrics>> {
     let model_label: Arc<str> = Arc::from(model);
@@ -226,7 +230,8 @@ async fn run_round(
             spec: spec.clone(),
             model: model.to_string(),
             model_label: Arc::clone(&model_label),
-            prompt: config.prompt.clone(),
+            prompt: prompt.to_string(),
+            prompt_id: prompt_id.to_string(),
             max_tokens: config.max_tokens,
             timeout: Duration::from_secs(config.timeout_secs),
             tools: config.tools,
@@ -297,6 +302,7 @@ async fn run_round(
             itl_gaps_ms,
             stutters,
             visible_tokens: all.iter().map(|m| m.visible_tokens).sum(),
+            prompt_id: prompt_id.to_string(),
         }])
     }
 }
@@ -309,6 +315,7 @@ struct RequestJob {
     model: String,
     model_label: Arc<str>,
     prompt: String,
+    prompt_id: String,
     max_tokens: u64,
     timeout: Duration,
     tools: bool,
@@ -328,6 +335,7 @@ async fn single_request(
         model,
         model_label,
         prompt,
+        prompt_id,
         max_tokens,
         timeout,
         tools,
@@ -471,6 +479,7 @@ async fn single_request(
         itl_gaps_ms,
         stutters,
         visible_tokens,
+        prompt_id,
     })
 }
 
