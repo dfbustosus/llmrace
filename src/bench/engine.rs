@@ -138,6 +138,7 @@ pub fn spawn_lane_stoppable(
                                 class: FailureClass::of(&e),
                                 attempts: attempts_used,
                                 message: crate::util::truncate(&e.to_string(), 300),
+                                prompt_id: prompt_id.to_string(),
                             });
                         }
                         break Err(e);
