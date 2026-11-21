@@ -4,6 +4,86 @@
 use super::metrics::RunMetrics;
 use crate::stats::Sample;
 
+/// Why a measured round produced no metrics.
+///
+/// The class is coarse on purpose: reports and alerts group timeouts and
+/// rate limits without depending on provider error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClass {
+    /// The request hit its deadline.
+    Timeout,
+    /// HTTP 429.
+    RateLimit,
+    /// HTTP 408, 409, 425 or 5xx.
+    Server,
+    /// Any other HTTP status.
+    Client,
+    /// The stream failed before a complete response (connection reset, decode).
+    Stream,
+    /// The provider broke the expected streaming protocol.
+    Protocol,
+    /// Local I/O failed.
+    Io,
+    /// The request was refused before it was sent.
+    Config,
+}
+
+impl FailureClass {
+    /// Classifies a round-ending error.
+    ///
+    /// A timeout is an [`crate::error::Error::Stream`] whose message contains
+    /// `timed out`, which is the deadline error the engine raises.
+    #[must_use]
+    pub fn of(err: &crate::error::Error) -> Self {
+        use crate::error::Error;
+        match err {
+            Error::Http { status: 429, .. } => FailureClass::RateLimit,
+            Error::Http { status, .. }
+                if (500..600).contains(status) || matches!(*status, 408 | 409 | 425) =>
+            {
+                FailureClass::Server
+            }
+            Error::Http { .. } => FailureClass::Client,
+            Error::Stream(msg) if msg.contains("timed out") => FailureClass::Timeout,
+            Error::Stream(_) => FailureClass::Stream,
+            Error::Protocol(_) => FailureClass::Protocol,
+            Error::Io(_) => FailureClass::Io,
+            Error::Config(_) => FailureClass::Config,
+        }
+    }
+
+    /// Stable label for JSON and tables.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FailureClass::Timeout => "timeout",
+            FailureClass::RateLimit => "rate_limit",
+            FailureClass::Server => "server",
+            FailureClass::Client => "client",
+            FailureClass::Stream => "stream",
+            FailureClass::Protocol => "protocol",
+            FailureClass::Io => "io",
+            FailureClass::Config => "config",
+        }
+    }
+}
+
+/// One measured round that produced no metrics after retries were exhausted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoundFailure {
+    /// Wall time of the attempt that failed, in milliseconds.
+    ///
+    /// Earlier attempts in the same round are counted in
+    /// [`LaneSummary::retry_attempts`], not here.
+    pub elapsed_ms: f64,
+    /// Coarse cause.
+    pub class: FailureClass,
+    /// Attempts this round used, including the one that failed.
+    pub attempts: u32,
+    /// Truncated error text.
+    pub message: String,
+}
+
 /// Aggregated results for one provider lane.
 #[derive(Debug, Clone, Default)]
 pub struct LaneSummary {
@@ -11,8 +91,21 @@ pub struct LaneSummary {
     pub name: String,
     /// Model that was benchmarked.
     pub model: String,
-    /// Measured rounds.
+    /// Successful measured rounds.
+    ///
+    /// Latency, tokens/s and cost are computed from these only. Failed
+    /// measured rounds are [`Self::failures`] and stay out of those samples.
     pub runs: Vec<RunMetrics>,
+    /// Measured rounds that failed after retries. Warmup failures are not
+    /// recorded: warmup is outside the measured sample.
+    pub failures: Vec<RoundFailure>,
+    /// Extra attempts spent retrying measured rounds.
+    ///
+    /// This counts retries that later succeeded and retries that preceded
+    /// a final failure. The attempt that produced metrics, and the attempt
+    /// recorded in [`Self::failures`], are not included. Retries are not
+    /// priced: a failed attempt does not return token usage.
+    pub retry_attempts: u64,
     /// Fatal lane error, when no round succeeded.
     pub error: Option<String>,
     /// Prompt used (for token estimation in cost calculations).
@@ -337,6 +430,37 @@ impl LaneSummary {
     pub fn network_overhead_ms(&self) -> Option<f64> {
         let server = self.median_server_ms()?;
         Some(self.mean_ttfb_ms() - server)
+    }
+
+    /// Measured rounds, successful and failed.
+    #[must_use]
+    pub fn measured_rounds(&self) -> usize {
+        self.runs.len() + self.failures.len()
+    }
+
+    /// Fraction of measured rounds that failed.
+    ///
+    /// `None` when the lane measured nothing (a stop before the first
+    /// counted round). `Some(0.0)` when every measured round succeeded.
+    #[must_use]
+    pub fn failure_rate(&self) -> Option<f64> {
+        let measured = self.measured_rounds();
+        if measured == 0 {
+            None
+        } else {
+            Some(self.failures.len() as f64 / measured as f64)
+        }
+    }
+
+    /// Successful-round tokens/s scaled by the success rate.
+    ///
+    /// A lane at 100 tokens/s that failed half its rounds has a goodput of
+    /// 50. With no failures this equals [`Self::mean_tokens_per_sec`], so
+    /// a clean race ranks exactly as it did before failures were recorded.
+    #[must_use]
+    pub fn goodput_tokens_per_sec(&self) -> f64 {
+        let success = 1.0 - self.failure_rate().unwrap_or(0.0);
+        self.mean_tokens_per_sec() * success
     }
 
     /// `true` when at least one measured round succeeded.
