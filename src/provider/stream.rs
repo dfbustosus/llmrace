@@ -19,9 +19,175 @@ pub struct StreamEvent {
     pub completion_tokens: Option<u64>,
     /// Provider-reported prompt token count, when this event carries usage.
     ///
-    /// This is the billed input count (it includes a system prompt and tool
-    /// schemas). `None` on ordinary token deltas.
+    /// This is the full input count: uncached tokens plus cache reads and
+    /// cache writes. It includes a system prompt and tool schemas. Anthropic
+    /// and Bedrock report those buckets separately, and the decoder adds
+    /// them up so `prompt_tokens` means the same thing on every wire.
+    /// `None` on ordinary token deltas.
     pub prompt_tokens: Option<u64>,
+    /// Tokens billed at the cache-read rate. A subset of [`Self::prompt_tokens`].
+    pub cache_read_tokens: Option<u64>,
+    /// Tokens billed at the short cache-write rate (Anthropic's 5-minute
+    /// write, or the whole write when the payload does not split TTLs).
+    /// A subset of [`Self::prompt_tokens`], disjoint from the read bucket.
+    pub cache_write_tokens: Option<u64>,
+    /// Tokens billed at the 1-hour cache-write rate, when the payload
+    /// distinguishes that TTL. A subset of [`Self::prompt_tokens`].
+    pub cache_write_1h_tokens: Option<u64>,
+}
+
+/// Input-side usage, normalized so every cache bucket is a subset of
+/// `prompt_tokens`.
+struct InputUsage {
+    prompt_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
+    cache_write_1h_tokens: Option<u64>,
+}
+
+impl InputUsage {
+    fn empty() -> Self {
+        InputUsage {
+            prompt_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            cache_write_1h_tokens: None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.prompt_tokens.is_none()
+            && self.cache_read_tokens.is_none()
+            && self.cache_write_tokens.is_none()
+            && self.cache_write_1h_tokens.is_none()
+    }
+
+    fn into_event(
+        self,
+        token: Option<String>,
+        tool_args: Option<String>,
+        completion_tokens: Option<u64>,
+    ) -> StreamEvent {
+        StreamEvent {
+            token,
+            tool_args,
+            completion_tokens,
+            prompt_tokens: self.prompt_tokens,
+            cache_read_tokens: self.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            cache_write_1h_tokens: self.cache_write_1h_tokens,
+        }
+    }
+}
+
+fn json_u64(value: Option<&serde_json::Value>) -> Option<u64> {
+    value.and_then(serde_json::Value::as_u64)
+}
+
+fn field_u64(obj: &serde_json::Value, names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| json_u64(obj.get(*name)))
+}
+
+/// OpenAI's `prompt_tokens` already includes `cached_tokens`.
+fn openai_input(v: &serde_json::Value) -> InputUsage {
+    InputUsage {
+        prompt_tokens: json_u64(v.pointer("/usage/prompt_tokens")),
+        cache_read_tokens: json_u64(v.pointer("/usage/prompt_tokens_details/cached_tokens")),
+        cache_write_tokens: None,
+        cache_write_1h_tokens: None,
+    }
+}
+
+/// Anthropic's `input_tokens` excludes cache reads and cache writes.
+/// The split ephemeral fields win over the combined creation count so a
+/// 1-hour write is not also billed as a 5-minute write.
+fn anthropic_usage(usage: &serde_json::Value) -> InputUsage {
+    let uncached = field_u64(usage, &["input_tokens"]);
+    let cache_read = field_u64(usage, &["cache_read_input_tokens"]);
+    let write_5m = json_u64(usage.pointer("/cache_creation/ephemeral_5m_input_tokens"));
+    let write_1h = json_u64(usage.pointer("/cache_creation/ephemeral_1h_input_tokens"));
+    let write_total = field_u64(usage, &["cache_creation_input_tokens"]);
+    let (cache_write, cache_write_1h) = if write_5m.is_some() || write_1h.is_some() {
+        (write_5m, write_1h)
+    } else {
+        (write_total, None)
+    };
+    summed_input(uncached, cache_read, cache_write, cache_write_1h)
+}
+
+fn anthropic_input(v: &serde_json::Value) -> InputUsage {
+    let from_message = v.pointer("/message/usage").map(anthropic_usage);
+    let from_usage = v.get("usage").map(anthropic_usage);
+    match (from_message, from_usage) {
+        (Some(message), Some(usage)) => {
+            if message.prompt_tokens.is_some() {
+                message
+            } else {
+                usage
+            }
+        }
+        (Some(message), None) => message,
+        (None, Some(usage)) => usage,
+        (None, None) => InputUsage::empty(),
+    }
+}
+
+/// Gemini's `promptTokenCount` already includes `cachedContentTokenCount`.
+fn gemini_input(v: &serde_json::Value) -> InputUsage {
+    InputUsage {
+        prompt_tokens: json_u64(v.pointer("/usageMetadata/promptTokenCount")),
+        cache_read_tokens: json_u64(v.pointer("/usageMetadata/cachedContentTokenCount")),
+        cache_write_tokens: None,
+        cache_write_1h_tokens: None,
+    }
+}
+
+/// Bedrock Converse follows Anthropic: `inputTokens` excludes the cache
+/// buckets. Cache fields are added into the prompt total only when present.
+fn bedrock_input(usage: &serde_json::Value) -> InputUsage {
+    let uncached = field_u64(usage, &["inputTokens", "input_tokens"]);
+    let cache_read = field_u64(usage, &["cacheReadInputTokens", "cache_read_input_tokens"]);
+    let cache_write = field_u64(usage, &["cacheWriteInputTokens", "cache_write_input_tokens"]);
+    summed_input(uncached, cache_read, cache_write, None)
+}
+
+fn bedrock_metadata_event(v: &serde_json::Value) -> Option<StreamEvent> {
+    let usage = v.get("usage")?;
+    let input = bedrock_input(usage);
+    let completion = field_u64(usage, &["outputTokens", "output_tokens"]);
+    if completion.is_none() && input.is_empty() {
+        return None;
+    }
+    Some(input.into_event(None, None, completion))
+}
+
+fn summed_input(
+    uncached: Option<u64>,
+    cache_read: Option<u64>,
+    cache_write: Option<u64>,
+    cache_write_1h: Option<u64>,
+) -> InputUsage {
+    let any = uncached.is_some()
+        || cache_read.is_some()
+        || cache_write.is_some()
+        || cache_write_1h.is_some();
+    let prompt_tokens = if any {
+        Some(
+            uncached
+                .unwrap_or(0)
+                .saturating_add(cache_read.unwrap_or(0))
+                .saturating_add(cache_write.unwrap_or(0))
+                .saturating_add(cache_write_1h.unwrap_or(0)),
+        )
+    } else {
+        None
+    };
+    InputUsage {
+        prompt_tokens,
+        cache_read_tokens: cache_read,
+        cache_write_tokens: cache_write,
+        cache_write_1h_tokens: cache_write_1h,
+    }
 }
 
 /// Provider-reported timing and identity metadata from response headers.
@@ -121,7 +287,10 @@ impl SseStream {
                 let carries_output = event.token.is_some()
                     || event.completion_tokens.is_some()
                     || event.tool_args.is_some()
-                    || event.prompt_tokens.is_some();
+                    || event.prompt_tokens.is_some()
+                    || event.cache_read_tokens.is_some()
+                    || event.cache_write_tokens.is_some()
+                    || event.cache_write_1h_tokens.is_some();
                 if carries_output {
                     self.pending.push_back(event);
                 }
@@ -189,16 +358,8 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 .and_then(|c| c.as_str())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            let usage = v
-                .pointer("/usage/completion_tokens")
-                .and_then(|c| c.as_u64());
-            let prompt_tokens = v.pointer("/usage/prompt_tokens").and_then(|c| c.as_u64());
-            Some(StreamEvent {
-                token,
-                tool_args,
-                completion_tokens: usage,
-                prompt_tokens,
-            })
+            let usage = json_u64(v.pointer("/usage/completion_tokens"));
+            Some(openai_input(&v).into_event(token, tool_args, usage))
         }
         Wire::Anthropic => {
             let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -214,31 +375,16 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                         .and_then(|c| c.as_str())
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
-                    Some(StreamEvent {
-                        token,
-                        tool_args,
-                        completion_tokens: None,
-                        prompt_tokens: None,
-                    })
+                    Some(InputUsage::empty().into_event(token, tool_args, None))
                 }
                 "message_start" | "message_delta" => {
-                    let prompt_tokens = v
-                        .pointer("/message/usage/input_tokens")
-                        .or_else(|| v.pointer("/usage/input_tokens"))
-                        .and_then(|c| c.as_u64());
-                    let completion_tokens = v
-                        .pointer("/usage/output_tokens")
-                        .or_else(|| v.pointer("/message/usage/output_tokens"))
-                        .and_then(|c| c.as_u64());
-                    if prompt_tokens.is_none() && completion_tokens.is_none() {
+                    let input = anthropic_input(&v);
+                    let completion_tokens = json_u64(v.pointer("/usage/output_tokens"))
+                        .or_else(|| json_u64(v.pointer("/message/usage/output_tokens")));
+                    if input.prompt_tokens.is_none() && completion_tokens.is_none() {
                         return None;
                     }
-                    Some(StreamEvent {
-                        tool_args: None,
-                        token: None,
-                        completion_tokens,
-                        prompt_tokens,
-                    })
+                    Some(input.into_event(None, None, completion_tokens))
                 }
                 _ => None,
             }
@@ -253,22 +399,12 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 .pointer("/candidates/0/content/parts/0/functionCall/args")
                 .filter(|a| a.is_object())
                 .map(|a| a.to_string());
-            let usage = v
-                .pointer("/usageMetadata/candidatesTokenCount")
-                .and_then(|c| c.as_u64());
-            let prompt_tokens = v
-                .pointer("/usageMetadata/promptTokenCount")
-                .and_then(|c| c.as_u64());
-            if token.is_none() && usage.is_none() && tool_args.is_none() && prompt_tokens.is_none()
-            {
+            let usage = json_u64(v.pointer("/usageMetadata/candidatesTokenCount"));
+            let input = gemini_input(&v);
+            if token.is_none() && usage.is_none() && tool_args.is_none() && input.is_empty() {
                 return None;
             }
-            Some(StreamEvent {
-                token,
-                tool_args,
-                completion_tokens: usage,
-                prompt_tokens,
-            })
+            Some(input.into_event(token, tool_args, usage))
         }
         Wire::Cohere => {
             let token = v
@@ -283,29 +419,19 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 })
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            let usage = v
-                .pointer("/response/meta/billed_units/output_tokens")
-                .and_then(|c| c.as_u64())
-                .or_else(|| {
-                    v.pointer("/usage/tokens/output_tokens")
-                        .and_then(|c| c.as_u64())
-                });
-            let prompt_tokens = v
-                .pointer("/response/meta/billed_units/input_tokens")
-                .and_then(|c| c.as_u64())
-                .or_else(|| {
-                    v.pointer("/usage/tokens/input_tokens")
-                        .and_then(|c| c.as_u64())
-                });
-            if token.is_none() && usage.is_none() && prompt_tokens.is_none() {
+            let usage = json_u64(v.pointer("/response/meta/billed_units/output_tokens")).or_else(
+                || json_u64(v.pointer("/usage/tokens/output_tokens")),
+            );
+            let prompt_tokens = json_u64(v.pointer("/response/meta/billed_units/input_tokens"))
+                .or_else(|| json_u64(v.pointer("/usage/tokens/input_tokens")));
+            let input = InputUsage {
+                prompt_tokens,
+                ..InputUsage::empty()
+            };
+            if token.is_none() && usage.is_none() && input.is_empty() {
                 return None;
             }
-            Some(StreamEvent {
-                tool_args: None,
-                token,
-                completion_tokens: usage,
-                prompt_tokens,
-            })
+            Some(input.into_event(token, None, usage))
         }
         Wire::Bedrock | Wire::Vertex | Wire::Mock => None,
     }
@@ -344,12 +470,11 @@ impl futures_util::Stream for MockStream {
                 return Poll::Ready(None);
             }
             self.usage_sent = true;
-            return Poll::Ready(Some(Ok(StreamEvent {
-                tool_args: None,
-                token: None,
-                completion_tokens: Some(self.n_tokens as u64),
-                prompt_tokens: None,
-            })));
+            return Poll::Ready(Some(Ok(InputUsage::empty().into_event(
+                None,
+                None,
+                Some(self.n_tokens as u64),
+            ))));
         }
         let start = *self.start.get_or_insert_with(tokio::time::Instant::now);
         let target = start + self.delay * self.emitted as u32 + self.delay;
@@ -363,12 +488,11 @@ impl futures_util::Stream for MockStream {
             return Poll::Pending;
         }
         self.emitted += 1;
-        Poll::Ready(Some(Ok(StreamEvent {
-            tool_args: None,
-            token: Some("token ".to_string()),
-            completion_tokens: None,
-            prompt_tokens: None,
-        })))
+        Poll::Ready(Some(Ok(InputUsage::empty().into_event(
+            Some("token ".to_string()),
+            None,
+            None,
+        ))))
     }
 }
 
@@ -423,31 +547,14 @@ impl BedrockStream {
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
                 if token.is_some() || tool_args.is_some() {
-                    self.pending.push_back(StreamEvent {
-                        token,
-                        tool_args,
-                        completion_tokens: None,
-                        prompt_tokens: None,
-                    });
+                    self.pending
+                        .push_back(InputUsage::empty().into_event(token, tool_args, None));
                 }
             }
             "messageStop" => {}
             "metadata" => {
-                let usage = v
-                    .pointer("/usage/outputTokens")
-                    .or_else(|| v.pointer("/usage/output_tokens"))
-                    .and_then(|c| c.as_u64());
-                let prompt_tokens = v
-                    .pointer("/usage/inputTokens")
-                    .or_else(|| v.pointer("/usage/input_tokens"))
-                    .and_then(|c| c.as_u64());
-                if usage.is_some() || prompt_tokens.is_some() {
-                    self.pending.push_back(StreamEvent {
-                        token: None,
-                        tool_args: None,
-                        completion_tokens: usage,
-                        prompt_tokens,
-                    });
+                if let Some(event) = bedrock_metadata_event(&v) {
+                    self.pending.push_back(event);
                 }
             }
             _ => {}
@@ -487,5 +594,28 @@ impl futures_util::Stream for BedrockStream {
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bedrock_metadata_adds_cache_tokens_onto_uncached_input() {
+        let event = bedrock_metadata_event(&serde_json::json!({
+            "usage": {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "cacheReadInputTokens": 400,
+                "cacheWriteInputTokens": 25
+            }
+        }))
+        .expect("metadata event");
+        assert_eq!(event.prompt_tokens, Some(525));
+        assert_eq!(event.cache_read_tokens, Some(400));
+        assert_eq!(event.cache_write_tokens, Some(25));
+        assert_eq!(event.cache_write_1h_tokens, None);
+        assert_eq!(event.completion_tokens, Some(20));
     }
 }
