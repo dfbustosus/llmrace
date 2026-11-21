@@ -34,6 +34,10 @@ pub struct RunMetrics {
     pub tool_args: String,
     /// Workload prompt id for this round. Empty when the race used one prompt.
     pub prompt_id: String,
+    /// Whether the response passed the task. `None` when the round had no
+    /// task (no `--tools` and no `expect`). A `false` is still a successful
+    /// HTTP call.
+    pub task_ok: Option<bool>,
     /// Provider-reported server-side processing time in milliseconds,
     /// from response headers (e.g. OpenAI's `openai-processing-ms`).
     pub server_ms: Option<f64>,
