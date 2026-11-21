@@ -86,6 +86,7 @@ pub async fn push(
             provider: "pushgateway".into(),
             status: status.as_u16(),
             body: text.chars().take(200).collect(),
+            retry_after: None,
         })
     }
 }
