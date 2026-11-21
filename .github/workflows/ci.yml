@@ -46,3 +46,64 @@ jobs:
       - run: cargo bench --no-run
       - run: cargo doc --no-deps
       - run: cargo run -- mock --no-tui -n 1 --warmup 0 --out report.md --json --csv
+  race-gate:
+    name: Mock task-success gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: A wrong answer fails and the same answer passes
+        run: |
+          set -euo pipefail
+          mkdir -p gate
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          answer = ("token " * 24).strip()
+          Path("gate/pass.jsonl").write_text(
+              json.dumps({"id": "mock", "prompt": "hi", "expect": answer}) + "\n"
+          )
+          Path("gate/fail.jsonl").write_text(
+              json.dumps({"id": "mock", "prompt": "hi", "expect": "nope"}) + "\n"
+          )
+          PY
+          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+            --workload gate/pass.jsonl --json --out gate/pass.md
+          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+            --workload gate/pass.jsonl \
+            --baseline gate/pass.json \
+            --max-regression 15 \
+            --require-significance \
+            --json --out gate/pass-again.md
+          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+            --workload gate/fail.jsonl --json --out gate/fail.md
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          doc = json.loads(Path("gate/fail.json").read_text())
+          for provider in doc["providers"]:
+              provider["task_pass_rate"] = 1.0
+              provider["mean_total_ms"] = 1_000_000
+              provider["p95_total_ms"] = 1_000_000
+              provider["mean_ttfb_ms"] = 1_000_000
+              provider["mean_tokens_per_sec"] = 0.001
+          Path("gate/was-correct.json").write_text(json.dumps(doc))
+          PY
+          set +e
+          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+            --workload gate/fail.jsonl \
+            --baseline gate/was-correct.json \
+            --max-regression 15 \
+            --require-significance \
+            --json --out gate/dropped.md > gate/dropped.txt
+          code=$?
+          set -e
+          test "$code" -ne 0
+          grep -q "task success" gate/dropped.txt
+          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+            --workload gate/fail.jsonl \
+            --baseline gate/fail.json \
+            --max-regression 15 \
+            --require-significance \
+            --json --out gate/same.md
