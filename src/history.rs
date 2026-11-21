@@ -39,6 +39,20 @@ pub struct HistoryRecord {
     /// Estimated server-side thinking time in ms, when measurable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_ms_estimate: Option<f64>,
+    /// Fraction of measured rounds that failed. Absent on records written
+    /// before failed rounds were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_rate: Option<f64>,
+    /// Tokens/s times the success rate. Absent on older records; callers
+    /// fall back to [`Self::mean_tokens_per_sec`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goodput_tokens_per_sec: Option<f64>,
+    /// Extra attempts spent retrying measured rounds.
+    #[serde(default)]
+    pub retry_attempts: u64,
+    /// Cost of one successful round, when the model had a price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_per_run_usd: Option<f64>,
 }
 
 /// Default history file location: `$XDG_DATA_HOME/llmrace/history.jsonl`,
@@ -71,6 +85,10 @@ pub fn history_path() -> PathBuf {
 ///     itl_p95_ms: None,
 ///     reasoning_tokens: None,
 ///     thinking_ms_estimate: None,
+///     failure_rate: None,
+///     goodput_tokens_per_sec: None,
+///     retry_attempts: 0,
+///     cost_per_run_usd: None,
 /// };
 /// append(&path, &[record.clone()]).unwrap();
 /// assert_eq!(load(&path), vec![record]);
@@ -287,5 +305,9 @@ pub fn record_from_summary(s: &crate::bench::LaneSummary, timestamp_unix: u64) -
         itl_p95_ms: s.itl_p95_ms(),
         reasoning_tokens: (s.reasoning_tokens() > 0).then_some(s.reasoning_tokens()),
         thinking_ms_estimate: s.thinking_ms_estimate(),
+        failure_rate: s.failure_rate(),
+        goodput_tokens_per_sec: Some(s.goodput_tokens_per_sec()),
+        retry_attempts: s.retry_attempts,
+        cost_per_run_usd: s.cost_per_run_usd(),
     }
 }
