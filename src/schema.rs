@@ -138,7 +138,14 @@ pub fn race_report_schema() -> String {
                 "rounds": {"type": "integer", "minimum": 1},
                 "mean_total_ms": {"type": "number"},
                 "mean_ttfb_ms": {"type": "number"},
-                "mean_tokens_per_sec": {"type": "number"}
+                "mean_tokens_per_sec": {"type": "number"},
+                "task_pass": {
+                  "type": ["array", "null"],
+                  "items": {"type": "integer", "minimum": 0},
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "task_pass_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
               }
             }
           },
