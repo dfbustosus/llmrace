@@ -511,4 +511,52 @@ impl LaneSummary {
     pub fn successful(&self) -> bool {
         self.error.is_none() && !self.runs.is_empty()
     }
+
+    /// One row per workload prompt, in first-seen order. Empty when the
+    /// race used a single prompt.
+    #[must_use]
+    pub fn prompt_rows(&self) -> Vec<PromptRow> {
+        let mut rows: Vec<PromptRow> = Vec::new();
+        for run in &self.runs {
+            if run.prompt_id.is_empty() {
+                continue;
+            }
+            if let Some(row) = rows.iter_mut().find(|r| r.id == run.prompt_id) {
+                row.total_ms += run.total_ms;
+                row.ttfb_ms += run.ttfb_ms;
+                row.tokens_per_sec += run.tokens_per_sec();
+                row.rounds += 1;
+            } else {
+                rows.push(PromptRow {
+                    id: run.prompt_id.clone(),
+                    rounds: 1,
+                    total_ms: run.total_ms,
+                    ttfb_ms: run.ttfb_ms,
+                    tokens_per_sec: run.tokens_per_sec(),
+                });
+            }
+        }
+        for row in &mut rows {
+            let n = row.rounds as f64;
+            row.total_ms /= n;
+            row.ttfb_ms /= n;
+            row.tokens_per_sec /= n;
+        }
+        rows
+    }
+}
+
+/// Aggregated timings for one workload prompt on one lane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromptRow {
+    /// Workload id.
+    pub id: String,
+    /// Successful rounds that used this prompt.
+    pub rounds: usize,
+    /// Mean total latency, milliseconds.
+    pub total_ms: f64,
+    /// Mean time to first token, milliseconds.
+    pub ttfb_ms: f64,
+    /// Mean tokens per second.
+    pub tokens_per_sec: f64,
 }
