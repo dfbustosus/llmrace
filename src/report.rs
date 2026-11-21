@@ -341,6 +341,88 @@ pub fn json_report_with_region(
     max_tokens: u64,
     region: Option<&str>,
 ) -> String {
+    render_json(
+        summaries,
+        prompt,
+        runs,
+        max_tokens,
+        region,
+        &SentPrompts {
+            prompt,
+            workload: &[],
+            warmup: 0,
+        },
+    )
+}
+
+/// The prompts a race sent, so `race.json` can name them.
+pub struct SentPrompts<'a> {
+    /// Text a one-string race sent. A workload replaces it, round by round.
+    pub prompt: &'a str,
+    /// Workload drawn in measured-round order. Empty for a one-string race.
+    pub workload: &'a [crate::workload::WorkloadPrompt],
+    /// Warmup rounds. Measured rounds start after these, matching the engine.
+    pub warmup: usize,
+}
+
+/// Renders the JSON report for a race that may have drawn a workload.
+///
+/// `prompt` stays the header label. [`SentPrompts`] is what each measured
+/// round actually sent.
+#[must_use]
+pub fn json_report_cited(
+    summaries: &[LaneSummary],
+    prompt: &str,
+    runs: usize,
+    max_tokens: u64,
+    region: Option<&str>,
+    sent: &SentPrompts<'_>,
+) -> String {
+    render_json(summaries, prompt, runs, max_tokens, region, sent)
+}
+
+/// Prompt ids in measured-round order, and the SHA-256 of the prompt
+/// texts those rounds sent, joined with a newline.
+fn citation(sent: &SentPrompts<'_>, rounds: usize) -> (Vec<String>, String) {
+    let mut ids = Vec::with_capacity(rounds);
+    let mut texts = Vec::with_capacity(rounds);
+    for i in 0..rounds {
+        let (id, text) =
+            crate::workload::prompt_for(sent.prompt, sent.workload, sent.warmup, sent.warmup + i);
+        if !sent.workload.is_empty() {
+            ids.push(id.to_string());
+        }
+        texts.push(text.to_string());
+    }
+    let hash = crate::provider::sha256_hex(texts.join("\n").as_bytes());
+    (ids, hash)
+}
+
+fn counted_rounds(summaries: &[LaneSummary], fallback: usize) -> usize {
+    let n = summaries
+        .iter()
+        .map(|s| {
+            let concurrent = s.concurrency.max(1);
+            s.runs.len().div_ceil(concurrent) + s.failures.len()
+        })
+        .max()
+        .unwrap_or(0);
+    if n == 0 {
+        fallback
+    } else {
+        n
+    }
+}
+
+fn render_json(
+    summaries: &[LaneSummary],
+    prompt: &str,
+    runs: usize,
+    max_tokens: u64,
+    region: Option<&str>,
+    sent: &SentPrompts<'_>,
+) -> String {
+    let (workload_ids, prompt_sha256) = citation(sent, counted_rounds(summaries, runs));
     let providers: Vec<serde_json::Value> = summaries
         .iter()
         .map(|s| {
@@ -433,6 +515,9 @@ pub fn json_report_with_region(
         "version": env!("CARGO_PKG_VERSION"),
         "region": region,
         "prompt": prompt,
+        "pricing_as_of": crate::cost::PRICING_AS_OF,
+        "workload": workload_ids,
+        "prompt_sha256": prompt_sha256,
         "runs": runs,
         "max_tokens": max_tokens,
         "significance": top_two_significance(summaries).map(
