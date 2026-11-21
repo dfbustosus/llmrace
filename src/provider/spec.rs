@@ -110,7 +110,7 @@ impl ProviderSpec {
             "gemini",
             "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse",
             Some("GEMINI_API_KEY"),
-            "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
             Wire::Gemini,
         )
     }
@@ -305,7 +305,7 @@ impl ProviderSpec {
             "vertex",
             &endpoint,
             Some("GOOGLE_APPLICATION_CREDENTIALS"),
-            "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
             Wire::Vertex,
         );
         p.experimental = true;
