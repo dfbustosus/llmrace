@@ -188,6 +188,8 @@ impl BaselineReport {
 ///         server_ms: None, request_id: None, ratelimit_remaining: None,
 ///         ..llmrace::bench::RunMetrics::default()
 ///     }],
+///     failures: Vec::new(),
+///     retry_attempts: 0,
 ///     error: None,
 ///     prompt: "p".into(),
 ///     concurrency: 1,
