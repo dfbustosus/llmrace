@@ -24,6 +24,7 @@ pub async fn post_webhook(client: &reqwest::Client, url: &str, alert: &Alert) ->
             provider: "webhook".into(),
             status: resp.status().as_u16(),
             body: crate::util::truncate(&resp.text().await.unwrap_or_default(), 200),
+            retry_after: None,
         });
     }
     Ok(())
