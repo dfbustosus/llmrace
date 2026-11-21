@@ -189,6 +189,78 @@ fn rank<L: std::borrow::Borrow<LaneSummary>>(lanes: &[L]) -> Vec<&LaneSummary> {
     ranked
 }
 
+/// One-line description of the sampling controls that were actually sent.
+///
+/// `None` when every control was left at the provider default, so reports
+/// for races that do not pin sampling stay identical to earlier versions.
+#[must_use]
+pub fn sampling_inline(sampling: &crate::provider::Sampling) -> Option<String> {
+    if sampling.is_unset() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if let Some(t) = sampling.temperature {
+        parts.push(format!("temperature {t}"));
+    }
+    if let Some(p) = sampling.top_p {
+        parts.push(format!("top_p {p}"));
+    }
+    if let Some(seed) = sampling.seed {
+        parts.push(format!("seed {seed}"));
+    }
+    if sampling.system.as_deref().is_some_and(|s| !s.is_empty()) {
+        parts.push("system prompt".to_string());
+    }
+    Some(parts.join(", "))
+}
+
+/// Markdown metadata line for [`sampling_inline`].
+#[must_use]
+pub fn sampling_note(sampling: &crate::provider::Sampling) -> Option<String> {
+    sampling_inline(sampling).map(|s| format!("- **Sampling**: {s}\n"))
+}
+
+/// JSON object of the sampling controls that were set, suitable for
+/// inserting into a race report. Unset controls are omitted.
+#[must_use]
+pub fn sampling_json(sampling: &crate::provider::Sampling) -> Option<serde_json::Value> {
+    if sampling.is_unset() {
+        return None;
+    }
+    let mut obj = serde_json::Map::new();
+    if let Some(t) = sampling.temperature {
+        obj.insert("temperature".into(), serde_json::json!(t));
+    }
+    if let Some(p) = sampling.top_p {
+        obj.insert("top_p".into(), serde_json::json!(p));
+    }
+    if let Some(seed) = sampling.seed {
+        obj.insert("seed".into(), serde_json::json!(seed));
+    }
+    if let Some(sys) = sampling.system.as_deref().filter(|s| !s.is_empty()) {
+        obj.insert("system".into(), serde_json::Value::String(sys.to_string()));
+    }
+    Some(serde_json::Value::Object(obj))
+}
+
+/// Inserts a `sampling` object into an already-rendered JSON report.
+///
+/// Returns the input unchanged when sampling is unset or the document is
+/// not an object, so older call sites keep their bytes.
+#[must_use]
+pub fn insert_sampling_json(json: &str, sampling: &crate::provider::Sampling) -> String {
+    let Some(value) = sampling_json(sampling) else {
+        return json.to_string();
+    };
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(json) else {
+        return json.to_string();
+    };
+    if let Some(map) = doc.as_object_mut() {
+        map.insert("sampling".to_string(), value);
+    }
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|_| json.to_string())
+}
+
 /// Renders the full machine-readable JSON report.
 pub fn json_report(
     summaries: &[LaneSummary],
