@@ -233,6 +233,9 @@ async fn run_round(
             tokens: all.iter().map(|m| m.tokens).sum(),
             chars: all.iter().map(|m| m.chars).sum(),
             prompt_tokens: all.iter().map(|m| m.prompt_tokens).sum(),
+            cache_read_tokens: all.iter().map(|m| m.cache_read_tokens).sum(),
+            cache_write_tokens: all.iter().map(|m| m.cache_write_tokens).sum(),
+            cache_write_1h_tokens: all.iter().map(|m| m.cache_write_1h_tokens).sum(),
             tool_args: all
                 .iter()
                 .map(|m| m.tool_args.as_str())
@@ -306,6 +309,9 @@ async fn single_request(
     let mut chars = 0u64;
     let mut usage: Option<u64> = None;
     let mut prompt_tokens: Option<u64> = None;
+    let mut cache_read_tokens = 0u64;
+    let mut cache_write_tokens = 0u64;
+    let mut cache_write_1h_tokens = 0u64;
     let mut tool_args = String::new();
     let mut last_token_at: Option<Instant> = None;
     let mut itl_gaps_ms: Vec<f64> = Vec::new();
@@ -370,9 +376,20 @@ async fn single_request(
             usage = Some(n);
         }
         // A usage-only event must not start the TTFB clock. Input tokens
-        // often arrive in `message_start`, before any visible text.
+        // often arrive in `message_start`, before any visible text. Cache
+        // counts update independently so a later output-only usage event
+        // does not wipe a cache hit reported at the start.
         if let Some(n) = event.prompt_tokens.filter(|n| *n > 0) {
             prompt_tokens = Some(n);
+        }
+        if let Some(n) = event.cache_read_tokens {
+            cache_read_tokens = n;
+        }
+        if let Some(n) = event.cache_write_tokens {
+            cache_write_tokens = n;
+        }
+        if let Some(n) = event.cache_write_1h_tokens {
+            cache_write_1h_tokens = n;
         }
     }
 
@@ -393,6 +410,9 @@ async fn single_request(
         tokens,
         chars,
         prompt_tokens: prompt_tokens.unwrap_or(0),
+        cache_read_tokens,
+        cache_write_tokens,
+        cache_write_1h_tokens,
         tool_args,
         server_ms: server_timing.processing_ms,
         request_id: server_timing.request_id,
