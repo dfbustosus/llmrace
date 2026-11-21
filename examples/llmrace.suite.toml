@@ -20,6 +20,14 @@ max_tokens = 512
 prompt = "Write a vivid paragraph about a storm at sea."
 
 [[suite]]
+name = "short-answers"
+description = "the shared short-answer workload"
+providers = ["mock"]
+runs = 3
+warmup = 0
+workload = "examples/workloads/short-answer.jsonl"
+
+[[suite]]
 name = "saturation"
 description = "8 parallel streams: throughput under contention"
 providers = ["mock"]
