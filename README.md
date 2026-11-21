@@ -237,7 +237,7 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 | **Latency p50 / p95** | Distribution of round time-to-last-token (linear-interpolation percentiles) |
 | **Mean ± 95% CI** | Student-t confidence interval on the mean latency |
 | **Significance** | Welch's t-test on per-run latencies between the top two lanes — the report states whether the gap is real or could be noise (p < 0.05) |
-| **Cost/run** | Public per-model prices × billed input and output tokens. Input tokens come from the provider's usage report (system prompt and tool schemas included). When a provider omits usage, the user prompt is estimated and the markdown table marks the figure with `~` |
+| **Cost/run** | Public per-model prices × billed input and output tokens. Input tokens come from the provider's usage report (system prompt and tool schemas included). Cache reads and cache writes use the published discount when this crate has one for the model; a model with cache tokens but no cached price is billed at the input rate and the report says so. Hourly cache storage is not in the per-request usage and is not included. When a provider omits usage, the user prompt is estimated and the markdown table marks the figure with `~` |
 
 Methodology notes:
 
@@ -298,10 +298,11 @@ Any HTTP response counts as endpoint reachability — even a 401 proves DNS, TLS
 
 ## Pricing
 
-Cost columns use a built-in table that can drift as providers change prices. Override per model (repeatable, USD per million tokens):
+Cost columns use a built-in table that can drift as providers change prices. Cache reads and cache writes use the published discount for models whose cached rate is in that table. Override per model (repeatable, USD per million tokens). A two-part override replaces the whole row and does not keep the built-in cache discount; add `:cached`, `:write` and `:write_1h` when you want those rates:
 
 ```bash
 llmrace openai --price openai/gpt-4o-mini=1.25:5
+llmrace openai --price openai/gpt-4o-mini=0.15:0.60:0.075
 ```
 
 ## Tracking providers over time
@@ -392,7 +393,7 @@ PRs with results from other regions are welcome — record with `--json` and ext
 | CI regression gate with significance | ✅ `--require-significance` | ❌ | ✝ heavy scripting | ❌ |
 | Saturation curves (`--ramp`) | ✅ built-in | ❌ | ✝ complex | ❌ |
 | Longitudinal trends + model-swap detection | ✅ | ❌ | ❌ | partial |
-| Cost per run from billed input and output tokens | ✅ | ❌ | ❌ | partial |
+| Cost per run from billed input, cached input and output tokens | ✅ | ❌ | ❌ | partial |
 | Cross-region probe merging | ✅ `--merge` | ❌ | ❌ | ❌ |
 | Reproducible sampling (temperature, top-p, seed, system) stamped on the report | ✅ | ❌ | ✝ | ❌ |
 | Retries honor `Retry-After`; permanent 4xx fails fast | ✅ | ❌ | partial | ❌ |
