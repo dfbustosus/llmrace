@@ -289,6 +289,46 @@ fn run_metrics_generation_math() {
 }
 
 #[test]
+fn failed_rounds_do_not_win_on_the_survivors() {
+    use llmrace::bench::{FailureClass, LaneSummary, RoundFailure};
+    let reliable = LaneSummary {
+        name: "steady".into(),
+        runs: vec![RunMetrics {
+            total_ms: 1000.0,
+            ttfb_ms: 100.0,
+            tokens: 50,
+            ..RunMetrics::default()
+        }],
+        ..LaneSummary::default()
+    };
+    let flaky = LaneSummary {
+        name: "flaky".into(),
+        runs: vec![RunMetrics {
+            total_ms: 1000.0,
+            ttfb_ms: 100.0,
+            tokens: 80,
+            ..RunMetrics::default()
+        }],
+        failures: vec![RoundFailure {
+            elapsed_ms: 5_000.0,
+            class: FailureClass::Timeout,
+            attempts: 1,
+            message: "timed out".into(),
+        }],
+        ..LaneSummary::default()
+    };
+    assert!(flaky.mean_tokens_per_sec() > reliable.mean_tokens_per_sec());
+    assert!(flaky.goodput_tokens_per_sec() < reliable.goodput_tokens_per_sec());
+    assert!((flaky.failure_rate().unwrap() - 0.5).abs() < 1e-12);
+    let md = report::markdown(&[flaky, reliable], "hi", 1, 32);
+    let steady_at = md.find("| steady").expect("steady row");
+    let flaky_at = md.find("| flaky").expect("flaky row");
+    assert!(steady_at < flaky_at, "{md}");
+    assert!(md.contains("1/2"), "{md}");
+    assert!(md.contains("goodput"), "{md}");
+}
+
+#[test]
 fn measured_prompt_tokens_price_the_bill_not_the_guess() {
     use llmrace::bench::LaneSummary;
     let lane = LaneSummary {
@@ -406,6 +446,8 @@ fn regression_summary(
         name: name.into(),
         model: "m".into(),
         runs: vec![run],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: "p".into(),
         concurrency: 1,
@@ -612,6 +654,8 @@ async fn percentile_ladder_and_histogram_render() {
         name: "mock".into(),
         model: "m".into(),
         runs,
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: "p".into(),
         concurrency: 1,
@@ -760,6 +804,8 @@ fn itl_metrics_aggregate_across_runs() {
                 ..RunMetrics::default()
             },
         ],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -784,6 +830,8 @@ fn itl_absent_when_single_token() {
             tokens: 1,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -848,6 +896,8 @@ fn lane_throughput_aggregates_effective_windows() {
                 ..RunMetrics::default()
             },
         ],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -901,6 +951,8 @@ fn html_report_renders_lanes_and_bars() {
             tokens: 24,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: "p".into(),
         concurrency: 1,
@@ -936,6 +988,8 @@ fn reasoning_tokens_split_from_visible() {
             visible_tokens: 60, // estimated visible stream
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -953,6 +1007,8 @@ fn reasoning_tokens_split_from_visible() {
             visible_tokens: 100,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -975,6 +1031,8 @@ fn terminal_table_marks_reasoning_lanes() {
             server_ms: Some(1300.0),
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1018,6 +1076,8 @@ fn html_report_escapes_hostile_model_names() {
             tokens: 5,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: "p <b>bold</b> & 'quotes'".into(),
         concurrency: 1,
@@ -1048,6 +1108,8 @@ fn csv_escapes_commas_and_quotes() {
             tokens: 5,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1162,6 +1224,8 @@ fn baseline_matches_sweep_variants() {
             tokens: 10,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1200,6 +1264,8 @@ fn markdown_report_notes_unpriced_lanes() {
             tokens: 5,
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1237,6 +1303,8 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
             server_ms: Some(1398.0),
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1260,6 +1328,8 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
             server_ms: Some(90.0),
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1301,6 +1371,8 @@ fn markdown_reasoning_lane_keeps_tokens_per_sec() {
             server_ms: Some(1444.0),
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: "p".into(),
         concurrency: 1,
@@ -1328,6 +1400,8 @@ fn significance_verdict_distinguishes_signal_from_noise() {
                 ..RunMetrics::default()
             })
             .collect(),
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1378,6 +1452,8 @@ fn ttfb_percentiles_exposed_in_json() {
                 ..RunMetrics::default()
             },
         ],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1409,6 +1485,8 @@ fn significance_labels_disambiguate_same_provider_models() {
                 ..RunMetrics::default()
             },
         ],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1440,6 +1518,8 @@ fn significance_labels_disambiguate_same_provider_models() {
                 ..RunMetrics::default()
             },
         ],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1450,6 +1530,8 @@ fn significance_labels_disambiguate_same_provider_models() {
         name: "mock2".into(),
         model: plain.model.clone(),
         runs: plain.runs.clone(),
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1475,6 +1557,8 @@ fn duration_mode_reports_actual_round_count() {
                     ..RunMetrics::default()
                 })
                 .collect(),
+            failures: Vec::new(),
+            retry_attempts: 0,
             error: None,
             prompt: String::new(),
             concurrency: 1,
@@ -1502,6 +1586,8 @@ fn histogram_section_includes_ttfb_ladder() {
                 ..RunMetrics::default()
             })
             .collect(),
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1527,6 +1613,8 @@ fn brain_annotation_hidden_for_classic_models_in_tool_mode() {
             visible_tokens: 8, // estimation gap: 8 "reasoning"
             ..RunMetrics::default()
         }],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
@@ -1635,6 +1723,8 @@ fn suite_combined_report_renders_tables_and_significance() {
                 ..RunMetrics::default()
             },
         ],
+        failures: Vec::new(),
+        retry_attempts: 0,
         error: None,
         prompt: String::new(),
         concurrency: 1,
