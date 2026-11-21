@@ -213,12 +213,16 @@ fn prompt_table(summaries: &[LaneSummary]) -> String {
         return String::new();
     }
     let mut out = String::from(
-        "\n## Per prompt\n\n| Provider | Prompt | Rounds | TTFT | Tokens/s |\n|----------|--------|-------:|-----:|---------:|\n",
+        "\n## Per prompt\n\n| Provider | Prompt | Rounds | Pass | TTFT | Tokens/s |\n|----------|--------|-------:|-----:|-----:|---------:|\n",
     );
     for s in summaries {
         for row in s.prompt_rows() {
+            let pass = match row.task_pass {
+                Some((ok, n)) => format!("{ok}/{n}"),
+                None => "—".into(),
+            };
             out.push_str(&format!(
-                "| {} | `{}` | {} | {:.0} ms | {:.1} |\n",
+                "| {} | `{}` | {} | {pass} | {:.0} ms | {:.1} |\n",
                 s.name, row.id, row.rounds, row.ttfb_ms, row.tokens_per_sec
             ));
         }
@@ -568,6 +572,10 @@ fn render_json(
                         "mean_total_ms": row.total_ms,
                         "mean_ttfb_ms": row.ttfb_ms,
                         "mean_tokens_per_sec": row.tokens_per_sec,
+                        "task_pass": row.task_pass.map(|(ok, n)| serde_json::json!([ok, n])),
+                        "task_pass_rate": row.task_pass.map(|(ok, n)| {
+                            if n == 0 { 0.0 } else { ok as f64 / n as f64 }
+                        }),
                     })
                 })
                 .collect();
