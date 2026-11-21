@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-20
+
+Cost follows the cache split the provider already billed. A cache read was priced as a fresh input token, and Anthropic's `input_tokens` (which excludes cache reads and cache writes) was treated as the whole prompt.
+
+### Fixed
+
+- **Cache-aware cost.** OpenAI `prompt_tokens_details.cached_tokens` and Gemini `cachedContentTokenCount` are subsets of the reported prompt count and are priced at the published cached-input rate. Anthropic `input_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens` are added into the prompt total, with the 5-minute and 1-hour write buckets priced at 1.25× and 2× the base input rate for the Claude models in the table. Bedrock Converse `inputTokens` follows the same split. A usage event that only carries output tokens does not clear a cache count from `message_start`, and it still does not start the TTFB clock
+- A model that reports cache tokens but has no cached price in the table is billed at the input rate, and the markdown report says so. Hourly cache storage is not in the per-request usage and is not included
+- `--price` rejects non-finite values
+
+### Added
+
+- `StreamEvent` and `RunMetrics` carry `cache_read_tokens`, `cache_write_tokens` and `cache_write_1h_tokens`
+- `cost::TokenRates`, `cost::UsageTokens`, `cost::token_rates`, `cost::usage_cost_usd` and `cost::parse_price_override`
+- `--price provider/model=in:out[:cached[:write[:write_1h]]]`. A two-part override still means input and output only, and it no longer inherits a built-in cache discount
+- JSON reports add the three cache counts on each run and lane, plus `cache_discount_applied`
+
 ## [1.8.0] - 2026-11-20
 
 Cost uses the bill the provider sent. Input tokens were previously a
@@ -440,7 +457,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/dfbustosus/llmrace/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/dfbustosus/llmrace/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/dfbustosus/llmrace/compare/v1.6.0...v1.7.0
 [0.5.0]: https://github.com/dfbustosus/llmrace/compare/v0.4.2...v0.5.0
