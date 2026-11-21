@@ -45,7 +45,11 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
             levels,
             cfg.bench.runs
         );
-        println!("   prompt: \"{}\"\n", cfg.prompt.replace('\n', " "));
+        if cfg.bench.workload.is_empty() {
+            println!("   prompt: \"{}\"\n", cfg.prompt.replace('\n', " "));
+        } else {
+            println!("   workload: {} prompts\n", cfg.bench.workload.len());
+        }
     }
 
     let mut phases: Vec<RampLevel> = Vec::new();
@@ -200,7 +204,11 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     let mut md = String::from("# \u{1f3c1} llmrace ramp\n\n");
     md.push_str(&format!(
         "- **Prompt**: `\"{}\"`\n- **Levels**: {:?}\n- **Rounds per level**: {}\n",
-        cfg.prompt.replace('\n', " "),
+        if cfg.bench.workload.is_empty() {
+            cfg.prompt.replace('\n', " ")
+        } else {
+            format!("{} prompts", cfg.bench.workload.len())
+        },
         levels,
         cfg.bench.runs
     ));
