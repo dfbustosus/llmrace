@@ -25,6 +25,11 @@ pub struct RunMetrics {
     pub cache_write_tokens: u64,
     /// 1-hour cache-write tokens included in [`Self::prompt_tokens`].
     pub cache_write_1h_tokens: u64,
+    /// Provider-reported reasoning tokens. `None` when the provider sent
+    /// no count; the lane then estimates them from the visible stream.
+    pub reasoning_tokens: Option<u64>,
+    /// `true` when [`Self::reasoning_tokens`] is billed on top of [`Self::tokens`].
+    pub reasoning_billed_separately: bool,
     /// Accumulated tool-call argument JSON (empty when the run had none).
     pub tool_args: String,
     /// Provider-reported server-side processing time in milliseconds,
