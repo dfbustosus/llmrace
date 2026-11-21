@@ -435,6 +435,14 @@ fn cost_estimates_and_pricing_sane() {
         cost::pricing("gemini", "gemini-2.5-flash"),
         Some((0.30, 2.50))
     );
+    assert_eq!(
+        cost::pricing("gemini", "gemini-3.5-flash-lite"),
+        Some((0.30, 2.50))
+    );
+    assert_eq!(
+        cost::token_rates("gemini", "gemini-3.5-flash-lite").and_then(|r| r.cache_read),
+        Some(0.03)
+    );
     assert!(cost::pricing_stamp().contains(cost::PRICING_AS_OF));
     assert_eq!(cost::format_usd(0.000234), "$0.000234");
 }
@@ -672,15 +680,15 @@ fn gemini_thoughts_are_priced_as_output_and_openai_reasoning_is_not_added_twice(
 fn gemini_registry_entry() {
     let spec = llmrace::provider::ProviderSpec::find("gemini").unwrap();
     assert_eq!(spec.wire, Wire::Gemini);
-    assert_eq!(*spec.default_model, *"gemini-2.5-flash");
+    assert_eq!(*spec.default_model, *"gemini-3.5-flash-lite");
     assert_eq!(spec.api_key_env.as_deref(), Some("GEMINI_API_KEY"));
     assert!(spec.endpoint.contains("{model}"));
     assert_eq!(
-        llmrace::cost::pricing("gemini", "gemini-2.5-flash"),
+        llmrace::cost::pricing("gemini", "gemini-3.5-flash-lite"),
         Some((0.30, 2.50))
     );
     let vertex = llmrace::provider::ProviderSpec::find("vertex").unwrap();
-    assert_eq!(*vertex.default_model, *"gemini-2.5-flash");
+    assert_eq!(*vertex.default_model, *"gemini-3.5-flash-lite");
     assert!(vertex.experimental);
 }
 
