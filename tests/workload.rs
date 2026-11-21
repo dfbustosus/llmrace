@@ -69,12 +69,62 @@ fn race_json_names_the_price_date_the_workload_and_the_prompt_hash() {
             workload: &workload,
             warmup: 1,
         },
+        &llmrace::report::request_sha256(
+            "one",
+            &workload,
+            &llmrace::provider::Sampling::default(),
+            32,
+            None,
+        ),
     ))
     .unwrap();
     assert_eq!(json["workload"], serde_json::json!(["a", "b"]));
     assert_eq!(
         json["prompt_sha256"],
         "21066d108d5319ecb5a1fc4454f42ef22fc5f1c7df49c31d90294950e0ea8b2c"
+    );
+    let plain = llmrace::report::request_sha256(
+        "hello",
+        &[],
+        &llmrace::provider::Sampling::default(),
+        32,
+        None,
+    );
+    let sampling = llmrace::provider::Sampling {
+        system: Some("be brief".into()),
+        ..llmrace::provider::Sampling::default()
+    };
+    let with_system = llmrace::report::request_sha256("hello", &[], &sampling, 32, None);
+    assert_ne!(plain, with_system);
+    assert_ne!(
+        plain,
+        llmrace::report::request_sha256(
+            "hello",
+            &[],
+            &llmrace::provider::Sampling::default(),
+            64,
+            None
+        )
+    );
+    assert_ne!(
+        llmrace::report::request_sha256(
+            "one",
+            &workload,
+            &llmrace::provider::Sampling::default(),
+            32,
+            None
+        ),
+        {
+            let mut changed = workload.clone();
+            changed[0].expect = Some("Paris".into());
+            llmrace::report::request_sha256(
+                "one",
+                &changed,
+                &llmrace::provider::Sampling::default(),
+                32,
+                None,
+            )
+        }
     );
 }
 
