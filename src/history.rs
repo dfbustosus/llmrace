@@ -57,6 +57,10 @@ pub struct HistoryRecord {
     /// race had no task, and on records written before task success was gated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_pass_rate: Option<f64>,
+    /// Hash of the request this lane ran. Absent on records written before
+    /// the request id was stored. Trends compare only rows that share it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_sha256: Option<String>,
 }
 
 /// Default history file location: `$XDG_DATA_HOME/llmrace/history.jsonl`,
@@ -94,6 +98,7 @@ pub fn history_path() -> PathBuf {
 ///     retry_attempts: 0,
 ///     cost_per_run_usd: None,
 ///     task_pass_rate: None,
+///     request_sha256: None,
 /// };
 /// append(&path, &[record.clone()]).unwrap();
 /// assert_eq!(load(&path), vec![record]);
@@ -155,6 +160,9 @@ pub struct ProviderTrend {
     /// Median p95 inter-token gap in the window, ms; `None` when no
     /// recorded run measured ITL.
     pub itl_p95_median: Option<f64>,
+    /// `true` when the window also held a row for a different request.
+    /// The medians use only the request of the latest row.
+    pub request_changed: bool,
 }
 
 impl ProviderTrend {
@@ -215,6 +223,12 @@ pub fn build_trends(
             })
             .cloned()
             .collect();
+        let last_request = window.last().and_then(|r| r.request_sha256.clone());
+        let request_changed = window.iter().any(|r| r.request_sha256 != last_request);
+        let window: Vec<HistoryRecord> = window
+            .into_iter()
+            .filter(|r| r.request_sha256 == last_request)
+            .collect();
         if window.len() < 2 {
             continue;
         }
@@ -245,6 +259,7 @@ pub fn build_trends(
             tps_latest: last.mean_tokens_per_sec,
             p95_median,
             itl_p95_median,
+            request_changed,
         });
     }
     trends
@@ -263,11 +278,14 @@ pub fn render_trend_table(trends: &[ProviderTrend], days: u64) -> String {
         return out;
     }
     for t in trends {
-        let notes = if t.model_swapped() {
-            format!("model swap: {}", t.models_seen.join(" → "))
-        } else {
-            String::new()
-        };
+        let mut notes = Vec::new();
+        if t.model_swapped() {
+            notes.push(format!("model swap: {}", t.models_seen.join(" → ")));
+        }
+        if t.request_changed {
+            notes.push("request changed".to_string());
+        }
+        let notes = notes.join("; ");
         let ttfb = format!(
             "{}→{}",
             crate::stats::fmt_ms(t.ttfb_median),
@@ -315,5 +333,6 @@ pub fn record_from_summary(s: &crate::bench::LaneSummary, timestamp_unix: u64) -
         retry_attempts: s.retry_attempts,
         cost_per_run_usd: s.cost_per_run_usd(),
         task_pass_rate: s.task_rate(),
+        request_sha256: None,
     }
 }
