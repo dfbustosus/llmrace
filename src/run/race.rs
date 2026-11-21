@@ -60,7 +60,7 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
     write_reports(&summaries, &cfg)?;
     export_metrics(&summaries, &cfg).await?;
     if cfg.record {
-        record_history(&summaries, &cfg.storage)?;
+        record_history(&summaries, &cfg)?;
     }
 
     if cfg.notify_desktop && !summaries.is_empty() {
