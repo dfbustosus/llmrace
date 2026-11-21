@@ -9,7 +9,7 @@ pub fn race_report_schema() -> String {
   "$id": "https://github.com/dfbustosus/llmrace/schema/race-report.json",
   "title": "llmrace race report",
   "type": "object",
-  "required": ["tool", "version", "prompt", "pricing_as_of", "workload", "prompt_sha256", "runs", "max_tokens", "providers"],
+  "required": ["tool", "version", "prompt", "pricing_as_of", "workload", "prompt_sha256", "request_sha256", "runs", "max_tokens", "providers"],
   "properties": {
     "tool": {"const": "llmrace"},
     "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
@@ -18,6 +18,7 @@ pub fn race_report_schema() -> String {
     "pricing_as_of": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
     "workload": {"type": "array", "items": {"type": "string"}},
     "prompt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "runs": {"type": "integer", "minimum": 1},
     "max_tokens": {"type": "integer", "minimum": 1},
     "sampling": {
