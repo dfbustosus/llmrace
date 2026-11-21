@@ -65,6 +65,18 @@ fn price_overrides_parse_and_apply() {
         llmrace::cost::pricing("custom", "unlisted"),
         Some((3.0, 9.0))
     );
+    assert!(llmrace::cost::parse_override("openai/gpt-4o-mini=0.15:0.60:0.075").is_err());
+
+    let cached = llmrace::cost::parse_price_override("openai/gpt-4o-mini=0.15:0.60:0.075").unwrap();
+    assert_eq!(cached.rates.cache_read, Some(0.075));
+    assert!(cached.rates.cache_write.is_none());
+    let full = llmrace::cost::parse_price_override("anthropic/claude-sonnet-4-5=3:15:0.3:3.75:6")
+        .unwrap();
+    assert_eq!(full.rates.cache_write, Some(3.75));
+    assert_eq!(full.rates.cache_write_1h, Some(6.0));
+    assert!(llmrace::cost::parse_price_override("a=1:2:3:4:5:6").is_err());
+    assert!(llmrace::cost::parse_price_override("a=1:2::4").is_err());
+    assert!(llmrace::cost::parse_price_override("a=nan:1").is_err());
 }
 
 #[test]
