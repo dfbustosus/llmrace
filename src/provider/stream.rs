@@ -334,7 +334,7 @@ impl futures_util::Stream for MockStream {
     }
 }
 
-/// A live Bedrock `invoke-with-response-stream` body decoded into
+/// A live Bedrock `converse-stream` body decoded into
 /// [`StreamEvent`]s via the binary event-stream frame parser.
 pub struct BedrockStream {
     stream: Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
