@@ -672,13 +672,16 @@ fn gemini_thoughts_are_priced_as_output_and_openai_reasoning_is_not_added_twice(
 fn gemini_registry_entry() {
     let spec = llmrace::provider::ProviderSpec::find("gemini").unwrap();
     assert_eq!(spec.wire, Wire::Gemini);
-    assert_eq!(*spec.default_model, *"gemini-2.0-flash");
+    assert_eq!(*spec.default_model, *"gemini-2.5-flash");
     assert_eq!(spec.api_key_env.as_deref(), Some("GEMINI_API_KEY"));
     assert!(spec.endpoint.contains("{model}"));
     assert_eq!(
-        llmrace::cost::pricing("gemini", "gemini-2.0-flash"),
-        Some((0.10, 0.40))
+        llmrace::cost::pricing("gemini", "gemini-2.5-flash"),
+        Some((0.30, 2.50))
     );
+    let vertex = llmrace::provider::ProviderSpec::find("vertex").unwrap();
+    assert_eq!(*vertex.default_model, *"gemini-2.5-flash");
+    assert!(vertex.experimental);
 }
 
 #[test]
