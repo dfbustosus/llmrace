@@ -89,6 +89,13 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Prompt shaping", long)]
     seed: Option<u64>,
 
+    /// Fill whichever of temperature, top-p and seed are still unset, after
+    /// the profile is applied: 0, 1 and 0. A flag or a profile value already
+    /// set wins. Omit to leave each provider's own default. OpenAI reasoning
+    /// models still ignore these three fields on the wire.
+    #[arg(help_heading = "Prompt shaping", long)]
+    reproducible: bool,
+
     /// System prompt sent with every request. Omit to send only the user prompt.
     #[arg(help_heading = "Prompt shaping", long)]
     system: Option<String>,
@@ -319,7 +326,12 @@ async fn main() -> Result<()> {
         };
         cli.prompt = content;
     }
-    let (cli, config) = apply_profile(cli, &explicit)?;
+    let (mut cli, config) = apply_profile(cli, &explicit)?;
+    if cli.reproducible {
+        cli.temperature.get_or_insert(0.0);
+        cli.top_p.get_or_insert(1.0);
+        cli.seed.get_or_insert(0);
+    }
     let custom_variants = config
         .as_ref()
         .map(|c| c.variants.clone())
