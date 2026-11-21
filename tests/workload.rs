@@ -62,3 +62,33 @@ async fn every_lane_draws_the_same_prompt_each_round() {
     .unwrap();
     assert_eq!(json["providers"][0]["prompts"][1]["id"], "b");
 }
+
+#[tokio::test]
+async fn an_expected_answer_is_checked_without_failing_the_http_call() {
+    let expect = "token ".repeat(24);
+    let expect = expect.trim();
+    let config = BenchConfig {
+        prompt: "unused".into(),
+        runs: 1,
+        warmup: 0,
+        workload: vec![WorkloadPrompt {
+            id: "sum".into(),
+            prompt: "2+2".into(),
+            expect: Some(expect.into()),
+        }],
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(
+        reqwest::Client::new(),
+        ProviderSpec::mock(),
+        "mock-1".into(),
+        config,
+    );
+    drop(progress);
+    let summary = handle.await.unwrap();
+    assert!(summary.successful());
+    assert_eq!(summary.runs[0].task_ok, Some(true));
+    assert_eq!(summary.task_pass(), Some((1, 1)));
+    let md = llmrace::report::markdown(std::slice::from_ref(&summary), "w", 1, 256);
+    assert!(md.contains("| 1/1 |"), "{md}");
+}
