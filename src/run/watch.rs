@@ -113,8 +113,17 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
+            let request = report::request_sha256(
+                &cfg.bench.prompt,
+                &cfg.bench.workload,
+                &cfg.bench.sampling,
+                cfg.bench.max_tokens,
+                cfg.bench.tools.then_some(cfg.bench.tool_task.as_str()),
+            );
             for s in summaries.iter().filter(|s| s.successful()) {
-                records.push(llmrace::history::record_from_summary(s, now));
+                let mut record = llmrace::history::record_from_summary(s, now);
+                record.request_sha256 = Some(request.clone());
+                records.push(record);
             }
         }
         let path = llmrace::history::history_path();
