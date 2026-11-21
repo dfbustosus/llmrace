@@ -58,12 +58,17 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
     };
     if cfg.json {
         let j = report::insert_sampling_json(
-            &report::json_report_with_region(
+            &report::json_report_cited(
                 summaries,
                 &cfg.prompt,
                 actual_runs,
                 cfg.bench.max_tokens,
                 cfg.region.as_deref(),
+                &report::SentPrompts {
+                    prompt: &cfg.bench.prompt,
+                    workload: &cfg.bench.workload,
+                    warmup: cfg.bench.warmup,
+                },
             ),
             &cfg.bench.sampling,
         );
