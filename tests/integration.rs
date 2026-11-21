@@ -314,6 +314,7 @@ fn failed_rounds_do_not_win_on_the_survivors() {
             class: FailureClass::Timeout,
             attempts: 1,
             message: "timed out".into(),
+            prompt_id: String::new(),
         }],
         ..LaneSummary::default()
     };
@@ -521,6 +522,7 @@ fn regression_fails_when_failure_rate_rises_or_goodput_falls() {
         class: llmrace::bench::FailureClass::Timeout,
         attempts: 1,
         message: "timed out".into(),
+        prompt_id: String::new(),
     });
     let report = evaluate(std::slice::from_ref(&flaky), &baseline, 15.0);
     let rate = report.comparisons[0]
@@ -547,6 +549,84 @@ fn regression_fails_when_task_success_falls() {
         .unwrap();
     assert!(task.regressed, "a fall from 100% to 0% is a regression");
     assert!(report.any_regressed_significant());
+}
+
+#[test]
+fn regression_names_the_prompt_that_fell() {
+    let baseline = BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,"task_pass_rate":1.0,"prompts":[{"id":"capital","task_pass_rate":1.0},{"id":"sum","task_pass_rate":1.0}]}]}"#,
+    )
+    .unwrap();
+    let mut lane = regression_summary("mock", 100.0, 120.0, 20.0, 80.0);
+    lane.runs = vec![
+        RunMetrics {
+            prompt_id: "capital".into(),
+            task_ok: Some(true),
+            total_ms: 100.0,
+            ttfb_ms: 20.0,
+            tokens: 8,
+            ..RunMetrics::default()
+        },
+        RunMetrics {
+            prompt_id: "sum".into(),
+            task_ok: Some(false),
+            total_ms: 100.0,
+            ttfb_ms: 20.0,
+            tokens: 8,
+            ..RunMetrics::default()
+        },
+    ];
+    lane.failures.push(llmrace::bench::RoundFailure {
+        elapsed_ms: 10.0,
+        class: llmrace::bench::FailureClass::Timeout,
+        attempts: 1,
+        message: "timed out".into(),
+        prompt_id: "sum".into(),
+    });
+    let report = evaluate(std::slice::from_ref(&lane), &baseline, 70.0);
+    let lane_task = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.label == "task success" && m.prompt_id.is_none())
+        .unwrap();
+    assert!(!lane_task.regressed, "the lane fall stays inside 60 points");
+    let named = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.prompt_id.as_deref() == Some("sum"))
+        .unwrap();
+    assert!(named.regressed);
+    assert!(
+        (named.current - 0.0).abs() < 1e-12,
+        "the dropped round is not a pass"
+    );
+    assert!(report.any_regressed_significant());
+    assert!(report.terminal_table(70.0).contains("prompt sum"));
+    let sum = lane
+        .prompt_rows()
+        .into_iter()
+        .find(|row| row.id == "sum")
+        .unwrap();
+    assert_eq!(sum.task_pass, Some((0, 2)));
+    let md = llmrace::report::markdown(std::slice::from_ref(&lane), "p", 3, 32);
+    assert!(md.contains("0/2"), "{md}");
+    assert!(md.contains("1/1"), "{md}");
+
+    let omitted = BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,"prompts":[{"id":"capital","task_pass_rate":1.0}]}]}"#,
+    )
+    .unwrap();
+    let quiet = evaluate(std::slice::from_ref(&lane), &omitted, 15.0);
+    assert!(quiet.comparisons[0]
+        .metrics
+        .iter()
+        .all(|m| m.prompt_id.as_deref() != Some("sum")));
+    assert!(!quiet.any_regressed());
+    let kept = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.prompt_id.as_deref() == Some("capital"));
+    assert!(kept.is_some_and(|m| !m.regressed));
 }
 
 #[test]
