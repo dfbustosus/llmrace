@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-11-21
+
+A saved race and a new race are compared only when they made the same request. `prompt_sha256` is still the prompt texts. `request_sha256` also covers `expect`, `max_tokens`, sampling, the system prompt, and the tool task.
+
+### Added
+
+- `race.json` writes `request_sha256`. History and the optional SQLite store keep it. Older files still load
+- The regression gate fails, and does not compare metrics, when both sides recorded the hash and they differ. A baseline that omitted it still compares
+- `--trend` averages only the rows that share the latest request, and notes when the window also held another one
+
 ## [1.18.0] - 2026-11-21
 
 `llmrace gemini` and `llmrace vertex` call `gemini-3.5-flash-lite`. On 2026-12-01 Google routes `gemini-2.5-flash` to that id and bills it at the Flash-Lite rate. `gpt-4o-mini` and `claude-3-5-haiku-latest` stay the OpenAI and Anthropic defaults.
@@ -569,7 +579,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.18.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.19.0...HEAD
+[1.19.0]: https://github.com/dfbustosus/llmrace/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/dfbustosus/llmrace/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/dfbustosus/llmrace/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/dfbustosus/llmrace/compare/v1.15.0...v1.16.0
