@@ -17,6 +17,11 @@ pub struct StreamEvent {
     pub tool_args: Option<String>,
     /// Provider-reported completion token count, when available.
     pub completion_tokens: Option<u64>,
+    /// Provider-reported prompt token count, when this event carries usage.
+    ///
+    /// This is the billed input count (it includes a system prompt and tool
+    /// schemas). `None` on ordinary token deltas.
+    pub prompt_tokens: Option<u64>,
 }
 
 /// Provider-reported timing and identity metadata from response headers.
@@ -115,7 +120,8 @@ impl SseStream {
             if let Some(event) = decode_payload(payload, self.wire) {
                 let carries_output = event.token.is_some()
                     || event.completion_tokens.is_some()
-                    || event.tool_args.is_some();
+                    || event.tool_args.is_some()
+                    || event.prompt_tokens.is_some();
                 if carries_output {
                     self.pending.push_back(event);
                 }
@@ -186,10 +192,12 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
             let usage = v
                 .pointer("/usage/completion_tokens")
                 .and_then(|c| c.as_u64());
+            let prompt_tokens = v.pointer("/usage/prompt_tokens").and_then(|c| c.as_u64());
             Some(StreamEvent {
                 token,
                 tool_args,
                 completion_tokens: usage,
+                prompt_tokens,
             })
         }
         Wire::Anthropic => {
@@ -210,13 +218,28 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                         token,
                         tool_args,
                         completion_tokens: None,
+                        prompt_tokens: None,
                     })
                 }
-                "message_delta" => Some(StreamEvent {
-                    tool_args: None,
-                    token: None,
-                    completion_tokens: v.pointer("/usage/output_tokens").and_then(|c| c.as_u64()),
-                }),
+                "message_start" | "message_delta" => {
+                    let prompt_tokens = v
+                        .pointer("/message/usage/input_tokens")
+                        .or_else(|| v.pointer("/usage/input_tokens"))
+                        .and_then(|c| c.as_u64());
+                    let completion_tokens = v
+                        .pointer("/usage/output_tokens")
+                        .or_else(|| v.pointer("/message/usage/output_tokens"))
+                        .and_then(|c| c.as_u64());
+                    if prompt_tokens.is_none() && completion_tokens.is_none() {
+                        return None;
+                    }
+                    Some(StreamEvent {
+                        tool_args: None,
+                        token: None,
+                        completion_tokens,
+                        prompt_tokens,
+                    })
+                }
                 _ => None,
             }
         }
@@ -233,13 +256,18 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
             let usage = v
                 .pointer("/usageMetadata/candidatesTokenCount")
                 .and_then(|c| c.as_u64());
-            if token.is_none() && usage.is_none() && tool_args.is_none() {
+            let prompt_tokens = v
+                .pointer("/usageMetadata/promptTokenCount")
+                .and_then(|c| c.as_u64());
+            if token.is_none() && usage.is_none() && tool_args.is_none() && prompt_tokens.is_none()
+            {
                 return None;
             }
             Some(StreamEvent {
                 token,
                 tool_args,
                 completion_tokens: usage,
+                prompt_tokens,
             })
         }
         Wire::Cohere => {
@@ -262,13 +290,21 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                     v.pointer("/usage/tokens/output_tokens")
                         .and_then(|c| c.as_u64())
                 });
-            if token.is_none() && usage.is_none() {
+            let prompt_tokens = v
+                .pointer("/response/meta/billed_units/input_tokens")
+                .and_then(|c| c.as_u64())
+                .or_else(|| {
+                    v.pointer("/usage/tokens/input_tokens")
+                        .and_then(|c| c.as_u64())
+                });
+            if token.is_none() && usage.is_none() && prompt_tokens.is_none() {
                 return None;
             }
             Some(StreamEvent {
                 tool_args: None,
                 token,
                 completion_tokens: usage,
+                prompt_tokens,
             })
         }
         Wire::Bedrock | Wire::Vertex | Wire::Mock => None,
@@ -312,6 +348,7 @@ impl futures_util::Stream for MockStream {
                 tool_args: None,
                 token: None,
                 completion_tokens: Some(self.n_tokens as u64),
+                prompt_tokens: None,
             })));
         }
         let start = *self.start.get_or_insert_with(tokio::time::Instant::now);
@@ -330,6 +367,7 @@ impl futures_util::Stream for MockStream {
             tool_args: None,
             token: Some("token ".to_string()),
             completion_tokens: None,
+            prompt_tokens: None,
         })))
     }
 }
@@ -389,6 +427,7 @@ impl BedrockStream {
                         token,
                         tool_args,
                         completion_tokens: None,
+                        prompt_tokens: None,
                     });
                 }
             }
@@ -398,11 +437,16 @@ impl BedrockStream {
                     .pointer("/usage/outputTokens")
                     .or_else(|| v.pointer("/usage/output_tokens"))
                     .and_then(|c| c.as_u64());
-                if let Some(n) = usage {
+                let prompt_tokens = v
+                    .pointer("/usage/inputTokens")
+                    .or_else(|| v.pointer("/usage/input_tokens"))
+                    .and_then(|c| c.as_u64());
+                if usage.is_some() || prompt_tokens.is_some() {
                     self.pending.push_back(StreamEvent {
                         token: None,
                         tool_args: None,
-                        completion_tokens: Some(n),
+                        completion_tokens: usage,
+                        prompt_tokens,
                     });
                 }
             }
