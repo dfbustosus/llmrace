@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use llmrace::bench::{spawn_lane, BenchConfig, RunMetrics};
 use llmrace::provider::{decode_payload, stream_completion, CompletionRequest, ProviderSpec, Wire};
-use llmrace::regression::{evaluate, BaselineReport};
+use llmrace::regression::{evaluate, evaluate_request, BaselineReport};
 use llmrace::sse::{parse_data_events, SseParser};
 use llmrace::stats::Sample;
 use llmrace::{cost, report};
@@ -547,6 +547,31 @@ fn regression_fails_when_task_success_falls() {
         .unwrap();
     assert!(task.regressed, "a fall from 100% to 0% is a regression");
     assert!(report.any_regressed_significant());
+}
+
+#[test]
+fn regression_refuses_a_different_request_and_still_reads_an_old_baseline() {
+    let lane = regression_summary("mock", 100.0, 120.0, 20.0, 80.0);
+    let changed = BaselineReport::from_json_str(
+        r#"{"request_sha256":"abc","providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#,
+    )
+    .unwrap();
+    let report = evaluate_request(std::slice::from_ref(&lane), &changed, 15.0, Some("def"));
+    assert!(report.request_mismatch);
+    assert!(report.comparisons.is_empty());
+    assert!(report.terminal_table(15.0).contains("REQUEST CHANGED"));
+
+    let same = evaluate_request(std::slice::from_ref(&lane), &changed, 15.0, Some("abc"));
+    assert!(!same.request_mismatch);
+    assert!(!same.any_regressed());
+
+    let old = BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"mock","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#,
+    )
+    .unwrap();
+    let kept = evaluate(std::slice::from_ref(&lane), &old, 15.0);
+    assert!(!kept.request_mismatch);
+    assert!(!kept.comparisons.is_empty());
 }
 
 #[test]
@@ -1803,6 +1828,7 @@ fn recommend_profiles_and_renders_from_history() {
                     retry_attempts: 0,
                     cost_per_run_usd: None,
                     task_pass_rate: None,
+                    request_sha256: None,
                 },
                 llmrace::history::HistoryRecord {
                     timestamp_unix: 1_700_000_000 + i * 3_600,
@@ -1822,6 +1848,7 @@ fn recommend_profiles_and_renders_from_history() {
                     retry_attempts: 0,
                     cost_per_run_usd: None,
                     task_pass_rate: None,
+                    request_sha256: None,
                 },
             ]
         })
@@ -1864,6 +1891,7 @@ fn rec_hist(provider: &str, tps: f64) -> llmrace::history::HistoryRecord {
         retry_attempts: 0,
         cost_per_run_usd: None,
         task_pass_rate: None,
+        request_sha256: None,
     }
 }
 
