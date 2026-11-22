@@ -24,9 +24,10 @@ CLI that races providers head-to-head and reports what most tools hide:
   30,000 tokens/s for gpt-5-nano. llmrace splits hidden reasoning tokens
   (🧠 count) from visible ones and computes throughput over the honest
   window: ~176 tok/s.
-- **A CI gate that doesn't flake.** `--baseline` + `--require-significance`
-  fails your pipeline only when a regression is statistically real. A
-  threshold breach with p = 0.37 prints "treating as noise" and passes.
+- **A CI gate that names the prompt.** `--baseline` exits 1 when one
+  prompt's success falls, or when the request changed. The JSON report
+  lists `regression.failures[].prompt_id`. `--require-significance`
+  treats a noisy latency gap as noise and passes.
 
 Also in the box: live TUI race view, TTFB/inter-token-latency/cost per
 provider, saturation curves (`--ramp 1,2,4,8`), cross-region merging of
@@ -36,7 +37,8 @@ distribution. 100% safe Rust, no telemetry, no config file required.
 
 ```bash
 brew install dfbustosus/tap/llmrace
-llmrace openai groq --winner
+llmrace mock mock --no-tui -n 3 --warmup 0 --winner   # no key
+llmrace openai anthropic groq gemini --winner
 ```
 
 Happy to talk methodology — the honesty features each came from a real
