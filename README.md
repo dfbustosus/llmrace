@@ -30,7 +30,7 @@ Every provider says it is fast. `llmrace` sends one streaming request to all of 
 
 ## Contents
 
-- [Why](#why) · [Demo](#demo) · [Live view](#live-view) · [Install](#install) · [Quick start](#quick-start)
+- [Why](#why) · [Demo](#demo) · [Install](#install) · [Quick start](#quick-start)
 - [CI quality gate](#using-llmrace-as-a-ci-quality-gate) · [Distributed probes](#distributed-probes) · [Results](#real-world-results)
 - [Tracking over time](#tracking-providers-over-time) · [Diagnosing](#diagnosing-your-setup) · [Pricing](#pricing)
 - [What it measures](#what-it-measures) · [Reports](#reports) · [Comparison](#how-it-compares)
@@ -41,28 +41,6 @@ Every provider says it is fast. `llmrace` sends one streaming request to all of 
 ![llmrace demo](docs/demo.gif)
 
 *No API key. Two mock lanes, the significance line, and the podium. Recorded from [`docs/demo.tape`](docs/demo.tape) with [vhs](https://github.com/charmbracelet/vhs).*
-
-## Live view
-
-```text
- 🏁 llmrace   run 1/3 ·  4.2s · "Write one vivid paragraph about a lighthouse at dawn."
-┌─ GROQ ────────────────────────────────────────────────────────────────┐
- │ 🏁 412 ms   184 tok  ·  TTFB 88 ms                                   │
- │ `llama-3.3-70b-versatile`                                            │
- │ ████████████████████████████████████████░░░░░░░░░░░░░░░              │
-└───────────────────────────────────────────────────────────────────────┘
-┌─ OPENAI ──────────────────────────────────────────────────────────────┐
- │ ▶ streaming…   61 tok  ·  TTFB 210 ms                                │
- │ `gpt-4o-mini`                                                        │
- │ ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░             │
-└───────────────────────────────────────────────────────────────────────┘
-┌─ OLLAMA (local) ──────────────────────────────────────────────────────┐
- │ ▶ streaming…   23 tok  ·  TTFB 41 ms                                 │
- │ `llama3.2`                                                           │
- │ █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░        │
-└───────────────────────────────────────────────────────────────────────┘
-q/Esc quit · report written on exit
-```
 
 ## Install
 
