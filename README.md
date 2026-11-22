@@ -2,9 +2,9 @@
 
 # 🏁 llmrace
 
-**Race LLM providers head-to-head in your terminal.**
+**The same request, every provider, one verdict.**
 
-Latency · Time-to-first-byte · Tokens/s · p95 · Cost — live, in one command.
+Latency · TTFT · tokens/s · p95 · cost · task success — live. Then a CI gate that names the prompt that got worse.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/dfbustosus/llmrace/ci.yml?style=flat-square&logo=githubactions&label=CI)](https://github.com/dfbustosus/llmrace/actions)
 [![Crates.io](https://img.shields.io/crates/v/llmrace?style=flat-square&logo=rust&color=3390FF)](https://crates.io/crates/llmrace)
@@ -21,11 +21,16 @@ Latency · Time-to-first-byte · Tokens/s · p95 · Cost — live, in one comman
 
 ## Why
 
-Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tail latency tell a different story** depending on your region, your model and your prompt length. `llmrace` measures it for real: it fires the *same streaming request* at every provider **simultaneously**, watches the tokens arrive live, and ranks them.
+Every provider says it is fast. `llmrace` sends one streaming request to all of them at the same time and ranks what came back.
+
+- **The race.** TTFT, tokens/s, p95, inter-token gaps, cost, and goodput. A lane that dropped half its rounds cannot win on the rounds that survived.
+- **The answer.** A workload checks each prompt (`exact`, `contains`, or `regex`). The report shows that prompt's pass count. A fast wrong answer is still a miss.
+- **The gate.** `--baseline` exits 1 when a prompt's success falls, or when the request itself changed. `race.json` names the provider, the metric, and the prompt id.
+- **The noise check.** Welch's t-test on the top two lanes. A gap that could be noise is labeled, and `--require-significance` will not fail the build on it.
 
 ## Contents
 
-- [Why](#why) · [Demo](#demo) · [Install](#install) · [Quick start](#quick-start)
+- [Why](#why) · [Demo](#demo) · [Live view](#live-view) · [Install](#install) · [Quick start](#quick-start)
 - [CI quality gate](#using-llmrace-as-a-ci-quality-gate) · [Distributed probes](#distributed-probes) · [Results](#real-world-results)
 - [Tracking over time](#tracking-providers-over-time) · [Diagnosing](#diagnosing-your-setup) · [Pricing](#pricing)
 - [What it measures](#what-it-measures) · [Reports](#reports) · [Comparison](#how-it-compares)
@@ -35,9 +40,9 @@ Every LLM provider claims to be "fast". **TTFB, streaming throughput and p95 tai
 
 ![llmrace demo](docs/demo.gif)
 
-*A multi-model race — classic `gpt-4o-mini` vs local Ollama and the instant mock lane — with the `--winner` podium and Welch significance verdict, then `--recommend` (provider recommendation with value-for-money from accumulated history) and `--doctor` diagnostics. Reproducible via [`docs/demo.tape`](docs/demo.tape) ([vhs](https://github.com/charmbracelet/vhs); needs `OPENAI_API_KEY` in the environment).*
+*No API key. Two mock lanes, the significance line, and the podium. Recorded from [`docs/demo.tape`](docs/demo.tape) with [vhs](https://github.com/charmbracelet/vhs).*
 
-## Why
+## Live view
 
 ```text
  🏁 llmrace   run 1/3 ·  4.2s · "Write one vivid paragraph about a lighthouse at dawn."
@@ -119,15 +124,23 @@ cd llmrace && cargo install --path .
 ## Quick start
 
 ```bash
-llmrace --init    # create a starter llmrace.toml with example profiles
+# No API key. Two lanes, a podium, and whether the gap is noise.
+llmrace mock mock --no-tui -n 3 --warmup 0 --winner
+
+# The same command on the providers you pay for.
+llmrace openai anthropic groq gemini --winner
+
+# One workload, every lane, the same prompt on the same round.
+llmrace openai groq --workload examples/workloads/short-answer.jsonl --winner
 ```
 
 ```bash
 # Tool-calling: race argument validity (tasks: weather, math, lookup)
 llmrace openai groq --tools math
-```
 
-```bash
+# Starter config with example profiles
+llmrace --init
+
 # Race every provider you have configured (auto-detected from env vars)
 llmrace
 
