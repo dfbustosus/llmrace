@@ -1,14 +1,14 @@
 [package]
 name = "llmrace"
-version = "1.24.0"
+version = "1.25.0"
 edition = "2021"
 rust-version = "1.88"
-description = "Race LLM providers head-to-head in your terminal: latency, TTFB, tokens/s, p95 and cost — live."
+description = "Race the same LLM request across providers: latency, TTFT, tokens/s, cost, and a CI gate that names the prompt."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dfbustosus/llmrace"
 homepage = "https://github.com/dfbustosus/llmrace"
 readme = "README.md"
-keywords = ["llm", "ai", "benchmark", "cli", "openai"]
+keywords = ["llm", "benchmark", "openai", "latency", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
 # Keep the crates.io tarball lean: heavy media and repo-only machinery do
