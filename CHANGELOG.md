@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The README no longer shows a drawn terminal. The demo GIF is the picture of the race
+
 ## [1.25.0] - 2026-11-22
 
 The front of the repo shows the race a stranger can run, and what the crate decides.
