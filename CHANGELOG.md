@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-11-22
+
+The front of the repo shows the race a stranger can run, and what the crate decides.
+
+### Changed
+
+- The README opens on the race, the per-prompt answer, the gate that names the prompt, and the noise check. Quick start begins with `llmrace mock mock --winner`, which needs no API key
+- The demo records that no-key race: the table, the significance line, and the podium. It no longer needs `OPENAI_API_KEY`
+- The crates.io description and keywords say latency and the gate, which is what people search for
+
 ## [1.24.0] - 2026-11-21
 
 The JSON a pipeline uploads now carries the gate verdict. The README's first CI commands are the workload race.
@@ -635,7 +645,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.24.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.25.0...HEAD
+[1.25.0]: https://github.com/dfbustosus/llmrace/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/dfbustosus/llmrace/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/dfbustosus/llmrace/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/dfbustosus/llmrace/compare/v1.21.0...v1.22.0
