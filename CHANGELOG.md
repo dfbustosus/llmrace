@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.25.1] - 2026-11-23
+
+Fixes output footguns on piped and extension-typed report paths, HTML `--duration` metadata, and stale architecture/example files.
+
+### Fixed
+
+- `--out -` now routes banners, terminal tables, and file-save notices to `stderr` so `stdout` receives pure Markdown even without `--quiet`
+- `--out foo.json` (and `.csv` / `.html`) writes that format directly to the requested path and writes Markdown to `foo.md`, instead of writing Markdown into a `.json` file or overwriting it twice when `--json` is also set
+- `--html` now records the rounds actually measured (preventing the `100000` sentinel on `--duration` runs) and applies automatic task/cost podium weights identically to terminal and Markdown reports
+- The `--suite` report footer now states that tables are ranked by goodput (`tokens/s × success rate`), matching `report::variant_table`
+
 ### Changed
 
 - The README no longer shows a drawn terminal. The demo GIF is the picture of the race
+- Updated `examples/ci-gate.yml`, `ARCHITECTURE.md`, `RELEASE.md`, and `llmrace.example.toml` to match current behavior and workflows
 
 ## [1.25.0] - 2026-11-22
 
@@ -649,7 +661,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.25.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.25.1...HEAD
+[1.25.1]: https://github.com/dfbustosus/llmrace/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/dfbustosus/llmrace/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/dfbustosus/llmrace/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/dfbustosus/llmrace/compare/v1.22.0...v1.23.0
