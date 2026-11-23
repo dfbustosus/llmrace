@@ -1176,3 +1176,109 @@ fn alert_test_requires_webhook() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--alert-webhook"), "{stderr}");
 }
+
+#[test]
+fn out_dash_with_json_and_unquiet_keeps_stdout_pure_markdown() {
+    let dir = std::env::temp_dir().join(format!("llmrace-out-dash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .current_dir(&dir)
+        .args([
+            "mock", "mock", "--no-tui", "-n", "1", "--warmup", "0", "--winner", "--json", "--out",
+            "-",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.starts_with("# 🏁 llmrace report"),
+        "stdout must start with markdown header: {stdout}"
+    );
+    assert!(
+        !stdout.contains("json report saved"),
+        "status lines must not pollute stdout markdown: {stdout}"
+    );
+    assert!(
+        !stdout.contains("🏁 llmrace v"),
+        "banner must go to stderr when --out - is set: {stdout}"
+    );
+    assert!(
+        stderr.contains("json report saved"),
+        "status line expected on stderr: {stderr}"
+    );
+    let json_raw = std::fs::read_to_string(dir.join("llmrace-report.json")).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_raw).unwrap();
+    assert_eq!(parsed["tool"], "llmrace");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn out_json_extension_writes_valid_json_without_json_flag() {
+    let dir = std::env::temp_dir().join(format!("llmrace-out-json-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("only.json");
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock", "--no-tui", "-n", "1", "--warmup", "0", "--quiet", "--out",
+        ])
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json_raw = std::fs::read_to_string(&target).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_raw).expect("only.json must contain JSON, not markdown");
+    assert_eq!(parsed["tool"], "llmrace");
+    let md_raw = std::fs::read_to_string(dir.join("only.md")).unwrap();
+    assert!(md_raw.contains("# 🏁 llmrace report"), "{md_raw}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn duration_html_report_uses_actual_runs_not_sentinel() {
+    let dir = std::env::temp_dir().join(format!("llmrace-dur-html-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md_path = dir.join("dur.md");
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "mock",
+            "--no-tui",
+            "--duration",
+            "1",
+            "--warmup",
+            "0",
+            "--quiet",
+            "--winner",
+            "--html",
+            "--out",
+        ])
+        .arg(&md_path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let html = std::fs::read_to_string(dir.join("dur.html")).unwrap();
+    assert!(
+        !html.contains("100000"),
+        "duration sentinel must not leak into HTML report: {html}"
+    );
+    assert!(html.contains("Podium"), "{html}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
