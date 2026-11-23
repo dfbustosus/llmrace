@@ -10,7 +10,7 @@ jobs:
   latency-gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install llmrace
         uses: taiki-e/install-action@cargo-binstall
@@ -26,11 +26,14 @@ jobs:
             -n 5 --warmup 1 \
             --baseline baseline/llmrace-report.json \
             --max-regression 20 \
-            --json --out llmrace-report.json
+            --require-significance \
+            --json --out llmrace-report.md
 
       - name: Upload fresh report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: llmrace-report
-          path: llmrace-report.json
+          path: |
+            llmrace-report.md
+            llmrace-report.json
