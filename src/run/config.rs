@@ -73,6 +73,27 @@ pub(crate) struct RunConfig {
     pub alert_rounds: usize,
 }
 
+impl RunConfig {
+    /// Prints a status line to `stdout`, or to `stderr` when `--out -`
+    /// reserves `stdout` for the markdown report.
+    pub(super) fn status(&self, line: impl AsRef<str>) {
+        if self.out == "-" {
+            eprintln!("{}", line.as_ref());
+        } else {
+            println!("{}", line.as_ref());
+        }
+    }
+
+    /// Inline variant of [`Self::status`] without a trailing newline.
+    pub(super) fn status_inline(&self, text: impl AsRef<str>) {
+        if self.out == "-" {
+            eprint!("{}", text.as_ref());
+        } else {
+            print!("{}", text.as_ref());
+        }
+    }
+}
+
 /// Resolves the model for one provider from `--model` overrides.
 pub(crate) fn resolve_model(
     cli_models: &[String],
