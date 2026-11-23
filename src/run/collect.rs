@@ -80,7 +80,7 @@ pub(super) async fn race_collect(
             match h.await {
                 Ok(s) => {
                     if headless_progress && !cfg.quiet {
-                        print_lane_progress(&s);
+                        print_lane_progress(&s, cfg);
                     }
                     all.push(s);
                 }
@@ -137,21 +137,21 @@ pub(super) async fn collect_with_tui(
     }
 }
 
-pub(super) fn print_lane_progress(s: &LaneSummary) {
+pub(super) fn print_lane_progress(s: &LaneSummary, cfg: &RunConfig) {
     if let Some(e) = &s.error {
-        println!("  \u{2717} {:<14} {}", s.name, e);
+        cfg.status(format!("  \u{2717} {:<14} {}", s.name, e));
     } else {
         let ci = match s.ci95_total_ms() {
             Some((lo, hi)) => format!("\u{b1}{:.0}", (hi - lo) / 2.0),
             None => "—".to_string(),
         };
-        println!(
+        cfg.status(format!(
             "  \u{2713} {:<14} {:>6.1} tok/s   {:>6.0} ms {}   TTFB {:>4} ms",
             s.name,
             s.mean_tokens_per_sec(),
             s.mean_total_ms(),
             ci,
             llmrace::stats::fmt_ms(s.mean_ttfb_ms())
-        );
+        ));
     }
 }
