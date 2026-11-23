@@ -675,6 +675,9 @@ pub(crate) fn load_history(storage: &str) -> Result<Vec<llmrace::history::Histor
 }
 
 pub(crate) fn report_sibling(out: &str, ext: &str) -> String {
+    if out == "-" {
+        return format!("llmrace-report.{ext}");
+    }
     let path = std::path::Path::new(out);
     if path.extension().is_some() {
         // `--out race.md` → race.json; `--out probe-eu.json` stays probe-eu.json
