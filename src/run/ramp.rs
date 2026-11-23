@@ -38,17 +38,23 @@ pub(crate) fn parse_ramp_levels(spec: &str) -> anyhow::Result<Vec<usize>> {
 /// saturation curve. Returns the process exit code.
 pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     if !cfg.quiet {
-        println!(
+        cfg.status(format!(
             "\u{1f3c1} llmrace v{} ramp — {} providers \u{d7} levels {:?} ({} rounds each)",
             env!("CARGO_PKG_VERSION"),
             cfg.providers.len(),
             levels,
             cfg.bench.runs
-        );
+        ));
         if cfg.bench.workload.is_empty() {
-            println!("   prompt: \"{}\"\n", cfg.prompt.replace('\n', " "));
+            cfg.status(format!(
+                "   prompt: \"{}\"\n",
+                cfg.prompt.replace('\n', " ")
+            ));
         } else {
-            println!("   workload: {} prompts\n", cfg.bench.workload.len());
+            cfg.status(format!(
+                "   workload: {} prompts\n",
+                cfg.bench.workload.len()
+            ));
         }
     }
 
@@ -69,11 +75,11 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
             break;
         }
         if !cfg.quiet {
-            println!(
+            cfg.status(format!(
                 "\u{25b8} phase {}/{} — concurrency {level}",
                 idx + 1,
                 levels.len()
-            );
+            ));
         }
         let mut bench = cfg.bench.clone();
         bench.concurrency = *level;
@@ -197,7 +203,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     }
 
     if !cfg.quiet {
-        println!("\n{curve_term}");
+        cfg.status(format!("\n{curve_term}"));
     }
 
     // reports: markdown curve section + structured json
@@ -218,17 +224,35 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     md.push_str("\n## Saturation curve (tokens/s by concurrency)\n\n");
     md.push_str(&curve);
     md.push_str("\n> Peak is the concurrency where goodput is highest. The cells are tokens/s of successful rounds. \u{2b07} flags a goodput drop of more than 10% past that peak. A failure rate above 5% is `failure_rate_crosses_at` in the JSON.\n");
-    std::fs::write(&cfg.out, &md).with_context(|| format!("writing {}", cfg.out))?;
-    println!("\u{1f4c4} ramp report saved to {}", cfg.out);
 
-    if cfg.html {
+    let out_ext = if cfg.out == "-" {
+        None
+    } else {
+        std::path::Path::new(&cfg.out)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+    };
+
+    if cfg.out == "-" {
+        println!("{md}");
+    } else {
+        let md_path = match out_ext.as_deref() {
+            Some("json" | "html") => crate::report_sibling(&cfg.out, "md"),
+            _ => cfg.out.clone(),
+        };
+        std::fs::write(&md_path, &md).with_context(|| format!("writing {md_path}"))?;
+        cfg.status(format!("\u{1f4c4} ramp report saved to {md_path}"));
+    }
+
+    if cfg.html || out_ext.as_deref() == Some("html") {
         let h = ramp_html(&order, &phases);
         let path = crate::report_sibling(&cfg.out, "html");
         std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
-        println!("\u{1f310} ramp html saved to {path}");
+        cfg.status(format!("\u{1f310} ramp html saved to {path}"));
     }
 
-    if cfg.json {
+    if cfg.json || out_ext.as_deref() == Some("json") {
         let mut payload = serde_json::json!({
             "tool": "llmrace",
             "version": env!("CARGO_PKG_VERSION"),
@@ -246,7 +270,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
         let path = crate::report_sibling(&cfg.out, "json");
         std::fs::write(&path, serde_json::to_string_pretty(&payload)?)
             .with_context(|| format!("writing {path}"))?;
-        println!("\u{1f4ca} ramp json saved to {path}");
+        cfg.status(format!("\u{1f4ca} ramp json saved to {path}"));
     }
 
     if llmrace::gates::all_lanes_failed(
