@@ -1,23 +1,46 @@
-# llmrace configuration profiles.
-# Copy to ./llmrace.toml (or ~/.config/llmrace/config.toml) and run:
-#   llmrace --profile fast
+# Full llmrace configuration reference.
+# Copy to ./llmrace.toml or ~/.config/llmrace/config.toml.
+# CLI flags always override profile values.
 
+# Quick smoke test: one fast round, two providers.
 [profiles.fast]
-providers = ["openai", "groq"]
+providers = ["groq", "openai"]
 prompt = "Reply with a single word."
 runs = 1
 warmup = 0
-concurrency = 2
+concurrency = 1
 
+# Thorough comparison: 20 measured rounds, longer generations.
 [profiles.overnight]
-providers = ["openai", "anthropic", "groq", "ollama"]
+providers = ["openai", "anthropic", "gemini", "groq", "deepseek", "ollama"]
 runs = 20
 warmup = 2
 max_tokens = 1024
 timeout = 300
 
+# Saturation test: 8 parallel streams per provider.
+[profiles.saturation]
+providers = ["groq", "cerebras", "ollama"]
+runs = 5
+warmup = 1
+concurrency = 8
+
+# Reproducible comparison: pin sampling and stamp it into the report.
+# `temperature = 0` (an integer) is accepted; Anthropic only allows 0..=1.
+[profiles.repro]
+providers = ["openai", "groq"]
+prompt = "Reply with a single word."
+temperature = 0
+top_p = 1
+seed = 1
+system = "Answer with the fewest tokens that satisfy the request."
+runs = 5
+warmup = 1
+
+# Deterministic CI lane (no keys required).
 [profiles.ci]
 providers = ["mock"]
 runs = 3
 warmup = 1
-concurrency = 1
+# One retry keeps transient blips from failing the gate.
+retries = 1
