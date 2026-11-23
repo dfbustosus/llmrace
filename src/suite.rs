@@ -155,7 +155,7 @@ pub fn combined_report(results: &[SuiteResult]) -> String {
     }
 
     out.push_str(
-        "\n> Suites run sequentially; each table is ranked by tokens/s. Generated with [llmrace](https://github.com/dfbustosus/llmrace) 🦀\n",
+        "\n> Suites run sequentially; each table is ranked by goodput (tokens/s × success rate). Generated with [llmrace](https://github.com/dfbustosus/llmrace) 🦀\n",
     );
     out
 }
