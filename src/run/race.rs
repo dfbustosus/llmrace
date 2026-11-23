@@ -10,21 +10,24 @@ use llmrace::report;
 /// Runs one full race (or sweep) and returns the process exit code.
 pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> {
     if !cfg.quiet {
-        println!(
+        cfg.status(format!(
             "\u{1f3c1} llmrace v{} — {} providers × {} rounds ({} warmup, c={})",
             env!("CARGO_PKG_VERSION"),
             cfg.providers.len(),
             cfg.bench.runs,
             cfg.bench.warmup,
             cfg.bench.concurrency
-        );
-        println!("   prompt: \"{}\"\n", cfg.prompt.replace('\n', " "));
+        ));
+        cfg.status(format!(
+            "   prompt: \"{}\"\n",
+            cfg.prompt.replace('\n', " ")
+        ));
     }
     if cfg.bench.tools {
-        println!(
+        cfg.status(format!(
             "\u{1f6e0} tool-calling mode: {} task, argument validity tracked",
             cfg.bench.tool_task
-        );
+        ));
     }
 
     // Reasoning models spend the token budget thinking first; a small cap
@@ -36,8 +39,8 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
         .any(|p| llmrace::provider::is_reasoning_model(&p.default_model))
         && cfg.bench.max_tokens < 512;
     if reasoning_capped && !cfg.quiet {
-        println!(
-            "\u{1f9e0} note: reasoning models think before the first visible token — consider --max-tokens 512+ so the answer isn't starved"
+        cfg.status(
+            "\u{1f9e0} note: reasoning models think before the first visible token — consider --max-tokens 512+ so the answer isn't starved",
         );
     }
 
@@ -49,11 +52,11 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
 
     if !cfg.quiet {
         let table = report::terminal_table(&summaries);
-        println!("\n{table}");
+        cfg.status(format!("\n{table}"));
         if cfg.winner {
             let weights = llmrace::score::applied_weights(&summaries, &cfg.weights);
             let groups = llmrace::score::score_groups(&summaries, &weights);
-            print!("{}", llmrace::score::podiums(&groups, &weights));
+            cfg.status_inline(llmrace::score::podiums(&groups, &weights));
         }
     }
 
