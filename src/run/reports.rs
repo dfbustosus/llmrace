@@ -35,28 +35,29 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
     if cfg.histogram {
         md.push_str(&report::histogram_section(summaries));
     }
+    let out_ext = if cfg.out == "-" {
+        None
+    } else {
+        std::path::Path::new(&cfg.out)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+    };
+
     if cfg.out == "-" {
         // markdown to stdout (piping into CI summaries); sibling formats
         // fall back to the conventional filenames
         println!("{md}");
     } else {
-        std::fs::write(&cfg.out, &md).with_context(|| format!("writing {}", cfg.out))?;
-        println!("\u{1f4c4} markdown report saved to {}", cfg.out);
+        let md_path = match out_ext.as_deref() {
+            Some("json" | "csv" | "html") => crate::report_sibling(&cfg.out, "md"),
+            _ => cfg.out.clone(),
+        };
+        std::fs::write(&md_path, &md).with_context(|| format!("writing {md_path}"))?;
+        cfg.status(format!("\u{1f4c4} markdown report saved to {md_path}"));
     }
 
-    let sibling = |ext: &str| -> String {
-        let base = if cfg.out == "-" {
-            std::path::Path::new("llmrace-report")
-        } else {
-            std::path::Path::new(&cfg.out)
-        };
-        if base.extension().is_some() {
-            base.with_extension(ext).to_string_lossy().into_owned()
-        } else {
-            format!("{}.{ext}", base.display())
-        }
-    };
-    if cfg.json {
+    if cfg.json || out_ext.as_deref() == Some("json") {
         let request = race_request_sha256(cfg);
         let mut j = report::insert_sampling_json(
             &report::json_report_cited(
@@ -77,26 +78,27 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
         if let Some(verdict) = baseline_verdict(summaries, cfg, &request) {
             j = report::insert_regression_json(&j, &verdict);
         }
-        let path = sibling("json");
+        let path = crate::report_sibling(&cfg.out, "json");
         std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
-        println!("\u{1f4ca} json report saved to {path}");
+        cfg.status(format!("\u{1f4ca} json report saved to {path}"));
     }
-    if cfg.csv {
+    if cfg.csv || out_ext.as_deref() == Some("csv") {
         let c = report::csv(summaries);
-        let path = sibling("csv");
+        let path = crate::report_sibling(&cfg.out, "csv");
         std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
-        println!("\u{1f4c8} csv report saved to {path}");
+        cfg.status(format!("\u{1f4c8} csv report saved to {path}"));
     }
-    if cfg.html {
+    if cfg.html || out_ext.as_deref() == Some("html") {
+        let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
         let scored = if cfg.winner {
-            llmrace::score::score_lanes(summaries, &cfg.weights)
+            llmrace::score::score_lanes(summaries, &weights)
         } else {
             Vec::new()
         };
         let mut h = report::html_report(
             summaries,
             &cfg.prompt,
-            cfg.bench.runs,
+            actual_runs,
             cfg.bench.max_tokens,
             &scored,
         );
@@ -104,9 +106,9 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
             let escaped = llmrace::util::html_escape(&inline);
             h = h.replacen("</code> ·", &format!("</code> · {escaped} ·"), 1);
         }
-        let path = sibling("html");
+        let path = crate::report_sibling(&cfg.out, "html");
         std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
-        println!("\u{1f310} html report saved to {path}");
+        cfg.status(format!("\u{1f310} html report saved to {path}"));
     }
     Ok(())
 }
@@ -118,13 +120,13 @@ pub(super) async fn export_metrics(summaries: &[LaneSummary], cfg: &RunConfig) -
         llmrace::prom::push(&cfg.client, gateway, summaries)
             .await
             .with_context(|| format!("pushing metrics to {gateway}"))?;
-        println!("\u{1f4e1} metrics pushed to {gateway}");
+        cfg.status(format!("\u{1f4e1} metrics pushed to {gateway}"));
     }
     if let Some(path) = &cfg.prom_output {
         let body = llmrace::prom::render_metrics(summaries);
         std::fs::write(path, body)
             .with_context(|| format!("writing Prometheus metrics to {path}"))?;
-        println!("\u{1f4e1} Prometheus metrics saved to {path}");
+        cfg.status(format!("\u{1f4e1} Prometheus metrics saved to {path}"));
     }
     Ok(())
 }
@@ -161,22 +163,22 @@ pub(super) fn record_history(summaries: &[LaneSummary], cfg: &RunConfig) -> Resu
             let path = llmrace::history::history_path();
             llmrace::history::append(&path, &records)
                 .with_context(|| format!("recording history to {}", path.display()))?;
-            println!(
+            cfg.status(format!(
                 "\u{1f5c2} recorded {} lane(s) to {}",
                 records.len(),
                 path.display()
-            );
+            ));
         }
         #[cfg(feature = "sqlite")]
         "sqlite" => {
             let path = crate::sqlite_path();
             let conn = llmrace::sqlite::open(&path).with_context(|| "opening sqlite history")?;
             llmrace::sqlite::save(&conn, &records).with_context(|| "writing sqlite history")?;
-            println!(
+            cfg.status(format!(
                 "\u{1f5c2} recorded {} lane(s) to {}",
                 records.len(),
                 path.display()
-            );
+            ));
         }
         other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
     }
@@ -196,7 +198,7 @@ pub(super) fn ttfb_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> bool {
         return false;
     }
     if !verdict.message().is_empty() {
-        println!("{}", verdict.message());
+        cfg.status(verdict.message());
     }
     true
 }
@@ -236,12 +238,15 @@ pub(super) fn regression_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> Res
         cfg.max_regression,
         Some(&request),
     );
-    println!("\n{}", regression.terminal_table(cfg.max_regression));
+    cfg.status(format!(
+        "\n{}",
+        regression.terminal_table(cfg.max_regression)
+    ));
     if cfg.require_significance
         && regression.any_regressed()
         && !regression.any_regressed_significant()
     {
-        println!("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
+        cfg.status("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
     }
     Ok(!regression.gate_failed(cfg.require_significance))
 }
