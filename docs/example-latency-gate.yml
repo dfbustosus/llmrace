@@ -42,8 +42,15 @@ jobs:
             --baseline baseline/llmrace-report.json \
             --max-regression 15 \
             --require-significance \
-            --json \
+            --json --junit --sarif \
             --out llmrace-report.md
+
+      # Optional: gate failures as code-scanning alerts (needs
+      # `permissions: security-events: write` on the job):
+      # - uses: github/codeql-action/upload-sarif@v4
+      #   if: always()
+      #   with:
+      #     sarif_file: llmrace-report.sarif
 
       - name: Upload report
         if: always()
@@ -53,3 +60,5 @@ jobs:
           path: |
             llmrace-report.md
             llmrace-report.json
+            llmrace-report.xml
+            llmrace-report.sarif
