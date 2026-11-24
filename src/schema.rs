@@ -28,7 +28,8 @@ pub fn race_report_schema() -> String {
         "temperature": {"type": "number", "minimum": 0, "maximum": 2},
         "top_p": {"type": "number", "minimum": 0, "maximum": 1},
         "seed": {"type": "integer", "minimum": 0},
-        "system": {"type": "string"}
+        "system": {"type": "string"},
+        "json_output": {"type": "string", "enum": ["object", "schema"]}
       }
     },
     "regression": {
