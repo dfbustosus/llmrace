@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-11-24
+
+Structured output is now raceable: force JSON mode and measure what it costs, then grade whether the answer complied.
+
+### Added
+
+- `--json-output` sets `response_format: json_object` (OpenAI chat, Cohere), `text.format` (Responses API) or `responseMimeType: application/json` (Gemini, Vertex)
+- `--response-schema FILE` sends a JSON Schema instead: `json_schema` with `strict: true` on OpenAI wires, `responseSchema` on Gemini wires. An invalid or non-object schema fails before any request
+- `Sampling::json_output` (`llmrace::provider::JsonOutput`) for library callers; the request hash changes only when enforcement is set, and `race.json` stamps it under `sampling.json_output`
+- Anthropic, Bedrock and the mock have no such field and ignore the control — documented so races stay comparable
+
 ## [1.33.0] - 2026-11-24
 
 Races through OpenRouter price every lane now.
@@ -750,7 +761,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.33.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.34.0...HEAD
+[1.34.0]: https://github.com/dfbustosus/llmrace/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/dfbustosus/llmrace/compare/v1.32.1...v1.33.0
 [1.32.1]: https://github.com/dfbustosus/llmrace/compare/v1.32.0...v1.32.1
 [1.32.0]: https://github.com/dfbustosus/llmrace/compare/v1.31.0...v1.32.0
