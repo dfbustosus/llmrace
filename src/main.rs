@@ -175,6 +175,11 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Output", long)]
     junit: bool,
 
+    /// Also write a SARIF 2.1.0 report — every gate failure becomes a
+    /// code-scanning alert (upload with codeql-action/upload-sarif).
+    #[arg(help_heading = "Output", long)]
+    sarif: bool,
+
     /// Compare results against a baseline JSON report (CI quality gate).
     #[arg(help_heading = "CI gates", long)]
     baseline: Option<String>,
@@ -661,6 +666,7 @@ fn build_run_config(
         csv: cli.csv,
         html: cli.html,
         junit: cli.junit,
+        sarif: cli.sarif,
         out: cli.out,
         region: cli.region,
         push_gateway: cli.push_gateway,
