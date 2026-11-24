@@ -267,7 +267,7 @@ pub fn pricing_stamp() -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "OpenAI and Anthropic rates were read on {PRICING_AS_OF} from {pages}. gemini-3.5-flash-lite was read on 2026-11-21 from the Gemini page; the other Gemini rows were read on {PRICING_AS_OF}."
+        "OpenAI and Anthropic rates were read on {PRICING_AS_OF} from {pages}. gemini-3.5-flash-lite was read on 2026-11-21 from the Gemini page; the other Gemini rows were read on {PRICING_AS_OF}. OpenRouter rows were read on 2026-11-24 from the OpenRouter models API."
     )
 }
 
@@ -324,7 +324,12 @@ fn builtin_rates(key: &str) -> Option<TokenRates> {
     // per-request token count and is not priced. Rows for other providers
     // were not re-read on that date. The Vertex lane copies the Gemini
     // Developer API cached rate for the same model. Not every model id is
-    // listed: pass `--price` for one that is missing.
+    // listed: pass `--price` for one that is missing. The OpenRouter rows
+    // were read from the OpenRouter models API
+    // (https://openrouter.ai/api/v1/models) on 2026-11-24; its
+    // input_cache_read field is the cache-read column. A cache_read equal
+    // to the input price means the API publishes a cache rate with no
+    // discount (llama-3.3-70b-instruct), not a missing one.
     let table: &[(&str, f64, f64, CacheSchedule)] = &[
         ("openai/gpt-4o", 2.50, 10.00, CacheSchedule::Read(1.25)),
         ("openai/gpt-4o-mini", 0.15, 0.60, CacheSchedule::Read(0.075)),
@@ -494,6 +499,36 @@ fn builtin_rates(key: &str) -> Option<TokenRates> {
             0.15,
             0.60,
             CacheSchedule::Read(0.075),
+        ),
+        (
+            "openrouter/anthropic/claude-haiku-4.5",
+            1.00,
+            5.00,
+            CacheSchedule::Read(0.10),
+        ),
+        (
+            "openrouter/anthropic/claude-haiku-5.5",
+            0.10,
+            0.50,
+            CacheSchedule::Read(0.01),
+        ),
+        (
+            "openrouter/deepseek/deepseek-chat-v3.1",
+            0.25,
+            0.95,
+            CacheSchedule::Read(0.13),
+        ),
+        (
+            "openrouter/deepseek/deepseek-chat",
+            0.32,
+            0.89,
+            CacheSchedule::None,
+        ),
+        (
+            "openrouter/meta-llama/llama-3.3-70b-instruct",
+            0.71,
+            0.71,
+            CacheSchedule::Read(0.71),
         ),
         (
             "deepinfra/meta-llama/Meta-Llama-3.1-8B-Instruct",
