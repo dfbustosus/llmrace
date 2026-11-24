@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-11-24
+
+Races through OpenRouter price every lane now.
+
+### Added
+
+- OpenRouter price rows, read from the live models API on 2026-11-24: `anthropic/claude-haiku-4.5` ($1.00/$5.00, cache read $0.10), `anthropic/claude-haiku-5.5`, `deepseek/deepseek-chat-v3.1`, `deepseek/deepseek-chat`, and `meta-llama/llama-3.3-70b-instruct`. The report footnote names the API and the date
+- A regression test locks the rows behind the four-model demo race so the cost column cannot silently empty again
+
 ## [1.32.1] - 2026-11-24
 
 ### Fixed
@@ -741,7 +750,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.32.1...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.33.0...HEAD
+[1.33.0]: https://github.com/dfbustosus/llmrace/compare/v1.32.1...v1.33.0
 [1.32.1]: https://github.com/dfbustosus/llmrace/compare/v1.32.0...v1.32.1
 [1.32.0]: https://github.com/dfbustosus/llmrace/compare/v1.31.0...v1.32.0
 [1.31.0]: https://github.com/dfbustosus/llmrace/compare/v1.30.0...v1.31.0
