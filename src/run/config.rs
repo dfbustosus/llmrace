@@ -100,17 +100,5 @@ pub(crate) fn resolve_model(
     provider_id: &str,
     default_model: &str,
 ) -> String {
-    let mut global: Option<&str> = None;
-    for entry in cli_models {
-        if let Some((for_provider, model)) = llmrace::provider::split_model_override(entry) {
-            if for_provider == provider_id {
-                return model;
-            }
-        } else if global.is_none() {
-            global = Some(entry.as_str());
-        }
-    }
-    global
-        .map(str::to_string)
-        .unwrap_or_else(|| default_model.to_string())
+    llmrace::race::resolve_model(cli_models, provider_id, default_model)
 }
