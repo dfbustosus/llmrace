@@ -47,6 +47,12 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Race", short = 'n', long, default_value_t = 3)]
     runs: usize,
 
+    /// What a warmup round sends: `same-prompt` (default) or `probe`, a
+    /// minimal request that cannot prime the provider's prefix cache for
+    /// a workload prompt.
+    #[arg(help_heading = "Race", long, value_parser = ["same-prompt", "probe"], default_value = "same-prompt")]
+    warmup_mode: String,
+
     /// Warmup rounds excluded from statistics.
     #[arg(help_heading = "Race", long, default_value_t = 1)]
     warmup: usize,
@@ -142,6 +148,11 @@ pub(crate) struct Cli {
     /// Env var holding the API key for the custom endpoint.
     #[arg(help_heading = "Custom endpoint", long)]
     api_key_env: Option<String>,
+
+    /// Wire protocol of the custom endpoint: `chat` (OpenAI
+    /// /v1/chat/completions, the default) or `responses` (/v1/responses).
+    #[arg(help_heading = "Custom endpoint", long, value_parser = ["chat", "responses"], requires = "endpoint")]
+    wire: Option<String>,
 
     /// Disable the live TUI (CI-friendly).
     #[arg(help_heading = "Output", long)]
@@ -616,6 +627,11 @@ fn build_run_config(
         retries: cli.retries,
         sampling,
         price_book: None,
+        warmup_mode: if cli.warmup_mode == "probe" {
+            llmrace::bench::WarmupMode::ConnectionProbe
+        } else {
+            llmrace::bench::WarmupMode::SamePrompt
+        },
     };
     let weights = match &cli.weights {
         Some(spec) => llmrace::score::Weights::parse(spec)
@@ -692,12 +708,11 @@ fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
     let mut out: Vec<ProviderSpec> = Vec::new();
     if let (Some(endpoint), Some(name)) = (&cli.endpoint, &cli.provider_name) {
         let model = resolve_model(&cli.model, "custom", "default");
-        out.push(ProviderSpec::custom(
-            name,
-            endpoint,
-            cli.api_key_env.as_deref(),
-            &model,
-        ));
+        let mut spec = ProviderSpec::custom(name, endpoint, cli.api_key_env.as_deref(), &model);
+        if cli.wire.as_deref() == Some("responses") {
+            spec.wire = llmrace::provider::Wire::OpenAiResponses;
+        }
+        out.push(spec);
     }
     if !cli.providers.is_empty() {
         for arg in &cli.providers {
