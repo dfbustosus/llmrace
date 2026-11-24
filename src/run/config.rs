@@ -43,6 +43,8 @@ pub(crate) struct RunConfig {
     pub html: bool,
     /// Write a JUnit XML report.
     pub junit: bool,
+    /// Write a SARIF report.
+    pub sarif: bool,
     /// Markdown report path; siblings derive from it.
     pub out: String,
     /// Region tag stamped into the JSON report.
