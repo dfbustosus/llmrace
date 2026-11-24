@@ -192,6 +192,8 @@ async fn mock_stream_emits_tokens_and_usage() {
         tools: false,
         tool_task: None,
         sampling: llmrace::provider::Sampling::default(),
+        messages: &[],
+        tool: None,
     };
     let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
     let mut tokens = 0u64;
