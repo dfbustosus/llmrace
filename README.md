@@ -154,6 +154,13 @@ llmrace openai groq --temperature 0 --top-p 1 --seed 1 --system "Be concise."
 # Or fill only the controls still unset (temperature 0, top-p 1, seed 0).
 llmrace openai groq --reproducible
 
+# Force JSON mode on every lane and measure the latency cost of it.
+# Wires: OpenAI chat + Responses, Cohere, Gemini; others ignore it.
+llmrace openai openai-responses gemini --json-output
+# …or force a schema, then grade compliance with a json_schema workload:
+llmrace openai groq --response-schema answer.schema.json \
+  --workload examples/workloads/short-answer.jsonl
+
 # Declare an overall winner (weighted ttfb/tps/p95/cost composite)
 llmrace openai groq --winner
 llmrace openai groq --winner --weights ttfb=50,tps=50
@@ -252,6 +259,7 @@ Methodology notes:
 - `--workload` is a JSONL file (`id`, `prompt` or `messages`, optional `system`, `expect`, `match`, and `tool`). `match` is `exact` when omitted, or `contains`, `regex`, or `json_schema`. `contains` is a case-sensitive substring of the trimmed answer. `regex` is compiled when the file is read, with a 1 MiB size limit. `json_schema` checks that the trimmed answer is JSON matching `expect`, and an unsupported keyword is rejected before any request. `messages` is a conversation that ends on a user turn, and `system` overrides the race-level system prompt for that round. `tool` is a function schema; the streamed arguments have to match it. A line that sets none of those keeps the request hash it has today. Every lane draws the same prompt on a given round, in order, and wraps. The report adds a per-prompt table so a slow prompt is visible, with a pass count when that prompt had a task. The gate fails when one prompt's success falls, or when that prompt's latency or time to first token rises, even when the lane average stays inside the threshold. A baseline that omitted those fields skips them. `--suite` entries set `workload` to the same file. `--prompt-file` is still one prompt
 - **Pass** is task successes over measured rounds. `--tools` checks that the tool arguments are valid. `expect` checks an exact short answer (the trimmed text, a JSON object, or a number). A wrong answer is still a successful request, and `--winner` can rank it last. A race with no task leaves Pass blank and the podium weights unchanged
 - All requests in a run share `max_tokens` and sampling parameters. Omit a workload and they also share one prompt. Omit `--temperature`, `--top-p`, `--seed` and `--system` to keep each provider's own default. `--reproducible` fills whichever of temperature, top-p and seed are still unset, after the profile is applied, with 0, 1 and 0. A flag or a profile value already set wins. When you set them, the values are stamped into the markdown, JSON and HTML reports, and the request hash changes, so the gate will not compare a pinned race with an unpinned one. OpenAI reasoning models (gpt-5, o-series) ignore temperature, top-p and seed, because those APIs reject the fields; the system prompt is still sent
+- `--json-output` and `--response-schema FILE` ask every lane for structured output: `response_format` on OpenAI chat and Cohere, `text.format` on the Responses API, `responseMimeType`/`responseSchema` on Gemini and Vertex. Anthropic, Bedrock and the mock have no such field and ignore it — compare like with like. The request hash records that enforcement was requested, and a workload with `match: json_schema` grades whether the answer actually complied
 - Per-request timeouts (`--timeout`) are enforced mid-stream; panics in a single request never abort the race
 - **Reasoning models** (gpt-5, o-series): TTFT honestly includes thinking time — the model emits nothing visible while it reasons. When the provider reports server processing time, tokens/s uses the wider of the observed streaming window and the server window, so burst delivery after thinking cannot inflate throughput ([#125](https://github.com/dfbustosus/llmrace/issues/125)). Gemini `thoughtsTokenCount` is billed as output on top of `candidatesTokenCount`. OpenAI `completion_tokens` already includes `reasoning_tokens`, so that count is recorded and not added again. When the provider sends no count, the visible-stream estimate remains
 
