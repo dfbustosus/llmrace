@@ -64,7 +64,7 @@ pub(super) fn write_reports(
         println!("{md}");
     } else {
         let md_path = match out_ext.as_deref() {
-            Some("json" | "csv" | "html") => crate::report_sibling(&cfg.out, "md"),
+            Some("json" | "csv" | "html" | "xml") => crate::report_sibling(&cfg.out, "md"),
             _ => cfg.out.clone(),
         };
         std::fs::write(&md_path, &md).with_context(|| format!("writing {md_path}"))?;
@@ -104,6 +104,12 @@ pub(super) fn write_reports(
         let path = crate::report_sibling(&cfg.out, "csv");
         std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
         cfg.status(format!("\u{1f4c8} csv report saved to {path}"));
+    }
+    if cfg.junit || out_ext.as_deref() == Some("xml") {
+        let x = report::junit_xml(summaries);
+        let path = crate::report_sibling(&cfg.out, "xml");
+        std::fs::write(&path, x).with_context(|| format!("writing {path}"))?;
+        cfg.status(format!("\u{1f9ea} junit report saved to {path}"));
     }
     if cfg.html || out_ext.as_deref() == Some("html") {
         let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
