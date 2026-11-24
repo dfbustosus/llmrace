@@ -47,18 +47,8 @@ fn race_json_names_the_price_date_the_workload_and_the_prompt_hash() {
         ..LaneSummary::default()
     };
     let workload = vec![
-        WorkloadPrompt {
-            id: "a".into(),
-            prompt: "one".into(),
-            expect: None,
-            expect_match: ExpectMatch::Exact,
-        },
-        WorkloadPrompt {
-            id: "b".into(),
-            prompt: "two".into(),
-            expect: None,
-            expect_match: ExpectMatch::Exact,
-        },
+        WorkloadPrompt::text("a", "one"),
+        WorkloadPrompt::text("b", "two"),
     ];
     let json: serde_json::Value = serde_json::from_str(&llmrace::report::json_report_cited(
         std::slice::from_ref(&two),
@@ -137,18 +127,8 @@ async fn every_lane_draws_the_same_prompt_each_round() {
         runs: 2,
         warmup: 1,
         workload: vec![
-            WorkloadPrompt {
-                id: "a".into(),
-                prompt: "one".into(),
-                expect: None,
-                expect_match: ExpectMatch::Exact,
-            },
-            WorkloadPrompt {
-                id: "b".into(),
-                prompt: "two".into(),
-                expect: None,
-                expect_match: ExpectMatch::Exact,
-            },
+            WorkloadPrompt::text("a", "one"),
+            WorkloadPrompt::text("b", "two"),
         ],
         ..BenchConfig::default()
     };
@@ -184,10 +164,8 @@ async fn an_expected_answer_is_checked_without_failing_the_http_call() {
         runs: 1,
         warmup: 0,
         workload: vec![WorkloadPrompt {
-            id: "sum".into(),
-            prompt: "2+2".into(),
             expect: Some(expect.into()),
-            expect_match: ExpectMatch::Exact,
+            ..WorkloadPrompt::text("sum", "2+2")
         }],
         ..BenchConfig::default()
     };
@@ -221,6 +199,65 @@ fn match_rejects_an_unknown_mode_and_a_bad_regex_before_any_request() {
 }
 
 #[test]
+fn a_conversation_a_schema_and_a_tool_parse_and_change_the_hash() {
+    let conversation = parse(
+        r#"{"id":"capital","system":"Be brief.","messages":[{"role":"user","content":"Capital?"},{"role":"assistant","content":"Of where?"},{"role":"user","content":"France."}],"expect":"{\"type\":\"object\",\"required\":[\"city\"],\"properties\":{\"city\":{\"type\":\"string\"}},\"additionalProperties\":false}","match":"json_schema"}"#,
+    )
+    .unwrap();
+    assert_eq!(conversation[0].prompt, "France.");
+    assert_eq!(conversation[0].messages.len(), 3);
+    assert!(llmrace::tools::answer_matches_mode(
+        r#"{"city":"Paris"}"#,
+        conversation[0].expect.as_deref().unwrap(),
+        ExpectMatch::JsonSchema,
+    ));
+    assert!(!llmrace::tools::answer_matches_mode(
+        r#"{"city":"Paris","extra":1}"#,
+        conversation[0].expect.as_deref().unwrap(),
+        ExpectMatch::JsonSchema,
+    ));
+    let plain = parse(r#"{"id":"capital","prompt":"France."}"#).unwrap();
+    let sampling = llmrace::provider::Sampling::default();
+    assert_ne!(
+        llmrace::report::request_sha256("France.", &plain, &sampling, 32, None),
+        llmrace::report::request_sha256("France.", &conversation, &sampling, 32, None)
+    );
+    assert!(parse(r#"{"id":"a","messages":[{"role":"assistant","content":"hi"}]}"#).is_err());
+    assert!(parse(
+        r#"{"id":"a","prompt":"q","expect":"{\"type\":\"object\",\"pattern\":\"a\"}","match":"json_schema"}"#
+    )
+    .is_err());
+    let tool = parse(
+        r#"{"id":"weather","prompt":"Weather in Paris?","tool":{"name":"get_weather","description":"lookup","parameters":{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        llmrace::tools::task_ok_with_tool(
+            true,
+            "weather",
+            r#"{"city":"Paris"}"#,
+            Some(&tool[0].tool.as_ref().unwrap().parameters),
+            None,
+            ExpectMatch::Exact,
+            "",
+        ),
+        Some(true)
+    );
+    assert_eq!(
+        llmrace::tools::task_ok_with_tool(
+            true,
+            "weather",
+            r#"{"nope":1}"#,
+            Some(&tool[0].tool.as_ref().unwrap().parameters),
+            None,
+            ExpectMatch::Exact,
+            "",
+        ),
+        Some(false)
+    );
+}
+
+#[test]
 fn an_exact_workload_keeps_its_request_hash() {
     let exact = parse("{\"id\":\"a\",\"prompt\":\"one\",\"expect\":\"Paris\"}").unwrap();
     let marked =
@@ -249,10 +286,9 @@ async fn contains_and_regex_score_the_mock_answer() {
             runs: 1,
             warmup: 0,
             workload: vec![WorkloadPrompt {
-                id: "sum".into(),
-                prompt: "2+2".into(),
                 expect: Some(expect.into()),
                 expect_match: mode,
+                ..WorkloadPrompt::text("sum", "2+2")
             }],
             ..BenchConfig::default()
         };
