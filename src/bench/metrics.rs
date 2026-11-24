@@ -139,6 +139,10 @@ pub struct BenchConfig {
     /// Prompts drawn one per measured round, in order, shared by every
     /// lane. Empty means every round uses [`Self::prompt`].
     pub workload: Vec<crate::workload::WorkloadPrompt>,
+    /// Per-race price overrides. Lanes stamped from this config price
+    /// themselves from this book and the built-in table, not from the
+    /// process-global override map.
+    pub price_book: Option<crate::cost::PriceBook>,
 }
 
 impl Default for BenchConfig {
@@ -157,6 +161,7 @@ impl Default for BenchConfig {
             retries: 0,
             sampling: crate::provider::Sampling::default(),
             workload: Vec::new(),
+            price_book: None,
         }
     }
 }
