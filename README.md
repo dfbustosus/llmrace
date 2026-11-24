@@ -435,6 +435,8 @@ PRs with results from other regions are welcome — record with `--json` and ext
 | Live terminal race view | ✅ | ❌ | ❌ | ❌ |
 | CI regression gate with significance | ✅ `--require-significance` | ❌ | ✝ heavy scripting | ❌ |
 | The gate names the prompt that fell, and refuses a different request | ✅ | ❌ | ❌ | ❌ |
+| JUnit / SARIF reports: the failing prompt is a failing test and a code-scanning alert | ✅ `--junit` `--sarif` | ❌ | ❌ | ❌ |
+| Embeddable Rust API with scoped pricing (gate LLMs in `cargo test`) | ✅ `llmrace::race` | ❌ | ❌ | ❌ |
 | Saturation curves (`--ramp`) | ✅ built-in | ❌ | ✝ complex | ❌ |
 | Longitudinal trends + model-swap detection | ✅ | ❌ | ❌ | partial |
 | Cost per run from billed input, cached input and output tokens | ✅ | ❌ | ❌ | partial |
