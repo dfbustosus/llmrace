@@ -101,12 +101,21 @@ pub fn spawn_lane_stoppable(
             }
             let mut attempts_left = config.retries;
             let mut attempts_used = 0u32;
-            let (prompt_id, prompt) =
-                crate::workload::prompt_for(&config.prompt, &config.workload, config.warmup, round);
+            let probe = !counted && config.warmup_mode == crate::bench::WarmupMode::ConnectionProbe;
+            let (prompt_id, prompt) = if probe {
+                ("", "ping")
+            } else {
+                crate::workload::prompt_for(&config.prompt, &config.workload, config.warmup, round)
+            };
             let outcome = loop {
                 attempts_used = attempts_used.saturating_add(1);
                 let started = Instant::now();
-                match run_round(&client, &spec, &model, &config, prompt_id, prompt, &tx).await {
+                let job_prompt = RoundPrompt {
+                    id: prompt_id,
+                    text: prompt,
+                    probe,
+                };
+                match run_round(&client, &spec, &model, &config, job_prompt, &tx).await {
                     Ok(metrics) => break Ok(metrics),
                     Err(e) if attempts_left > 0 && e.is_retryable() => {
                         attempts_left -= 1;
@@ -215,15 +224,26 @@ pub fn spawn_lane_stoppable(
     (handle, rx)
 }
 
+/// What one round sends: the workload prompt, or a warmup connection probe.
+struct RoundPrompt<'a> {
+    id: &'a str,
+    text: &'a str,
+    probe: bool,
+}
+
 async fn run_round(
     client: &reqwest::Client,
     spec: &ProviderSpec,
     model: &str,
     config: &BenchConfig,
-    prompt_id: &str,
-    prompt: &str,
+    prompt: RoundPrompt<'_>,
     progress: &mpsc::Sender<LaneUpdate>,
 ) -> crate::error::Result<Vec<RunMetrics>> {
+    let RoundPrompt {
+        id: prompt_id,
+        text: prompt,
+        probe,
+    } = prompt;
     let model_label: Arc<str> = Arc::from(model);
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..config.concurrency.max(1) {
@@ -231,6 +251,11 @@ async fn run_round(
         let mut sampling = config.sampling.clone();
         if let Some(system) = item.and_then(|item| item.system.clone()) {
             sampling.system = Some(system);
+        }
+        if probe {
+            // A connection probe carries no system prompt or workload
+            // prefix, so warmup cannot prime the prefix cache for a prompt.
+            sampling.system = None;
         }
         let job = RequestJob {
             client: client.clone(),
@@ -242,7 +267,7 @@ async fn run_round(
             messages: item.map(|item| item.messages.clone()).unwrap_or_default(),
             expect: item.and_then(|item| item.expect.clone()),
             expect_match: item.map(|item| item.expect_match).unwrap_or_default(),
-            max_tokens: config.max_tokens,
+            max_tokens: if probe { 1 } else { config.max_tokens },
             timeout: Duration::from_secs(config.timeout_secs),
             tools: config.tools || item.is_some_and(|item| item.tool.is_some()),
             tool_task: config.tool_task.clone(),
