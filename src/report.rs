@@ -852,21 +852,41 @@ fn top_two_significance(summaries: &[LaneSummary]) -> Option<(String, String, f6
 /// Renders the compact terminal ranking table.
 pub fn terminal_table(summaries: &[LaneSummary]) -> String {
     let ranked = rank(summaries);
-    let mut out = format!(
-        "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>5} {:>7}\n",
-        "#",
-        "Provider",
-        "Model",
-        "C",
-        "Lat (mean±CI)",
-        "p95",
-        "TTFT",
-        "Server",
-        "Network",
-        "ITLp95",
-        "Fail",
-        "Tok/s"
-    );
+    let any_task = summaries.iter().any(|s| s.task_pass().is_some());
+    let mut out = if any_task {
+        format!(
+            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>5} {:>5} {:>7}\n",
+            "#",
+            "Provider",
+            "Model",
+            "C",
+            "Lat (mean±CI)",
+            "p95",
+            "TTFT",
+            "Server",
+            "Network",
+            "ITLp95",
+            "Fail",
+            "Pass",
+            "Tok/s"
+        )
+    } else {
+        format!(
+            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>5} {:>7}\n",
+            "#",
+            "Provider",
+            "Model",
+            "C",
+            "Lat (mean±CI)",
+            "p95",
+            "TTFT",
+            "Server",
+            "Network",
+            "ITLp95",
+            "Fail",
+            "Tok/s"
+        )
+    };
     out.push_str(&"-".repeat(out.len()));
     out.push('\n');
     for (i, s) in ranked.iter().enumerate() {
@@ -897,27 +917,56 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
             String::new()
         };
         let fail = format!("{}/{}", s.failures.len(), s.measured_rounds());
-        out.push_str(&format!(
-            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>5} {:>8.1}{}{}\n",
-            i + 1,
-            s.name,
-            crate::util::truncate(&s.model, 26),
-            s.concurrency,
-            mean,
-            s.p95_total_ms(),
-            fmt_ms(s.mean_ttfb_ms()),
-            s.median_server_ms()
-                .map(crate::stats::fmt_ms)
-                .unwrap_or_else(|| "—".into()),
-            s.network_overhead_ms()
-                .map(|v| format!("{v:+.0}"))
-                .unwrap_or_else(|| "—".into()),
-            itl,
-            fail,
-            s.mean_tokens_per_sec(),
-            reasoning,
-            mark
-        ));
+        let pass = s
+            .task_pass()
+            .map(|(ok, n)| format!("{ok}/{n}"))
+            .unwrap_or_else(|| "—".into());
+        if any_task {
+            out.push_str(&format!(
+                "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>5} {:>5} {:>8.1}{}{}\n",
+                i + 1,
+                s.name,
+                crate::util::truncate(&s.model, 26),
+                s.concurrency,
+                mean,
+                s.p95_total_ms(),
+                fmt_ms(s.mean_ttfb_ms()),
+                s.median_server_ms()
+                    .map(crate::stats::fmt_ms)
+                    .unwrap_or_else(|| "—".into()),
+                s.network_overhead_ms()
+                    .map(|v| format!("{v:+.0}"))
+                    .unwrap_or_else(|| "—".into()),
+                itl,
+                fail,
+                pass,
+                s.mean_tokens_per_sec(),
+                reasoning,
+                mark
+            ));
+        } else {
+            out.push_str(&format!(
+                "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>5} {:>8.1}{}{}\n",
+                i + 1,
+                s.name,
+                crate::util::truncate(&s.model, 26),
+                s.concurrency,
+                mean,
+                s.p95_total_ms(),
+                fmt_ms(s.mean_ttfb_ms()),
+                s.median_server_ms()
+                    .map(crate::stats::fmt_ms)
+                    .unwrap_or_else(|| "—".into()),
+                s.network_overhead_ms()
+                    .map(|v| format!("{v:+.0}"))
+                    .unwrap_or_else(|| "—".into()),
+                itl,
+                fail,
+                s.mean_tokens_per_sec(),
+                reasoning,
+                mark
+            ));
+        }
     }
     for s in summaries.iter().filter(|s| !s.successful()) {
         out.push_str(&format!(
