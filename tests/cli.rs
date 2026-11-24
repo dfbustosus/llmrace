@@ -915,6 +915,7 @@ fn cli_contract_every_documented_flag_exists() {
         "--json",
         "--csv",
         "--html",
+        "--junit",
         "--baseline",
         "--max-regression",
         "--require-significance",
@@ -1250,6 +1251,31 @@ fn out_json_extension_writes_valid_json_without_json_flag() {
     assert_eq!(parsed["tool"], "llmrace");
     let md_raw = std::fs::read_to_string(dir.join("only.md")).unwrap();
     assert!(md_raw.contains("# 🏁 llmrace report"), "{md_raw}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn junit_flag_writes_a_test_report_next_to_the_markdown() {
+    let dir = std::env::temp_dir().join(format!("llmrace-junit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md_path = dir.join("race.md");
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock", "mock", "--no-tui", "-n", "2", "--warmup", "0", "--quiet", "--junit", "--out",
+        ])
+        .arg(&md_path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let xml = std::fs::read_to_string(dir.join("race.xml")).unwrap();
+    assert!(xml.contains("<testsuite name=\"mock/mock-1\""), "{xml}");
+    assert!(xml.contains("name=\"completion\""), "{xml}");
+    assert!(xml.contains("failures=\"0\""), "{xml}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
