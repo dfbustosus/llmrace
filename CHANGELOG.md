@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-11-23
+
+The crate is now a library a Rust test suite can drive: one builder runs the whole race, and price overrides no longer live in a process-global map.
+
+### Added
+
+- `llmrace::race`: `Race::new(providers)` builder (`prompt`, `workload`, `runs`, `warmup`, `concurrency`, `max_tokens`, `timeout`, `retries`, `sampling`, `reproducible`, `tools`, `models`, `price_book`, `region`, `winner`) returning a `RaceOutcome` with `summaries`, `request_sha256`, `podium()`, `markdown()`, `json()` and `gate(baseline, GatePolicy)`
+- `llmrace::cost::PriceBook`: scoped per-race rate overrides. A lane stamped with a book prices itself from the book plus the built-in table; the process-global override map is not consulted, so parallel races and tests cannot leak prices into each other
+- `examples/cargo_test_gate.rs`: a workload race gated against its own baseline, the shape of a `#[tokio::test]`
+
 ## [1.27.0] - 2026-11-23
 
 A workload prompt can be a conversation, a JSON document, or a tool call. A line that uses none of those stays the request it was.
@@ -682,7 +692,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.27.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.28.0...HEAD
+[1.28.0]: https://github.com/dfbustosus/llmrace/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/dfbustosus/llmrace/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/dfbustosus/llmrace/compare/v1.25.1...v1.26.0
 [1.25.1]: https://github.com/dfbustosus/llmrace/compare/v1.25.0...v1.25.1
