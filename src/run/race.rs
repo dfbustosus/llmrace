@@ -2,7 +2,9 @@
 
 use super::collect::race_collect;
 use super::config::RunConfig;
-use super::reports::{export_metrics, record_history, regression_gate, ttfb_gate, write_reports};
+use super::reports::{
+    export_metrics, load_regression, record_history, regression_gate, ttfb_gate, write_reports,
+};
 use anyhow::Result;
 use llmrace::bench::LaneSummary;
 use llmrace::report;
@@ -60,7 +62,12 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
         }
     }
 
-    write_reports(&summaries, &cfg)?;
+    let loaded = load_regression(&summaries, &cfg);
+    write_reports(
+        &summaries,
+        &cfg,
+        loaded.as_ref().ok().and_then(|report| report.as_ref()),
+    )?;
     export_metrics(&summaries, &cfg).await?;
     if cfg.record {
         record_history(&summaries, &cfg)?;
@@ -96,7 +103,8 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
     if !ttfb_gate(&summaries, &cfg) {
         return Ok((1, Vec::new()));
     }
-    if !regression_gate(&summaries, &cfg)? {
+    let regression = loaded?;
+    if !regression_gate(regression.as_ref(), &cfg) {
         return Ok((1, Vec::new()));
     }
     Ok((0, summaries))
