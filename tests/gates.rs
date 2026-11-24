@@ -26,6 +26,7 @@ fn lane(name: &str, ttfb: f64, successful: bool) -> LaneSummary {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     }
 }
 
