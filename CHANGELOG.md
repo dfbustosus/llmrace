@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-11-23
+
+The gate can fail on one prompt's latency, and the markdown report carries the same verdict as `race.json`.
+
+### Added
+
+- `providers[].runs[]` includes `prompt_id` when the round came from a workload
+- A baseline that recorded a prompt's `mean_total_ms` or `mean_ttfb_ms` fails the gate when that prompt's latency or time to first token rises past the threshold. The comparison uses Welch's test on the rounds of that prompt when both sides have at least two. A baseline that omitted the fields skips them
+- The markdown report includes a `## Regression` section when `--baseline` is set, with the same pass or fail as `regression.ok`
+
 ## [1.25.1] - 2026-11-23
 
 Fixes output footguns on piped and extension-typed report paths, HTML `--duration` metadata, and stale architecture/example files.
@@ -661,7 +671,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.25.1...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.26.0...HEAD
+[1.26.0]: https://github.com/dfbustosus/llmrace/compare/v1.25.1...v1.26.0
 [1.25.1]: https://github.com/dfbustosus/llmrace/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/dfbustosus/llmrace/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/dfbustosus/llmrace/compare/v1.23.0...v1.24.0
