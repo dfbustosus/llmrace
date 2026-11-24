@@ -6,7 +6,11 @@ use llmrace::bench::LaneSummary;
 use llmrace::report;
 
 /// Writes the markdown/JSON/CSV/HTML reports requested by the config.
-pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<()> {
+pub(super) fn write_reports(
+    summaries: &[LaneSummary],
+    cfg: &RunConfig,
+    regression: Option<&llmrace::regression::RegressionReport>,
+) -> Result<()> {
     // Report the rounds actually measured: `--duration` uses a sentinel
     // round count internally and a graceful interrupt may stop early —
     // neither belongs in report metadata.
@@ -34,6 +38,9 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
     }
     if cfg.histogram {
         md.push_str(&report::histogram_section(summaries));
+    }
+    if let Some(regression) = regression {
+        md.push_str(&regression.markdown_section(cfg.max_regression, cfg.require_significance));
     }
     let out_ext = if cfg.out == "-" {
         None
@@ -75,8 +82,11 @@ pub(super) fn write_reports(summaries: &[LaneSummary], cfg: &RunConfig) -> Resul
             ),
             &cfg.bench.sampling,
         );
-        if let Some(verdict) = baseline_verdict(summaries, cfg, &request) {
-            j = report::insert_regression_json(&j, &verdict);
+        if let Some(regression) = regression {
+            j = report::insert_regression_json(
+                &j,
+                &regression.verdict_json(cfg.max_regression, cfg.require_significance),
+            );
         }
         let path = crate::report_sibling(&cfg.out, "json");
         std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
@@ -203,41 +213,37 @@ pub(super) fn ttfb_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> bool {
     true
 }
 
-/// The `regression` object for a baseline that parses. A missing or
-/// unreadable baseline is left to the gate, which reports the error.
-fn baseline_verdict(
+/// Reads the baseline once. `Ok(None)` means this run has no `--baseline`.
+/// A missing or unreadable file is an error, reported after the race
+/// report has already been written.
+pub(super) fn load_regression(
     summaries: &[LaneSummary],
     cfg: &RunConfig,
-    request: &str,
-) -> Option<serde_json::Value> {
-    let path = cfg.baseline.as_ref()?;
-    let raw = std::fs::read_to_string(path).ok()?;
-    let baseline = llmrace::regression::BaselineReport::from_json_str(&raw).ok()?;
-    let regression = llmrace::regression::evaluate_request(
-        summaries,
-        &baseline,
-        cfg.max_regression,
-        Some(request),
-    );
-    Some(regression.verdict_json(cfg.max_regression, cfg.require_significance))
-}
-
-/// `--baseline` regression gate: returns `false` on regression.
-pub(super) fn regression_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<bool> {
+) -> Result<Option<llmrace::regression::RegressionReport>> {
     let Some(baseline_path) = &cfg.baseline else {
-        return Ok(true);
+        return Ok(None);
     };
     let raw = std::fs::read_to_string(baseline_path)
         .with_context(|| format!("reading baseline {baseline_path}"))?;
     let baseline = llmrace::regression::BaselineReport::from_json_str(&raw)
         .with_context(|| format!("parsing baseline {baseline_path}"))?;
     let request = race_request_sha256(cfg);
-    let regression = llmrace::regression::evaluate_request(
+    Ok(Some(llmrace::regression::evaluate_request(
         summaries,
         &baseline,
         cfg.max_regression,
         Some(&request),
-    );
+    )))
+}
+
+/// `--baseline` regression gate: returns `false` on regression.
+pub(super) fn regression_gate(
+    regression: Option<&llmrace::regression::RegressionReport>,
+    cfg: &RunConfig,
+) -> bool {
+    let Some(regression) = regression else {
+        return true;
+    };
     cfg.status(format!(
         "\n{}",
         regression.terminal_table(cfg.max_regression)
@@ -248,5 +254,5 @@ pub(super) fn regression_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> Res
     {
         cfg.status("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
     }
-    Ok(!regression.gate_failed(cfg.require_significance))
+    !regression.gate_failed(cfg.require_significance)
 }
