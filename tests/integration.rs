@@ -126,6 +126,85 @@ fn openai_wire_decodes_deltas_and_usage() {
 }
 
 #[test]
+fn cache_mix_is_named_in_the_report_and_counted_in_json() {
+    let lane = |hits: &[bool]| llmrace::bench::LaneSummary {
+        name: "openai".into(),
+        model: "gpt-4o-mini".into(),
+        runs: hits
+            .iter()
+            .map(|hit| RunMetrics {
+                total_ms: 100.0,
+                ttfb_ms: 10.0,
+                tokens: 10,
+                prompt_tokens: 100,
+                cache_read_tokens: u64::from(*hit) * 80,
+                ..RunMetrics::default()
+            })
+            .collect(),
+        ..llmrace::bench::LaneSummary::default()
+    };
+    let mixed = lane(&[true, false, true]);
+    assert_eq!(mixed.cache_hit_rounds(), 2);
+    let note = llmrace::report::cache_note(std::slice::from_ref(&mixed)).unwrap();
+    assert!(note.contains("openai (2/3)"), "{note}");
+    assert!(llmrace::report::cache_note(&[lane(&[true, true])]).is_none());
+    assert!(llmrace::report::cache_note(&[lane(&[false, false])]).is_none());
+    let json: serde_json::Value = serde_json::from_str(&llmrace::report::json_report(
+        std::slice::from_ref(&mixed),
+        "p",
+        3,
+        32,
+    ))
+    .unwrap();
+    assert_eq!(json["providers"][0]["cache_hit_rounds"], 2);
+}
+
+#[test]
+fn openai_responses_spec_is_opt_in_and_on_the_responses_wire() {
+    let spec = ProviderSpec::openai_responses();
+    assert_eq!(*spec.id, *"openai-responses");
+    assert_eq!(spec.wire, Wire::OpenAiResponses);
+    assert!(spec.opt_in);
+    assert!(spec.endpoint.ends_with("/v1/responses"));
+    assert!(ProviderSpec::find("openai-responses").is_some());
+}
+
+#[test]
+fn responses_wire_decodes_deltas_tools_and_usage() {
+    let delta = decode_payload(
+        r#"{"type":"response.output_text.delta","delta":"Hel"}"#,
+        Wire::OpenAiResponses,
+    )
+    .unwrap();
+    assert_eq!(delta.token.as_deref(), Some("Hel"));
+
+    let args = decode_payload(
+        r#"{"type":"response.function_call_arguments.delta","delta":"{\"city\":"}"#,
+        Wire::OpenAiResponses,
+    )
+    .unwrap();
+    assert_eq!(args.tool_args.as_deref(), Some(r#"{"city":"#));
+    assert!(args.token.is_none());
+
+    let done = decode_payload(
+        r#"{"type":"response.completed","response":{"usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":80},"output_tokens":30,"output_tokens_details":{"reasoning_tokens":12}}}}"#,
+        Wire::OpenAiResponses,
+    )
+    .unwrap();
+    assert_eq!(done.prompt_tokens, Some(120));
+    assert_eq!(done.cache_read_tokens, Some(80));
+    assert_eq!(done.completion_tokens, Some(30));
+    assert_eq!(done.reasoning_tokens, Some(12));
+    assert!(!done.reasoning_billed_separately);
+
+    assert!(decode_payload(
+        r#"{"type":"response.created","response":{}}"#,
+        Wire::OpenAiResponses,
+    )
+    .is_none());
+}
+
+#[test]
 fn anthropic_wire_decodes_events() {
     let delta = decode_payload(
         r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}"#,
