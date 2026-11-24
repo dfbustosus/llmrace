@@ -7,6 +7,16 @@ use crate::error::{Error, Result};
 use serde_json::json;
 use std::time::Duration;
 
+/// Response-format enforcement requested for the race.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsonOutput {
+    /// Any valid JSON value (`json_object`, `responseMimeType`).
+    Object,
+    /// A JSON Schema the answer must follow (`json_schema` strict on
+    /// OpenAI wires, `responseSchema` on Gemini wires).
+    Schema(serde_json::Value),
+}
+
 /// Optional sampling controls shared by every wire.
 ///
 /// Unset fields are omitted from the request, so a race that does not pass
@@ -25,6 +35,9 @@ pub struct Sampling {
     pub seed: Option<u64>,
     /// System prompt, encoded in the wire's native slot.
     pub system: Option<String>,
+    /// Response-format enforcement. Encoded on the OpenAI chat, OpenAI
+    /// Responses, Cohere and Gemini wires; the other wires ignore it.
+    pub json_output: Option<JsonOutput>,
 }
 
 impl Sampling {
@@ -35,6 +48,7 @@ impl Sampling {
             && self.top_p.is_none()
             && self.seed.is_none()
             && self.system.as_deref().is_none_or(str::is_empty)
+            && self.json_output.is_none()
     }
 
     /// Rejects values no major provider will accept.
@@ -61,6 +75,11 @@ impl Sampling {
             }
             if sys.chars().count() > 100_000 {
                 return Err("system prompt exceeds 100000 characters".into());
+            }
+        }
+        if let Some(JsonOutput::Schema(schema)) = &self.json_output {
+            if !schema.is_object() {
+                return Err("response schema must be a JSON object".into());
             }
         }
         Ok(self)
@@ -182,6 +201,9 @@ fn build_body(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> serde_json::V
     };
     apply_messages(&mut body, spec.wire, req);
     apply_sampling(&mut body, spec.wire, req.model, &req.sampling);
+    if let Some(json_output) = &req.sampling.json_output {
+        apply_json_output(&mut body, spec.wire, json_output);
+    }
     if let Some(tool) = req.tool {
         attach_tool(&mut body, spec.wire, tool);
     } else if req.tools {
@@ -232,6 +254,47 @@ fn apply_messages(body: &mut serde_json::Value, wire: Wire, req: &CompletionRequ
         Wire::Gemini | Wire::Vertex => body["contents"] = serde_json::Value::Array(turns.collect()),
         Wire::OpenAiResponses => body["input"] = serde_json::Value::Array(turns.collect()),
         _ => body["messages"] = serde_json::Value::Array(turns.collect()),
+    }
+}
+
+/// Writes response-format enforcement in each wire's native shape.
+///
+/// Anthropic, Bedrock and the mock have no such field; the control is
+/// theirs to ignore, and the request hash records that it was requested.
+fn apply_json_output(body: &mut serde_json::Value, wire: Wire, json_output: &JsonOutput) {
+    match (wire, json_output) {
+        (Wire::OpenAiCompat | Wire::Cohere, JsonOutput::Object) => {
+            body["response_format"] = json!({"type": "json_object"});
+        }
+        (Wire::OpenAiCompat | Wire::Cohere, JsonOutput::Schema(schema)) => {
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "llmrace_output",
+                    "schema": schema,
+                    "strict": true,
+                },
+            });
+        }
+        (Wire::OpenAiResponses, JsonOutput::Object) => {
+            body["text"]["format"] = json!({"type": "json_object"});
+        }
+        (Wire::OpenAiResponses, JsonOutput::Schema(schema)) => {
+            body["text"]["format"] = json!({
+                "type": "json_schema",
+                "name": "llmrace_output",
+                "schema": schema,
+                "strict": true,
+            });
+        }
+        (Wire::Gemini | Wire::Vertex, JsonOutput::Object) => {
+            body["generationConfig"]["responseMimeType"] = json!("application/json");
+        }
+        (Wire::Gemini | Wire::Vertex, JsonOutput::Schema(schema)) => {
+            body["generationConfig"]["responseMimeType"] = json!("application/json");
+            body["generationConfig"]["responseSchema"] = schema.clone();
+        }
+        _ => {}
     }
 }
 
@@ -820,6 +883,7 @@ mod tests {
             top_p: Some(1.0),
             seed: Some(7),
             system: Some("Be brief.".into()),
+            json_output: None,
         }
     }
 
@@ -1002,6 +1066,57 @@ mod tests {
         let reasoning = build_body(&spec, &req("gpt-5-nano", pinned()));
         assert!(reasoning.get("temperature").is_none(), "{reasoning}");
         assert_eq!(reasoning["instructions"], "Be brief.");
+    }
+
+    #[test]
+    fn json_output_is_encoded_on_each_supporting_wire() {
+        let schema = json!({"type": "object", "required": ["city"]});
+        let mut sampling = Sampling {
+            json_output: Some(JsonOutput::Object),
+            ..Sampling::default()
+        };
+        let mut request = req("gpt-4o-mini", sampling.clone());
+
+        let body = build_body(&ProviderSpec::openai(), &request);
+        assert_eq!(body["response_format"]["type"], "json_object");
+        let body = build_body(&ProviderSpec::openai_responses(), &request);
+        assert_eq!(body["text"]["format"]["type"], "json_object");
+        let body = build_body(&ProviderSpec::gemini(), &request);
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert!(body["generationConfig"].get("responseSchema").is_none());
+        let body = build_body(&ProviderSpec::anthropic(), &request);
+        assert!(body.get("response_format").is_none(), "{body}");
+
+        sampling.json_output = Some(JsonOutput::Schema(schema.clone()));
+        request.sampling = sampling;
+        let body = build_body(&ProviderSpec::openai(), &request);
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["required"][0],
+            "city"
+        );
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        let body = build_body(&ProviderSpec::openai_responses(), &request);
+        assert_eq!(body["text"]["format"]["type"], "json_schema");
+        assert_eq!(body["text"]["format"]["schema"]["required"][0], "city");
+        let body = build_body(&ProviderSpec::gemini(), &request);
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert_eq!(
+            body["generationConfig"]["responseSchema"]["required"][0],
+            "city"
+        );
+
+        let not_object = Sampling {
+            json_output: Some(JsonOutput::Schema(json!("array"))),
+            ..Sampling::default()
+        };
+        assert!(not_object.checked().is_err());
     }
 
     #[test]
