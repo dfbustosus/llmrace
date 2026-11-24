@@ -119,6 +119,10 @@ pub struct LaneSummary {
     /// Tool task name when run with `--tools`, used to pick the right
     /// argument validator for `tool_validity`.
     pub tool_task: Option<String>,
+    /// Per-race price overrides. When set, cost lookups consult this book
+    /// and the built-in table only — the process-global override map is
+    /// ignored, so parallel races cannot leak prices into each other.
+    pub price_book: Option<crate::cost::PriceBook>,
 }
 
 impl LaneSummary {
@@ -320,7 +324,8 @@ impl LaneSummary {
     /// not part of the per-request usage and is not included.
     #[must_use]
     pub fn cost_per_run_usd(&self) -> Option<f64> {
-        let rates = crate::cost::token_rates(&self.name, &self.model)?;
+        let rates =
+            crate::cost::token_rates_for(self.price_book.as_ref(), &self.name, &self.model)?;
         Some(crate::cost::usage_cost_usd(rates, self.priced_usage()))
     }
 
@@ -328,7 +333,7 @@ impl LaneSummary {
     /// no rate for that bucket, so those tokens were billed at the input rate.
     #[must_use]
     pub fn cache_discount_applied(&self) -> bool {
-        match crate::cost::token_rates(&self.name, &self.model) {
+        match crate::cost::token_rates_for(self.price_book.as_ref(), &self.name, &self.model) {
             Some(rates) => crate::cost::cache_rates_cover(rates, self.priced_usage()),
             None => true,
         }
