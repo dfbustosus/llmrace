@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-11-23
+
+A workload prompt can be a conversation, a JSON document, or a tool call. A line that uses none of those stays the request it was.
+
+### Added
+
+- A workload line may set `messages` (a conversation ending on a user turn) and `system` (this round only). OpenAI-compatible, Anthropic, Cohere, Gemini, Vertex, and Bedrock each send that conversation in their own message shape
+- `match: json_schema` checks the trimmed answer against the schema in `expect`. The schema is rejected before any request when it uses a keyword this crate does not evaluate
+- A workload line may set `tool` with a name, description, and JSON Schema. The streamed arguments are checked against that schema on every wire, including Bedrock and Vertex
+- `request_sha256` records `system`, `messages`, and `tool` only when the line sets them, so an exact short-answer workload keeps its hash
+
 ## [1.26.0] - 2026-11-23
 
 The gate can fail on one prompt's latency, and the markdown report carries the same verdict as `race.json`.
@@ -671,7 +682,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/dfbustosus/llmrace/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/dfbustosus/llmrace/compare/v1.25.1...v1.26.0
 [1.25.1]: https://github.com/dfbustosus/llmrace/compare/v1.25.0...v1.25.1
 [1.25.0]: https://github.com/dfbustosus/llmrace/compare/v1.24.0...v1.25.0
