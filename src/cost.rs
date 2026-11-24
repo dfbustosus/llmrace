@@ -93,6 +93,64 @@ pub fn set_rate_overrides(pairs: Vec<(String, TokenRates)>) {
     }
 }
 
+/// Scoped price overrides for one race.
+///
+/// Lookup falls back to the built-in table only — never to the
+/// process-global [`set_overrides`] map — so parallel races or test cases
+/// cannot leak prices into each other.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PriceBook {
+    rates: HashMap<String, TokenRates>,
+}
+
+impl PriceBook {
+    /// An empty book. [`Self::rates`] then only sees the built-in table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds or replaces one row (`provider/model` → rates).
+    pub fn insert(&mut self, key: impl Into<String>, rates: TokenRates) {
+        self.rates.insert(key.into().to_ascii_lowercase(), rates);
+    }
+
+    /// Builds a book from parsed overrides.
+    #[must_use]
+    pub fn from_overrides(pairs: Vec<(String, TokenRates)>) -> Self {
+        let mut book = Self::new();
+        for (key, rates) in pairs {
+            book.insert(key, rates);
+        }
+        book
+    }
+
+    /// Published rates for `provider/model`: this book first, then the
+    /// built-in table. The process-global override map is not consulted.
+    #[must_use]
+    pub fn rates(&self, provider: &str, model: &str) -> Option<TokenRates> {
+        let key = format!("{}/{}", provider, model.to_ascii_lowercase()).to_ascii_lowercase();
+        self.rates
+            .get(&key)
+            .copied()
+            .or_else(|| builtin_rates(&key))
+    }
+}
+
+/// Resolves rates the way a lane should: its own [`PriceBook`] when it
+/// carries one, otherwise the process-global overrides and built-in table.
+#[must_use]
+pub fn token_rates_for(
+    book: Option<&PriceBook>,
+    provider: &str,
+    model: &str,
+) -> Option<TokenRates> {
+    match book {
+        Some(book) => book.rates(provider, model),
+        None => token_rates(provider, model),
+    }
+}
+
 /// Parses a two-part `--price` argument: `provider/model=1.25:5`.
 pub fn parse_override(raw: &str) -> Result<(String, f64, f64)> {
     let over = parse_price_override(raw)?;
@@ -249,6 +307,10 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
             return Some(*rates);
         }
     }
+    builtin_rates(&key)
+}
+
+fn builtin_rates(key: &str) -> Option<TokenRates> {
     // Input and output are the standard public list prices, USD per million
     // tokens, read 2026-11-20. OpenAI rates are the standard short-context
     // column on https://developers.openai.com/api/docs/pricing (cached input
@@ -448,7 +510,7 @@ pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
     ];
     table
         .iter()
-        .find(|(k, _, _, _)| k.eq_ignore_ascii_case(&key))
+        .find(|(k, _, _, _)| k.eq_ignore_ascii_case(key))
         .map(|(_, input, output, schedule)| listed_rates(*input, *output, schedule))
 }
 
