@@ -151,6 +151,15 @@ fn build_body(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> serde_json::V
             }
             body
         }
+        Wire::OpenAiResponses => json!({
+            "model": req.model,
+            "input": [{
+                "role": "user",
+                "content": [{"type": "input_text", "text": req.prompt}],
+            }],
+            "stream": true,
+            "max_output_tokens": req.max_tokens,
+        }),
         Wire::Anthropic | Wire::Cohere => json!({
             "model": req.model,
             "max_tokens": req.max_tokens,
@@ -207,12 +216,21 @@ fn apply_messages(body: &mut serde_json::Value, wire: Wire, req: &CompletionRequ
             Wire::Bedrock => {
                 json!({"role": role, "content": [{"text": message.content}]})
             }
+            Wire::OpenAiResponses => {
+                let part = if role == "assistant" {
+                    "output_text"
+                } else {
+                    "input_text"
+                };
+                json!({"role": role, "content": [{"type": part, "text": message.content}]})
+            }
             _ => json!({"role": role, "content": message.content}),
         }
     });
     match wire {
         Wire::Mock => {}
         Wire::Gemini | Wire::Vertex => body["contents"] = serde_json::Value::Array(turns.collect()),
+        Wire::OpenAiResponses => body["input"] = serde_json::Value::Array(turns.collect()),
         _ => body["messages"] = serde_json::Value::Array(turns.collect()),
     }
 }
@@ -235,9 +253,25 @@ fn apply_sampling(body: &mut serde_json::Value, wire: Wire, model: &str, samplin
     if sampling.is_unset() {
         return;
     }
-    let reasoning = wire == Wire::OpenAiCompat && requires_completion_tokens(model);
+    let reasoning = matches!(wire, Wire::OpenAiCompat | Wire::OpenAiResponses)
+        && requires_completion_tokens(model);
     match wire {
         Wire::Mock => {}
+        Wire::OpenAiResponses => {
+            if !reasoning {
+                if let Some(t) = sampling.temperature {
+                    body["temperature"] = json!(t);
+                }
+                if let Some(p) = sampling.top_p {
+                    body["top_p"] = json!(p);
+                }
+            }
+            // The Responses API has no seed field; a pinned seed lives in
+            // the request hash but is not sent on this wire.
+            if let Some(sys) = sampling.system.as_deref() {
+                body["instructions"] = json!(sys);
+            }
+        }
         Wire::OpenAiCompat => {
             if !reasoning {
                 if let Some(t) = sampling.temperature {
@@ -324,7 +358,8 @@ fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Resul
     let key = spec.api_key()?;
     let auth = match (spec.wire, spec.auth) {
         (Wire::Mock, _) => RequestAuth::None,
-        (Wire::OpenAiCompat, AuthKind::ApiKeyHeader) => {
+        (Wire::OpenAiCompat, AuthKind::ApiKeyHeader)
+        | (Wire::OpenAiResponses, AuthKind::ApiKeyHeader) => {
             RequestAuth::Headers(vec![("api-key", key.unwrap_or_default())])
         }
         (Wire::Anthropic, _) => RequestAuth::Headers(vec![
@@ -442,6 +477,7 @@ pub async fn list_models(client: &reqwest::Client, spec: &ProviderSpec) -> Resul
     };
     let (url, auth) = match spec.wire {
         Wire::OpenAiCompat => (models_url("models", true)?, bearer_or_none(key)),
+        Wire::OpenAiResponses => (models_url("models", false)?, bearer_or_none(key)),
         Wire::Anthropic => (
             models_url("models", true)?,
             RequestAuth::Headers(vec![
@@ -916,6 +952,56 @@ mod tests {
             bedrock["toolConfig"]["tools"][0]["toolSpec"]["name"],
             "get_weather"
         );
+    }
+
+    #[test]
+    fn responses_body_uses_input_instructions_and_flat_tools() {
+        use crate::workload::{MessageRole, WorkloadMessage};
+        let spec = ProviderSpec::openai_responses();
+        let mut request = req("gpt-4o-mini", pinned());
+        assert!(spec.opt_in, "the responses lane must be opt-in");
+        let body = build_body(&spec, &request);
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["input"][0]["content"][0]["text"], "hi");
+        assert_eq!(body["max_output_tokens"], 8);
+        assert_eq!(body["instructions"], "Be brief.");
+        assert_eq!(body["temperature"].as_f64(), Some(0.0));
+        assert!(body.get("seed").is_none(), "{body}");
+        assert!(body.get("messages").is_none(), "{body}");
+
+        let conversation = [
+            WorkloadMessage {
+                role: MessageRole::User,
+                content: "Capital?".into(),
+            },
+            WorkloadMessage {
+                role: MessageRole::Assistant,
+                content: "Of where?".into(),
+            },
+            WorkloadMessage {
+                role: MessageRole::User,
+                content: "France.".into(),
+            },
+        ];
+        request.messages = &conversation;
+        let body = build_body(&spec, &request);
+        assert_eq!(body["input"].as_array().map(Vec::len), Some(3));
+        assert_eq!(body["input"][1]["content"][0]["type"], "output_text");
+
+        let tool = crate::tools::ToolDefinition {
+            name: "get_weather".into(),
+            description: "lookup".into(),
+            parameters: json!({"type": "object", "required": ["city"]}),
+        };
+        request.tool = Some(&tool);
+        let body = build_body(&spec, &request);
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+        assert!(body["tools"][0].get("function").is_none(), "{body}");
+
+        let reasoning = build_body(&spec, &req("gpt-5-nano", pinned()));
+        assert!(reasoning.get("temperature").is_none(), "{reasoning}");
+        assert_eq!(reasoning["instructions"], "Be brief.");
     }
 
     #[test]
