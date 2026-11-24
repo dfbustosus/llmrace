@@ -261,6 +261,31 @@ llmrace openai groq --out race.md --json --csv --html
 - `race.csv` — per-run rows for spreadsheets and dashboards
 - `race.html` — self-contained dark-theme page with podium, ranked table and per-run latency bars (TTFB vs generation split), shareable as a single file
 
+### From Rust
+
+The same race the CLI runs, inside your own crate — no binary, no global state:
+
+```rust
+use llmrace::provider::ProviderSpec;
+use llmrace::race::{GatePolicy, Race};
+
+#[tokio::test]
+async fn the_gate_stays_green() {
+    let outcome = Race::new([ProviderSpec::mock(), ProviderSpec::mock()])
+        .runs(4)
+        .warmup(0)
+        .reproducible()
+        .run()
+        .await
+        .unwrap();
+    let baseline = llmrace::regression::BaselineReport::from_json_str(&outcome.json()).unwrap();
+    let gate = outcome.gate(&baseline, GatePolicy::ci_default());
+    assert!(!gate.gate_failed(true));
+}
+```
+
+`RaceOutcome` carries `summaries`, `request_sha256`, `markdown()`, `json()`, `podium()` and `gate()`. A `llmrace::cost::PriceBook` scopes price overrides to one race, so parallel tests never share the global override map. A runnable copy lives in [`examples/cargo_test_gate.rs`](examples/cargo_test_gate.rs).
+
 ## Distributed probes
 
 Run region-distributed probes from any workflow with the reusable [probe workflow](.github/workflows/probe.yml):
