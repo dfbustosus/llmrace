@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-11-23
+
+Warmup can no longer secretly prime the cache, a mixed cache sample says so, and OpenAI's Responses API is a first-class wire.
+
+### Added
+
+- `--warmup-mode probe`: warmup sends a minimal `ping` (`max_tokens: 1`, no system prompt) so the connection warms without priming the provider's prefix cache for a workload prompt. The default `same-prompt` behavior is unchanged
+- `cache_hit_rounds` per lane in `race.json`, and a `Cache mix` note in the markdown report when a lane mixes cold and warm rounds — the latency sample is then not homogeneous
+- `Wire::OpenAiResponses`: the OpenAI `/v1/responses` API, decoding `response.output_text.delta`, streamed tool arguments, and `response.completed` usage (cached input, reasoning tokens). Available as the opt-in `openai-responses` provider and as `--wire responses` on a custom endpoint
+
 ## [1.28.0] - 2026-11-23
 
 The crate is now a library a Rust test suite can drive: one builder runs the whole race, and price overrides no longer live in a process-global map.
@@ -692,7 +702,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.28.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.29.0...HEAD
+[1.29.0]: https://github.com/dfbustosus/llmrace/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/dfbustosus/llmrace/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/dfbustosus/llmrace/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/dfbustosus/llmrace/compare/v1.25.1...v1.26.0
