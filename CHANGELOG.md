@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-11-24
+
+Gate failures can now land in the Security tab and on the PR checks pane, with no bot.
+
+### Added
+
+- `--sarif` writes `race.sarif` (SARIF 2.1.0): every condition that fails a gate — a regression beyond the threshold, a changed request, a TTFB breach, a lane that never succeeded — is one `result` with the provider, the metric, and the prompt id. Upload with `github/codeql-action/upload-sarif`
+- `llmrace::sarif::sarif` for library callers, and `MetricComparison::fails_the_gate` is now public so embedders apply the same rule the exit code uses
+- `--out race.sarif` implies `--sarif`, matching the other report extensions
+
 ## [1.30.0] - 2026-11-24
 
 The race now speaks the one format every CI system already understands.
@@ -712,7 +722,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.30.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.31.0...HEAD
+[1.31.0]: https://github.com/dfbustosus/llmrace/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/dfbustosus/llmrace/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/dfbustosus/llmrace/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/dfbustosus/llmrace/compare/v1.27.0...v1.28.0
