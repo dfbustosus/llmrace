@@ -285,6 +285,28 @@ pub fn sampling_note(sampling: &crate::provider::Sampling) -> Option<String> {
     sampling_inline(sampling).map(|s| format!("- **Sampling**: {s}\n"))
 }
 
+/// A one-line markdown note naming the lanes that mix cold and warm
+/// rounds. `None` when every lane is uniformly cold or uniformly warm.
+#[must_use]
+pub fn cache_note(summaries: &[LaneSummary]) -> Option<String> {
+    let mixed: Vec<String> = summaries
+        .iter()
+        .filter(|s| {
+            let hits = s.cache_hit_rounds();
+            !s.runs.is_empty() && hits > 0 && hits < s.runs.len()
+        })
+        .map(|s| format!("{} ({}/{})", s.name, s.cache_hit_rounds(), s.runs.len()))
+        .collect();
+    if mixed.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "- **Cache mix**: {} — some rounds hit the prefix cache and some did not, so the latency sample is not homogeneous\n",
+            mixed.join(", ")
+        ))
+    }
+}
+
 /// JSON object of the sampling controls that were set, suitable for
 /// inserting into a race report. Unset controls are omitted.
 #[must_use]
@@ -591,6 +613,7 @@ fn render_json(
                 "cache_write_tokens": s.mean_cache_write_tokens(),
                 "cache_write_1h_tokens": s.mean_cache_write_1h_tokens(),
                 "cache_discount_applied": s.cache_discount_applied(),
+                "cache_hit_rounds": s.cache_hit_rounds(),
                 "server_ms": s.median_server_ms(),
                 "network_overhead_ms": s.network_overhead_ms(),
                 "itl_p50_ms": s.itl_p50_ms(),
