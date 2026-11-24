@@ -25,13 +25,44 @@
 //! # });
 //! # }
 //! ```
+//!
+//! Dashboards and bots watch the same race live and stop it cleanly:
+//!
+//! ```
+//! use llmrace::provider::ProviderSpec;
+//! use llmrace::race::Race;
+//!
+//! # fn main() {
+//! # let rt = tokio::runtime::Runtime::new().unwrap();
+//! # rt.block_on(async {
+//! let mut handle = Race::new([ProviderSpec::mock()])
+//!     .runs(1)
+//!     .warmup(0)
+//!     .spawn()
+//!     .unwrap();
+//! let progress = handle.progress().unwrap();
+//! let seen = std::thread::spawn(move || {
+//!     let mut n = 0;
+//!     while progress.recv().is_ok() {
+//!         n += 1;
+//!     }
+//!     n
+//! });
+//! let outcome = handle.finish().await.unwrap();
+//! assert!(seen.join().unwrap() > 0, "live updates flow before finish");
+//! assert!(outcome.summaries[0].successful());
+//! # });
+//! # }
+//! ```
 
-use crate::bench::{spawn_lane, BenchConfig, LaneSummary};
+use crate::bench::{spawn_lane_stoppable, BenchConfig, LaneSummary, LaneUpdate};
 use crate::error::{Error, Result};
 use crate::provider::{benchmark_client, split_model_override, ProviderSpec, Sampling};
 use crate::regression::{BaselineReport, RegressionReport};
 use crate::score::Weights;
 use crate::workload::WorkloadPrompt;
+use std::sync::atomic::AtomicBool;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 /// How strictly [`RaceOutcome::gate`] fails.
@@ -204,27 +235,44 @@ impl Race {
     /// A lane that panics or cannot start becomes a lane error; the other
     /// lanes still finish.
     pub async fn run(self) -> Result<RaceOutcome> {
+        self.spawn()?.finish().await
+    }
+
+    /// Starts the race without awaiting it: live progress plus a stop
+    /// handle, collected later with [`RaceHandle::finish`].
+    ///
+    /// Progress arrives on a plain `std::sync::mpsc` receiver, so a GUI or
+    /// logger thread needs no async runtime of its own.
+    pub fn spawn(self) -> Result<RaceHandle> {
         let client = benchmark_client(
             Duration::from_secs(self.bench.timeout_secs),
             self.bench.concurrency,
         )?;
-        let mut handles = Vec::with_capacity(self.providers.len());
-        let mut receivers = Vec::with_capacity(self.providers.len());
+        let stop = Arc::new(AtomicBool::new(false));
+        let (merged_tx, merged_rx) = mpsc::channel::<LaneUpdate>();
+        let mut lanes = Vec::with_capacity(self.providers.len());
         for spec in &self.providers {
             let model = resolve_model(&self.models, &spec.id, &spec.default_model);
-            let (handle, rx) = spawn_lane(client.clone(), spec.clone(), model, self.bench.clone());
-            handles.push(handle);
-            receivers.push(rx);
-        }
-        drop(receivers);
-        let mut summaries = Vec::with_capacity(handles.len());
-        for handle in handles {
-            summaries.push(
-                handle
-                    .await
-                    .map_err(|e| Error::Stream(format!("lane task failed: {e}")))?,
+            let (handle, rx) = spawn_lane_stoppable(
+                client.clone(),
+                spec.clone(),
+                model,
+                self.bench.clone(),
+                Arc::clone(&stop),
             );
+            lanes.push(handle);
+            let tx = merged_tx.clone();
+            // blocking recv on a std mpsc channel — never on an async
+            // worker, so this also works on a current-thread runtime
+            tokio::task::spawn_blocking(move || {
+                while let Ok(update) = rx.recv() {
+                    if tx.send(update).is_err() {
+                        break;
+                    }
+                }
+            });
         }
+        drop(merged_tx);
         let request = crate::report::request_sha256(
             &self.bench.prompt,
             &self.bench.workload,
@@ -232,9 +280,58 @@ impl Race {
             self.bench.max_tokens,
             self.bench.tools.then_some(self.bench.tool_task.as_str()),
         );
+        Ok(RaceHandle {
+            stop,
+            progress: Some(merged_rx),
+            lanes,
+            bench: self.bench,
+            weights: self.weights,
+            winner: self.winner,
+            region: self.region,
+            request,
+        })
+    }
+}
+
+/// A running race: live per-lane progress, a stop handle, and the outcome
+/// once every lane has finished or stopped.
+pub struct RaceHandle {
+    stop: Arc<AtomicBool>,
+    progress: Option<mpsc::Receiver<LaneUpdate>>,
+    lanes: Vec<tokio::task::JoinHandle<LaneSummary>>,
+    bench: BenchConfig,
+    weights: Weights,
+    winner: bool,
+    region: Option<String>,
+    request: String,
+}
+
+impl RaceHandle {
+    /// Live per-lane progress, in arrival order. Taken once; the channel
+    /// closes when the last lane finishes.
+    pub fn progress(&mut self) -> Option<mpsc::Receiver<LaneUpdate>> {
+        self.progress.take()
+    }
+
+    /// Signals every lane to stop after its in-flight round. Completed
+    /// rounds stay in the outcome; warmup rounds always finish.
+    pub fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Waits for every lane and returns the outcome.
+    pub async fn finish(self) -> Result<RaceOutcome> {
+        let mut summaries = Vec::with_capacity(self.lanes.len());
+        for handle in self.lanes {
+            summaries.push(
+                handle
+                    .await
+                    .map_err(|e| Error::Stream(format!("lane task failed: {e}")))?,
+            );
+        }
         Ok(RaceOutcome {
             summaries,
-            request_sha256: request,
+            request_sha256: self.request,
             bench: self.bench,
             weights: self.weights,
             winner: self.winner,
