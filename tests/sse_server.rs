@@ -258,6 +258,44 @@ async fn warmup_same_prompt_primes_the_first_workload_item() {
 }
 
 #[tokio::test]
+async fn json_output_reaches_the_wire_and_the_hash_changes() {
+    let (endpoint, bodies) = spawn_recorder(1).await;
+    let spec = ProviderSpec::custom("jsonup", &endpoint, None, "test-model");
+    let config = BenchConfig {
+        prompt: "hi".into(),
+        runs: 1,
+        warmup: 0,
+        sampling: llmrace::provider::Sampling {
+            json_output: Some(llmrace::provider::JsonOutput::Object),
+            ..llmrace::provider::Sampling::default()
+        },
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(
+        reqwest::Client::new(),
+        spec,
+        "test-model".into(),
+        config.clone(),
+    );
+    drop(progress);
+    let summary = handle.await.expect("lane task");
+    assert!(summary.successful(), "error: {:?}", summary.error);
+    let bodies = bodies.lock().expect("record lock");
+    let body: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(body["response_format"]["type"], "json_object");
+
+    let plain = llmrace::report::request_sha256(
+        "hi",
+        &[],
+        &llmrace::provider::Sampling::default(),
+        32,
+        None,
+    );
+    let forced = llmrace::report::request_sha256("hi", &[], &config.sampling, 32, None);
+    assert_ne!(plain, forced, "forcing JSON output is a different request");
+}
+
+#[tokio::test]
 async fn full_http_path_streams_and_counts_tokens() {
     let events = openai_events();
     let (endpoint, server) = spawn_server(Script::Sse {
