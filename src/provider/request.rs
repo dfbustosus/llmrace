@@ -82,6 +82,10 @@ pub struct CompletionRequest<'a> {
     pub tool_task: Option<&'a str>,
     /// Sampling controls. Use [`Sampling::default`] to omit all of them.
     pub sampling: Sampling,
+    /// Conversation turns. Empty sends [`Self::prompt`] as one user turn.
+    pub messages: &'a [crate::workload::WorkloadMessage],
+    /// A workload-defined tool. Wins over [`Self::tool_task`] when set.
+    pub tool: Option<&'a crate::tools::ToolDefinition>,
 }
 
 /// How a built wire request authenticates.
@@ -167,34 +171,58 @@ fn build_body(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> serde_json::V
             "inferenceConfig": {"maxTokens": req.max_tokens},
         }),
     };
+    apply_messages(&mut body, spec.wire, req);
     apply_sampling(&mut body, spec.wire, req.model, &req.sampling);
-    if req.tools {
+    if let Some(tool) = req.tool {
+        attach_tool(&mut body, spec.wire, tool);
+    } else if req.tools {
         let task = req
             .tool_task
             .and_then(crate::tools::find)
             .unwrap_or_else(default_tool_task);
-        match spec.wire {
-            Wire::Mock => {}
-            Wire::Bedrock => {
-                body["toolConfig"] = json!({
-                    "tools": [{
-                        "toolSpec": {
-                            "name": task.function,
-                            "description": task.description,
-                            "inputSchema": { "json": (task.parameters)() },
-                        }
-                    }]
-                });
-            }
-            Wire::Vertex => {
-                body["tools"] = crate::tools::tool_schema(&task, Wire::Gemini);
-            }
-            other => {
-                body["tools"] = crate::tools::tool_schema(&task, other);
-            }
-        }
+        attach_tool(
+            &mut body,
+            spec.wire,
+            &crate::tools::ToolDefinition {
+                name: task.function.to_string(),
+                description: task.description.to_string(),
+                parameters: (task.parameters)(),
+            },
+        );
     }
     body
+}
+
+fn apply_messages(body: &mut serde_json::Value, wire: Wire, req: &CompletionRequest<'_>) {
+    if req.messages.is_empty() {
+        return;
+    }
+    let turns = req.messages.iter().map(|message| {
+        let role = message.role.as_str();
+        match wire {
+            Wire::Gemini | Wire::Vertex => {
+                let role = if role == "assistant" { "model" } else { role };
+                json!({"role": role, "parts": [{"text": message.content}]})
+            }
+            Wire::Bedrock => {
+                json!({"role": role, "content": [{"text": message.content}]})
+            }
+            _ => json!({"role": role, "content": message.content}),
+        }
+    });
+    match wire {
+        Wire::Mock => {}
+        Wire::Gemini | Wire::Vertex => body["contents"] = serde_json::Value::Array(turns.collect()),
+        _ => body["messages"] = serde_json::Value::Array(turns.collect()),
+    }
+}
+
+fn attach_tool(body: &mut serde_json::Value, wire: Wire, tool: &crate::tools::ToolDefinition) {
+    match wire {
+        Wire::Mock => {}
+        Wire::Bedrock => body["toolConfig"] = crate::tools::tool_body(wire, tool),
+        _ => body["tools"] = crate::tools::tool_body(wire, tool),
+    }
 }
 
 /// Writes sampling controls in each wire's native shape.
@@ -352,7 +380,7 @@ async fn send_wire_request(
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// let client = reqwest::Client::new();
 /// let spec = ProviderSpec::mock();
-/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8, tools: false, tool_task: None, sampling: llmrace::provider::Sampling::default() };
+/// let req = CompletionRequest { model: "mock-1", prompt: "hi", max_tokens: 8, tools: false, tool_task: None, sampling: llmrace::provider::Sampling::default(), messages: &[], tool: None };
 /// let mut stream = stream_completion(&client, &spec, &req).await.unwrap();
 /// use futures_util::StreamExt;
 /// let mut tokens = 0;
@@ -745,6 +773,8 @@ mod tests {
             tools: false,
             tool_task: None,
             sampling,
+            messages: &[],
+            tool: None,
         }
     }
 
@@ -842,6 +872,50 @@ mod tests {
         assert!(url.contains("/converse-stream"), "{url}");
         assert!(url.contains("%3A"), "{url}");
         assert!(!url.contains("invoke-with-response-stream"), "{url}");
+    }
+
+    #[test]
+    fn messages_and_a_custom_tool_are_encoded_on_each_wire() {
+        use crate::tools::ToolDefinition;
+        use crate::workload::{MessageRole, WorkloadMessage};
+        let messages = [
+            WorkloadMessage {
+                role: MessageRole::User,
+                content: "What is the capital?".into(),
+            },
+            WorkloadMessage {
+                role: MessageRole::Assistant,
+                content: "Of which country?".into(),
+            },
+            WorkloadMessage {
+                role: MessageRole::User,
+                content: "France.".into(),
+            },
+        ];
+        let tool = ToolDefinition {
+            name: "get_weather".into(),
+            description: "lookup".into(),
+            parameters: json!({"type": "object", "required": ["city"]}),
+        };
+        let mut request = req("m", Sampling::default());
+        request.messages = &messages;
+        request.tool = Some(&tool);
+        request.tools = true;
+
+        let openai = build_body(&ProviderSpec::openai(), &request);
+        assert_eq!(openai["messages"].as_array().map(Vec::len), Some(3));
+        assert_eq!(openai["messages"][2]["content"], "France.");
+        assert_eq!(openai["tools"][0]["function"]["name"], "get_weather");
+
+        let gemini = build_body(&ProviderSpec::gemini(), &request);
+        assert_eq!(gemini["contents"][1]["role"], "model");
+
+        let bedrock = build_body(&ProviderSpec::bedrock(), &request);
+        assert_eq!(bedrock["messages"][1]["role"], "assistant");
+        assert_eq!(
+            bedrock["toolConfig"]["tools"][0]["toolSpec"]["name"],
+            "get_weather"
+        );
     }
 
     #[test]
