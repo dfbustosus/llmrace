@@ -773,6 +773,11 @@ fn baseline_gate_end_to_end_passes_on_stable_provider() {
         "gate must print the pass verdict: {stdout}"
     );
     assert!(stdout.contains("p="), "p-values rendered: {stdout}");
+    let md = std::fs::read_to_string(&md_path).unwrap();
+    assert!(
+        md.contains("## Regression"),
+        "the markdown report carries the gate verdict: {md}"
+    );
 }
 
 #[cfg(unix)]
