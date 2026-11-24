@@ -42,7 +42,12 @@ pub struct MetricComparison {
 
 impl MetricComparison {
     /// Whether this metric fails the process, under the significance rule.
-    fn fails_the_gate(&self, require_significance: bool) -> bool {
+    ///
+    /// With `require_significance`, a latency or throughput breach needs a
+    /// Welch p < 0.05; failure rate, goodput, cost and task success are
+    /// ratios of the whole sample, so a threshold breach on those counts.
+    #[must_use]
+    pub fn fails_the_gate(&self, require_significance: bool) -> bool {
         if !self.regressed {
             return false;
         }
