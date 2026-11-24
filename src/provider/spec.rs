@@ -9,6 +9,8 @@ use std::sync::Arc;
 pub enum Wire {
     /// OpenAI `/v1/chat/completions` streaming (also Groq, OpenRouter, Ollama, vLLM…).
     OpenAiCompat,
+    /// OpenAI `/v1/responses` streaming (`response.output_text.delta`).
+    OpenAiResponses,
     /// Anthropic `/v1/messages` streaming.
     Anthropic,
     /// Google Gemini `streamGenerateContent` streaming.
@@ -69,6 +71,22 @@ impl ProviderSpec {
             "gpt-4o-mini",
             Wire::OpenAiCompat,
         )
+    }
+
+    /// OpenAI Responses API (`/v1/responses`).
+    ///
+    /// Opt-in: it shares `OPENAI_API_KEY` with `openai`, so it only races
+    /// when named explicitly — a bare `llmrace` must not race OpenAI twice.
+    pub fn openai_responses() -> Self {
+        let mut p = spec(
+            "openai-responses",
+            "https://api.openai.com/v1/responses",
+            Some("OPENAI_API_KEY"),
+            "gpt-4o-mini",
+            Wire::OpenAiResponses,
+        );
+        p.opt_in = true;
+        p
     }
 
     /// Anthropic official API.
@@ -346,6 +364,7 @@ impl ProviderSpec {
     pub fn registry() -> Vec<ProviderSpec> {
         vec![
             ProviderSpec::openai(),
+            ProviderSpec::openai_responses(),
             ProviderSpec::anthropic(),
             ProviderSpec::gemini(),
             ProviderSpec::groq(),
