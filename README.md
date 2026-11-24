@@ -265,6 +265,7 @@ llmrace openai groq --out race.md --json --csv --html
 - `race.json` — full per-run data, confidence intervals and outliers for CI pipelines. It names `pricing_as_of`, the workload ids in measured-round order (empty for one prompt), `prompt_sha256` of the prompt texts those rounds sent, and `request_sha256` of the whole request (prompt or workload, `expect`, `max_tokens`, sampling, system prompt, tool task). When `--baseline` is set it also writes `regression`: `ok`, `request_mismatch`, and each failure's provider, metric, and prompt id. A baseline that recorded a different `request_sha256` fails the gate without comparing metrics. A baseline that omitted the field still compares. `--trend` only averages rows that share the latest request
 - `race.csv` — per-run rows for spreadsheets and dashboards
 - `race.html` — self-contained dark-theme page with podium, ranked table and per-run latency bars (TTFB vs generation split), shareable as a single file
+- `race.xml` (`--junit`) — JUnit report: one `<testcase>` per checked prompt, so GitHub, GitLab or Buildkite test reporters show a failing prompt as a failing test
 
 ### From Rust
 
@@ -382,8 +383,10 @@ llmrace openai groq -n 10 --warmup 2 \
   --workload examples/workloads/short-answer.jsonl \
   --baseline baseline/llmrace-report.json \
   --max-regression 15 --require-significance \
-  --json --out llmrace-report.md
+  --json --junit --out llmrace-report.md
 ```
+
+Upload `llmrace-report.xml` with any JUnit test reporter (e.g. `dorny/test-reporter`) and the failing prompt appears as a failing test on the pull request.
 
 `llmrace-report.json` then has `regression.ok`, `regression.request_mismatch`, and `regression.failures[]` with `provider`, `metric`, and `prompt_id`. The markdown report has the same verdict under `## Regression`, including a prompt whose latency or time to first token rose. Read the JSON in a pipeline. The terminal table is for a person.
 
