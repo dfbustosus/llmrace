@@ -83,6 +83,7 @@ pub fn spawn_lane_stoppable(
             concurrency: config.concurrency,
             variant: config.variant.as_ref().map(|v| v.to_string()),
             tool_task: Some(config.tool_task.clone()),
+            price_book: config.price_book.clone(),
         };
         let total_rounds = config.warmup + config.runs;
         let deadline = config
