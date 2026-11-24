@@ -615,6 +615,7 @@ fn build_run_config(
         duration_secs: cli.duration,
         retries: cli.retries,
         sampling,
+        price_book: None,
     };
     let weights = match &cli.weights {
         Some(spec) => llmrace::score::Weights::parse(spec)
