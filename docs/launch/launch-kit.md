@@ -98,8 +98,10 @@ JUnit/SARIF/JSON renderers are public functions.
 - [ ] Pin a GitHub discussion for feedback
 - [ ] Verify demo GIF renders on each platform (HN strips images —
       link it: raw GitHub URL of docs/demo.gif)
-- [ ] Have one real fresh race ready to paste (run with --json, upload
-      the .md as a gist) — nothing sells it like live numbers
+- [x] Have one real fresh race ready to paste: the 2026-11-24
+      four-model table in the README (OpenAI direct + three via
+      OpenRouter, workload Pass counts, p = 0.08 verdict). Upload
+      /tmp/cloud-race.md as a gist before posting
 - [ ] Have the CI workflow ready to paste too:
       docs/example-latency-gate.yml (baseline → gate → JUnit + SARIF)
 - [ ] Star-gazing is fine; watch for issue #126/#127 (Bedrock/Vertex
