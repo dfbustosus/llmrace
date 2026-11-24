@@ -321,6 +321,7 @@ pub(crate) async fn run_suite(
             json: cli.json,
             csv: cli.csv,
             html: cli.html,
+            junit: cli.junit,
             out: suite_out,
             region: cli.region.clone(),
             push_gateway: cli.push_gateway.clone(),
