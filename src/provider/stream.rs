@@ -460,6 +460,49 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
             }
             Some(input.into_event(token, None, usage))
         }
+        Wire::OpenAiResponses => {
+            let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match kind {
+                "response.output_text.delta" => {
+                    let token = v
+                        .get("delta")
+                        .and_then(|c| c.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    token.map(|token| InputUsage::empty().into_event(Some(token), None, None))
+                }
+                "response.function_call_arguments.delta" => {
+                    let args = v
+                        .get("delta")
+                        .and_then(|c| c.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    args.map(|args| InputUsage::empty().into_event(None, Some(args), None))
+                }
+                "response.completed" | "response.incomplete" => {
+                    let usage = &v["response"]["usage"];
+                    let input = InputUsage {
+                        prompt_tokens: json_u64(usage.get("input_tokens")),
+                        cache_read_tokens: json_u64(
+                            usage.pointer("/input_tokens_details/cached_tokens"),
+                        ),
+                        cache_write_tokens: None,
+                        cache_write_1h_tokens: None,
+                    };
+                    let completion = json_u64(usage.get("output_tokens"));
+                    if input.prompt_tokens.is_none() && completion.is_none() {
+                        return None;
+                    }
+                    // Already inside output_tokens, so it is recorded and
+                    // not added to the bill a second time.
+                    let mut event = input.into_event(None, None, completion);
+                    event.reasoning_tokens =
+                        json_u64(usage.pointer("/output_tokens_details/reasoning_tokens"));
+                    Some(event)
+                }
+                _ => None,
+            }
+        }
         Wire::Bedrock | Wire::Vertex | Wire::Mock => None,
     }
 }
