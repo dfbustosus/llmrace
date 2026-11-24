@@ -40,7 +40,7 @@ Every provider says it is fast. `llmrace` sends one streaming request to all of 
 
 ![llmrace demo](docs/demo.gif)
 
-*A real four-model race: OpenAI direct plus three frontier models through OpenRouter, on a workload with per-prompt checks (Pass 3/3). Haiku streams fastest, DeepSeek answers first, and the verdict still says the gap could be noise. Recorded from [`docs/demo.tape`](docs/demo.tape) with [vhs](https://github.com/charmbracelet/vhs). No key? The same command works with `ollama` or `mock`.*
+*Four real models stream the same paragraph live — OpenAI direct plus three frontier models through OpenRouter — then the verdict and the podium. Recorded from [`docs/demo.tape`](docs/demo.tape) with [vhs](https://github.com/charmbracelet/vhs). No key? The same race works with `ollama` or `mock`.*
 
 ## Install
 
