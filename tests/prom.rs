@@ -122,6 +122,7 @@ fn sweep_variants_get_their_own_series() {
         concurrency: 1,
         variant: Some("short".into()),
         tool_task: None,
+        price_book: None,
     };
     let metrics = render_metrics(std::slice::from_ref(&lane));
     assert!(
