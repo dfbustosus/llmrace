@@ -403,14 +403,14 @@ A ready-to-copy workflow lives in [`docs/example-latency-gate.yml`](docs/example
 
 Measured 2026-11-24 from South America — OpenAI direct plus three frontier models through OpenRouter, racing the [`demo-local`](examples/workloads/demo-local.jsonl) workload (3 short-answer prompts, `contains`/`exact`/`contains` checks), 3 rounds each, warmup excluded, provider-default sampling:
 
-| Provider | Model | TTFT | p95 | Tokens/s | Pass | Podium |
-|---|---|---:|---:|---:|---|---|
-| openrouter | `anthropic/claude-haiku-4.5` | 993 ms | 1352 ms | **394.5** | 3/3 | 🥈 52.3 |
-| openrouter | `meta-llama/llama-3.3-70b-instruct` | **327 ms** | **420 ms** | 104.9 | 3/3 | 🥇 55.9 |
-| openrouter | `deepseek/deepseek-chat-v3.1` | 494 ms | 679 ms | 88.8 | 3/3 | 🥉 45.0 |
-| openai | `gpt-4o-mini` | 677 ms | 849 ms | 18.3 | 3/3 | 13.7 |
+| Provider | Model | TTFT | p95 | Tokens/s | Pass | Cost/run | Podium |
+|---|---|---:|---:|---:|---|---:|---|
+| openrouter | `anthropic/claude-haiku-4.5` | 719 ms | 784 ms | **1103.0** | 3/3 | $0.000067 | 🥇 72.9 |
+| openrouter | `meta-llama/llama-3.3-70b-instruct` | **351 ms** | **465 ms** | 85.4 | 3/3 | $0.000021 | 🥈 22.7 |
+| openrouter | `deepseek/deepseek-chat-v3.1` | 443 ms | 628 ms | 82.6 | 3/3 | $0.000010 | 🥉 21.4 |
+| openai | `gpt-4o-mini` | 577 ms | 796 ms | 19.7 | 3/3 | $0.000006 | 5.9 |
 
-The finding: claude-haiku-4.5 *streams* almost 4× faster than llama-3.3-70b-instruct (394.5 vs 104.9 tok/s) but starts answering three times later (993 vs 327 ms TTFT) — and the verdict is **`⚖ Δ +630 ms, NOT significant (p = 0.08)`**. At 3 rounds the gap could be noise; the podium still goes to the lane that finishes first *and* passes every prompt. Reproduce:
+The finding: every lane passes every prompt, cost per run spans 11×, and Haiku streams over a thousand tokens per second on short answers — and the verdict is **`⚖ Δ +302 ms, statistically significant (p = 0.003)`**. The same four models measured earlier that morning read `NOT significant (p = 0.68)`: the gap is real *this* time, and the tool says which is which instead of guessing. Reproduce:
 
 ```bash
 llmrace openai=gpt-4o-mini \
