@@ -202,6 +202,8 @@ async fn irregular_chunk_boundaries_survive_the_full_stack() {
             tools: false,
             tool_task: None,
             sampling: llmrace::provider::Sampling::default(),
+            messages: &[],
+            tool: None,
         },
     )
     .await
@@ -384,6 +386,8 @@ async fn azure_style_auth_sends_api_key_header_not_bearer() {
             tools: false,
             tool_task: None,
             sampling: llmrace::provider::Sampling::default(),
+            messages: &[],
+            tool: None,
         },
     )
     .await
@@ -499,6 +503,8 @@ async fn gpt5_models_send_max_completion_tokens() {
                 tools: false,
                 tool_task: None,
                 sampling: llmrace::provider::Sampling::default(),
+                messages: &[],
+                tool: None,
             },
         )
         .await
