@@ -13,6 +13,7 @@
 //! - [`config`]: named profiles from `llmrace.toml`
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
+//! - [`race`]: a high-level multi-provider race for library callers
 //! - [`schema`]: JSON Schema for `race.json` reports
 //! - [`regression`]: baseline comparison for CI quality gates
 //! - [`gates`]: TTFB quality gates over race results
@@ -71,6 +72,7 @@ pub mod merge;
 pub mod notify;
 pub mod prom;
 pub mod provider;
+pub mod race;
 pub mod recommend;
 pub mod regression;
 pub mod report;
