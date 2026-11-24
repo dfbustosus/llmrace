@@ -14,6 +14,7 @@
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
 //! - [`race`]: a high-level multi-provider race for library callers
+//! - [`sarif`]: SARIF 2.1.0 output for code-scanning integrations
 //! - [`schema`]: JSON Schema for `race.json` reports
 //! - [`regression`]: baseline comparison for CI quality gates
 //! - [`gates`]: TTFB quality gates over race results
@@ -76,6 +77,7 @@ pub mod race;
 pub mod recommend;
 pub mod regression;
 pub mod report;
+pub mod sarif;
 pub mod schema;
 pub mod score;
 #[cfg(feature = "sqlite")]
