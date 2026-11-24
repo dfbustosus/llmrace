@@ -152,6 +152,111 @@ fn openai_events() -> Vec<String> {
     ]
 }
 
+/// Serves one SSE response per request and records every request body.
+async fn spawn_recorder(steps: usize) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let bodies = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&bodies);
+    tokio::spawn(async move {
+        for _ in 0..steps {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 2048];
+            let body_start = loop {
+                let n = socket.read(&mut tmp).await.expect("read request");
+                if n == 0 {
+                    break buf.len();
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(header_end) = find_header_end(&buf) {
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                    if let Some(cl) = content_length(&headers) {
+                        if buf.len() >= header_end + 4 + cl {
+                            break header_end + 4;
+                        }
+                    } else {
+                        break header_end + 4;
+                    }
+                }
+            };
+            recorded
+                .lock()
+                .expect("record lock")
+                .push(String::from_utf8_lossy(&buf[body_start..]).to_string());
+            respond(
+                &mut socket,
+                Script::Sse {
+                    events: openai_events(),
+                    chunk_size: 1024,
+                },
+            )
+            .await;
+            socket.shutdown().await.ok();
+        }
+    });
+    (format!("http://{addr}/v1/chat/completions"), bodies)
+}
+
+#[tokio::test]
+async fn warmup_probe_sends_ping_without_priming_the_workload() {
+    let (endpoint, bodies) = spawn_recorder(3).await;
+    let spec = ProviderSpec::custom("probeup", &endpoint, None, "test-model");
+    let config = BenchConfig {
+        prompt: "unused".into(),
+        runs: 2,
+        warmup: 1,
+        warmup_mode: llmrace::bench::WarmupMode::ConnectionProbe,
+        sampling: llmrace::provider::Sampling {
+            system: Some("Be brief.".into()),
+            ..llmrace::provider::Sampling::default()
+        },
+        workload: vec![llmrace::workload::WorkloadPrompt::text("a", "one")],
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(reqwest::Client::new(), spec, "test-model".into(), config);
+    drop(progress);
+    let summary = handle.await.expect("lane task");
+    assert!(summary.successful(), "error: {:?}", summary.error);
+    assert_eq!(summary.runs.len(), 2);
+    let bodies = bodies.lock().expect("record lock");
+    assert_eq!(bodies.len(), 3);
+    let warmup: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(warmup["messages"][0]["content"], "ping");
+    assert_eq!(warmup["max_tokens"], 1);
+    assert!(
+        !bodies[0].contains("Be brief"),
+        "the probe carries no system prompt: {}",
+        bodies[0]
+    );
+    let measured: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
+    assert_eq!(measured["messages"][0]["content"], "Be brief.");
+    assert_eq!(measured["messages"][1]["content"], "one");
+}
+
+#[tokio::test]
+async fn warmup_same_prompt_primes_the_first_workload_item() {
+    let (endpoint, bodies) = spawn_recorder(2).await;
+    let spec = ProviderSpec::custom("warmup", &endpoint, None, "test-model");
+    let config = BenchConfig {
+        prompt: "unused".into(),
+        runs: 1,
+        warmup: 1,
+        workload: vec![llmrace::workload::WorkloadPrompt::text("a", "one")],
+        ..BenchConfig::default()
+    };
+    let (handle, progress) = spawn_lane(reqwest::Client::new(), spec, "test-model".into(), config);
+    drop(progress);
+    let summary = handle.await.expect("lane task");
+    assert!(summary.successful(), "error: {:?}", summary.error);
+    let bodies = bodies.lock().expect("record lock");
+    let warmup: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(
+        warmup["messages"][0]["content"], "one",
+        "the default warmup sends the first workload item"
+    );
+}
+
 #[tokio::test]
 async fn full_http_path_streams_and_counts_tokens() {
     let events = openai_events();
