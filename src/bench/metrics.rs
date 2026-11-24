@@ -101,6 +101,20 @@ impl RunMetrics {
     }
 }
 
+/// What a warmup round sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WarmupMode {
+    /// The same prompt the measured rounds send (the default): warms TLS
+    /// and HTTP/2, and may also prime the provider's prefix cache for the
+    /// first workload item.
+    #[default]
+    SamePrompt,
+    /// A minimal probe (`"ping"`, `max_tokens: 1`, no system prompt):
+    /// warms the connection without priming the prefix cache for any
+    /// workload prompt.
+    ConnectionProbe,
+}
+
 /// Tuning parameters of one benchmark lane.
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
@@ -143,6 +157,8 @@ pub struct BenchConfig {
     /// themselves from this book and the built-in table, not from the
     /// process-global override map.
     pub price_book: Option<crate::cost::PriceBook>,
+    /// What a warmup round sends.
+    pub warmup_mode: WarmupMode,
 }
 
 impl Default for BenchConfig {
@@ -162,6 +178,7 @@ impl Default for BenchConfig {
             sampling: crate::provider::Sampling::default(),
             workload: Vec::new(),
             price_book: None,
+            warmup_mode: WarmupMode::SamePrompt,
         }
     }
 }
