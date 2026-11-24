@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.32.1] - 2026-11-24
+
+### Fixed
+
+- The markdown per-prompt table names the model (`openrouter/anthropic/claude-haiku-4.5`) when several lanes share a provider, instead of repeating the bare provider name — the same rule the significance line already used
+
 ## [1.32.0] - 2026-11-24
 
 The terminal table shows what the workload proved, and the demo is a real model giving a real wrong answer.
@@ -735,7 +741,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.32.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.32.1...HEAD
+[1.32.1]: https://github.com/dfbustosus/llmrace/compare/v1.32.0...v1.32.1
 [1.32.0]: https://github.com/dfbustosus/llmrace/compare/v1.31.0...v1.32.0
 [1.31.0]: https://github.com/dfbustosus/llmrace/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/dfbustosus/llmrace/compare/v1.29.0...v1.30.0
