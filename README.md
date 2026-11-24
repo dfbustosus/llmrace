@@ -40,7 +40,7 @@ Every provider says it is fast. `llmrace` sends one streaming request to all of 
 
 ![llmrace demo](docs/demo.gif)
 
-*No API key. Two mock lanes, the significance line, and the podium. Recorded from [`docs/demo.tape`](docs/demo.tape) with [vhs](https://github.com/charmbracelet/vhs).*
+*A real race, no API key: a local Ollama model answers three prompts from a workload — and gets one genuinely wrong (Pass 2/3). The significance line says the rest could be noise. Recorded from [`docs/demo.tape`](docs/demo.tape) with [vhs](https://github.com/charmbracelet/vhs).*
 
 ## Install
 
