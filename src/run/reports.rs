@@ -27,6 +27,13 @@ pub(super) fn write_reports(
             md.push_str(&note);
         }
     }
+    if let Some(note) = report::cache_note(summaries) {
+        if let Some(pos) = md.find("- **Generated**:") {
+            md.insert_str(pos, &note);
+        } else {
+            md.push_str(&note);
+        }
+    }
     if cfg.winner {
         let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
         let scored = llmrace::score::score_lanes(summaries, &weights);
