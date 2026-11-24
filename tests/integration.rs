@@ -640,6 +640,85 @@ fn regression_names_the_prompt_that_fell() {
 }
 
 #[test]
+fn regression_names_the_prompt_that_slowed() {
+    let baseline = BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":110.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,
+        "prompts":[{"id":"capital","mean_total_ms":100.0,"mean_ttfb_ms":20.0},{"id":"sum","mean_total_ms":100.0,"mean_ttfb_ms":20.0}],
+        "runs":[
+          {"total_ms":98.0,"ttfb_ms":19.0,"tokens_per_sec":80.0,"prompt_id":"sum"},
+          {"total_ms":102.0,"ttfb_ms":21.0,"tokens_per_sec":80.0,"prompt_id":"sum"}
+        ]}]}"#,
+    )
+    .unwrap();
+    let mut lane = regression_summary("mock", 100.0, 110.0, 20.0, 80.0);
+    lane.runs.clear();
+    for total in [99.0, 101.0, 100.0, 102.0, 98.0, 100.0, 101.0, 99.0] {
+        lane.runs.push(RunMetrics {
+            prompt_id: "capital".into(),
+            total_ms: total,
+            ttfb_ms: 20.0,
+            tokens: 8,
+            ..RunMetrics::default()
+        });
+    }
+    for total in [198.0, 206.0] {
+        lane.runs.push(RunMetrics {
+            prompt_id: "sum".into(),
+            total_ms: total,
+            ttfb_ms: 20.0,
+            tokens: 16,
+            ..RunMetrics::default()
+        });
+    }
+    let report = evaluate(std::slice::from_ref(&lane), &baseline, 30.0);
+    let lane_latency = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.label == "mean latency" && m.prompt_id.is_none())
+        .unwrap();
+    assert!(
+        !lane_latency.regressed,
+        "lane mean stays inside 30%: {}",
+        lane_latency.delta_pct
+    );
+    let slowed = report.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.prompt_id.as_deref() == Some("sum") && m.label == "mean latency")
+        .unwrap();
+    assert!(slowed.regressed, "{}", slowed.delta_pct);
+    assert!(
+        slowed.p_value.is_some_and(|p| p < 0.05),
+        "{:?}",
+        slowed.p_value
+    );
+    let verdict = report.verdict_json(30.0, true);
+    assert_eq!(verdict["ok"], false);
+    let failed: Vec<&str> = verdict["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|failure| failure["metric"].as_str().unwrap())
+        .collect();
+    assert_eq!(failed, ["mean latency"]);
+    assert_eq!(verdict["failures"][0]["prompt_id"], "sum");
+    let md = report.markdown_section(30.0, true);
+    assert!(md.contains("## Regression"), "{md}");
+    assert!(md.contains("| sum |"), "{md}");
+    assert!(md.contains("`regression.ok` is false"), "{md}");
+
+    let old = BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":110.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,"prompts":[{"id":"sum","task_pass_rate":1.0}]}]}"#,
+    )
+    .unwrap();
+    let skipped = evaluate(std::slice::from_ref(&lane), &old, 15.0);
+    assert!(skipped.comparisons[0]
+        .metrics
+        .iter()
+        .all(|m| { m.prompt_id.is_none() || m.label == "task success" }));
+}
+
+#[test]
 fn regression_refuses_a_different_request_and_still_reads_an_old_baseline() {
     let lane = regression_summary("mock", 100.0, 120.0, 20.0, 80.0);
     let changed = BaselineReport::from_json_str(
