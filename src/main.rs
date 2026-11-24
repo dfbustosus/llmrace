@@ -170,6 +170,11 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Output", long)]
     html: bool,
 
+    /// Also write a JUnit XML report — one test case per checked prompt,
+    /// so CI test reporters show a failing prompt as a failing test.
+    #[arg(help_heading = "Output", long)]
+    junit: bool,
+
     /// Compare results against a baseline JSON report (CI quality gate).
     #[arg(help_heading = "CI gates", long)]
     baseline: Option<String>,
@@ -655,6 +660,7 @@ fn build_run_config(
         json: cli.json,
         csv: cli.csv,
         html: cli.html,
+        junit: cli.junit,
         out: cli.out,
         region: cli.region,
         push_gateway: cli.push_gateway,
