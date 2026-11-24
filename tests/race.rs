@@ -138,6 +138,47 @@ async fn parallel_races_with_different_books_price_independently() {
     );
 }
 
+#[tokio::test]
+async fn spawn_streams_live_progress_before_finish() {
+    let mut handle = Race::new([ProviderSpec::mock(), ProviderSpec::mock()])
+        .runs(2)
+        .warmup(0)
+        .spawn()
+        .unwrap();
+    let progress = handle.progress().unwrap();
+    let seen = std::thread::spawn(move || {
+        let mut updates = 0;
+        let mut finished = 0;
+        while let Ok(update) = progress.recv() {
+            updates += 1;
+            finished += usize::from(update.finished);
+        }
+        (updates, finished)
+    });
+    let outcome = handle.finish().await.unwrap();
+    let (updates, finished) = seen.join().unwrap();
+    assert!(updates > 0, "live updates flow before finish");
+    assert_eq!(finished, 2, "both lanes report a final update");
+    assert!(outcome.summaries.iter().all(|s| s.successful()));
+}
+
+#[tokio::test]
+async fn stop_ends_the_race_after_the_in_flight_round() {
+    let mut handle = Race::new([ProviderSpec::mock()])
+        .runs(100)
+        .warmup(0)
+        .spawn()
+        .unwrap();
+    drop(handle.progress());
+    handle.stop();
+    let outcome = handle.finish().await.unwrap();
+    assert!(
+        outcome.summaries[0].runs.len() < 100,
+        "the stop handle ends the race early: {} rounds",
+        outcome.summaries[0].runs.len()
+    );
+}
+
 #[test]
 fn resolve_model_matches_the_cli_rule() {
     let overrides = vec!["ollama=llama3.2".to_string(), "gpt-4o-mini".to_string()];
