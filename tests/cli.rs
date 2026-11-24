@@ -905,6 +905,8 @@ fn cli_contract_every_documented_flag_exists() {
         "--seed",
         "--reproducible",
         "--system",
+        "--json-output",
+        "--response-schema",
         "--timeout",
         "--retries",
         "--ramp",
@@ -1172,6 +1174,61 @@ fn reproducible_fills_only_the_sampling_controls_still_unset() {
     );
     assert!(profile_body.contains("\"top_p\": 1.0"), "{profile_body}");
     assert!(profile_body.contains("\"seed\": 0"), "{profile_body}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn response_schema_is_loaded_checked_and_stamped() {
+    let dir = std::env::temp_dir().join(format!("llmrace-schema-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let schema_path = dir.join("answer.schema.json");
+    std::fs::write(
+        &schema_path,
+        r#"{"type":"object","required":["city"],"properties":{"city":{"type":"string"}}}"#,
+    )
+    .unwrap();
+    let md_path = dir.join("race.md");
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "--quiet",
+            "--json",
+            "--response-schema",
+        ])
+        .arg(&schema_path)
+        .arg("--out")
+        .arg(&md_path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = std::fs::read_to_string(dir.join("race.json")).unwrap();
+    assert!(json.contains("\"json_output\": \"schema\""), "{json}");
+
+    std::fs::write(&schema_path, r#"["not","an","object"]"#).unwrap();
+    let bad = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "--response-schema",
+        ])
+        .arg(&schema_path)
+        .output()
+        .unwrap();
+    assert!(!bad.status.success(), "a non-object schema must fail");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
