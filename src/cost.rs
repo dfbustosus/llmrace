@@ -328,6 +328,12 @@ fn builtin_rates(key: &str) -> Option<TokenRates> {
     let table: &[(&str, f64, f64, CacheSchedule)] = &[
         ("openai/gpt-4o", 2.50, 10.00, CacheSchedule::Read(1.25)),
         ("openai/gpt-4o-mini", 0.15, 0.60, CacheSchedule::Read(0.075)),
+        (
+            "openai-responses/gpt-4o-mini",
+            0.15,
+            0.60,
+            CacheSchedule::Read(0.075),
+        ),
         ("openai/gpt-4.1", 2.00, 8.00, CacheSchedule::Read(0.50)),
         ("openai/gpt-4.1-mini", 0.40, 1.60, CacheSchedule::Read(0.10)),
         ("openai/gpt-5-mini", 0.25, 2.00, CacheSchedule::Read(0.025)),
