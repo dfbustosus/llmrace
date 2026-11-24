@@ -106,6 +106,20 @@ pub(crate) struct Cli {
     #[arg(help_heading = "Prompt shaping", long)]
     system: Option<String>,
 
+    /// Require every lane to answer with a JSON object
+    /// (`response_format: json_object` / `responseMimeType`).
+    #[arg(
+        help_heading = "Prompt shaping",
+        long,
+        conflicts_with = "response_schema"
+    )]
+    json_output: bool,
+
+    /// Require every lane to answer with JSON matching this JSON Schema
+    /// file (`response_format: json_schema` / `responseSchema`).
+    #[arg(help_heading = "Prompt shaping", long, value_name = "FILE")]
+    response_schema: Option<String>,
+
     /// Per-request timeout in seconds.
     #[arg(help_heading = "Race", long, default_value_t = 120)]
     timeout: u64,
@@ -366,11 +380,23 @@ async fn main() -> Result<()> {
 
 /// Routes to a standalone mode or the race; returns the process exit code.
 pub(crate) fn sampling_from_cli(cli: &Cli) -> Result<llmrace::provider::Sampling> {
+    let json_output = if cli.json_output {
+        Some(llmrace::provider::JsonOutput::Object)
+    } else if let Some(path) = &cli.response_schema {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("reading response schema {path}"))?;
+        let schema: serde_json::Value = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing response schema {path}"))?;
+        Some(llmrace::provider::JsonOutput::Schema(schema))
+    } else {
+        None
+    };
     llmrace::provider::Sampling {
         temperature: cli.temperature,
         top_p: cli.top_p,
         seed: cli.seed,
         system: cli.system.clone(),
+        json_output,
     }
     .checked()
     .map_err(|e| anyhow::anyhow!("{e}"))
