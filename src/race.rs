@@ -309,6 +309,12 @@ impl RaceOutcome {
         md
     }
 
+    /// The JUnit XML report the CLI writes with `--junit`.
+    #[must_use]
+    pub fn junit(&self) -> String {
+        crate::report::junit_xml(&self.summaries)
+    }
+
     /// The JSON report the CLI writes with `--json`.
     #[must_use]
     pub fn json(&self) -> String {
