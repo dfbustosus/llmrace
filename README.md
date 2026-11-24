@@ -266,6 +266,7 @@ llmrace openai groq --out race.md --json --csv --html
 - `race.csv` — per-run rows for spreadsheets and dashboards
 - `race.html` — self-contained dark-theme page with podium, ranked table and per-run latency bars (TTFB vs generation split), shareable as a single file
 - `race.xml` (`--junit`) — JUnit report: one `<testcase>` per checked prompt, so GitHub, GitLab or Buildkite test reporters show a failing prompt as a failing test
+- `race.sarif` (`--sarif`) — SARIF 2.1.0 report: every gate failure (regression, changed request, TTFB breach, dead lane) is a code-scanning alert. Upload with `github/codeql-action/upload-sarif` and the failure lands in the Security tab and on the PR checks pane
 
 ### From Rust
 
