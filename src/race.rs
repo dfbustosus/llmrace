@@ -294,6 +294,13 @@ impl RaceOutcome {
                 md.push_str(&note);
             }
         }
+        if let Some(note) = crate::report::cache_note(&self.summaries) {
+            if let Some(pos) = md.find("- **Generated**:") {
+                md.insert_str(pos, &note);
+            } else {
+                md.push_str(&note);
+            }
+        }
         let podium = self.podium();
         if !podium.is_empty() {
             md.push_str("\n## Podium\n");
