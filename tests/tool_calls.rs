@@ -265,6 +265,7 @@ fn lane_validity_uses_its_own_task_validator() {
         concurrency: 1,
         variant: None,
         tool_task: Some("math".into()),
+        price_book: None,
     };
     assert_eq!(lane.tool_validity(), Some((1, 1)));
 
