@@ -23,6 +23,7 @@ fn lane_with_model(name: &str, model: &str, ttfb: f64, tps: f64, p95: f64) -> La
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     }
 }
 
@@ -166,6 +167,7 @@ fn priced_lane(name: &str, tps: f64, p95: f64) -> LaneSummary {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     }
 }
 
