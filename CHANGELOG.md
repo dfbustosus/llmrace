@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-11-24
+
+The race now speaks the one format every CI system already understands.
+
+### Added
+
+- `--junit` writes `race.xml`: one `<testsuite>` per lane and one `<testcase>` per checked prompt (per lane when the race had no task). A prompt whose task did not pass every measured round, or that had HTTP failures, is a failing test — so GitHub, GitLab and Buildkite test reporters show it on the pull request with no bot
+- `RaceOutcome::junit()` in the library
+- `--out race.xml` implies `--junit` and writes markdown to `race.md`, matching the other report extensions
+
 ## [1.29.0] - 2026-11-23
 
 Warmup can no longer secretly prime the cache, a mixed cache sample says so, and OpenAI's Responses API is a first-class wire.
@@ -702,7 +712,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.29.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.30.0...HEAD
+[1.30.0]: https://github.com/dfbustosus/llmrace/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/dfbustosus/llmrace/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/dfbustosus/llmrace/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/dfbustosus/llmrace/compare/v1.26.0...v1.27.0
