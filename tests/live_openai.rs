@@ -31,6 +31,8 @@ async fn openai_streams_real_tokens() {
             tools: false,
             tool_task: None,
             sampling: llmrace::provider::Sampling::default(),
+            messages: &[],
+            tool: None,
         },
     )
     .await
