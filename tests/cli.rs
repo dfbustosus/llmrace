@@ -916,6 +916,7 @@ fn cli_contract_every_documented_flag_exists() {
         "--csv",
         "--html",
         "--junit",
+        "--sarif",
         "--baseline",
         "--max-regression",
         "--require-significance",
@@ -1251,6 +1252,46 @@ fn out_json_extension_writes_valid_json_without_json_flag() {
     assert_eq!(parsed["tool"], "llmrace");
     let md_raw = std::fs::read_to_string(dir.join("only.md")).unwrap();
     assert!(md_raw.contains("# 🏁 llmrace report"), "{md_raw}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sarif_flag_writes_code_scanning_results_for_gate_failures() {
+    let dir = std::env::temp_dir().join(format!("llmrace-sarif-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md_path = dir.join("race.md");
+    let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock",
+            "--no-tui",
+            "-n",
+            "1",
+            "--warmup",
+            "0",
+            "--quiet",
+            "--max-ttfb",
+            "1",
+            "--sarif",
+            "--out",
+        ])
+        .arg(&md_path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "the 1 ms TTFB gate must fail");
+    let raw = std::fs::read_to_string(dir.join("race.sarif")).unwrap();
+    let log: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(log["version"], "2.1.0");
+    assert_eq!(log["runs"][0]["tool"]["driver"]["name"], "llmrace");
+    let results = log["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(results[0]["ruleId"], "llmrace/ttfb-gate");
+    assert!(
+        results[0]["message"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("mock"),
+        "{raw}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
