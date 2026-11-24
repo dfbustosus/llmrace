@@ -24,6 +24,7 @@ main.rs            CLI (clap), profile/provider resolution, exit codes
     ├── gates      all-lanes-failed and --max-ttfb CI gates
     ├── regression --baseline comparison, request_sha256 guard, per-prompt gate
     ├── report     markdown / JSON / CSV / HTML renderers and request hashing
+    ├── race       high-level Race builder + RaceOutcome for library callers
     ├── schema     JSON Schema generator for race.json (--schema)
     ├── suite      multi-race benchmark suite definitions and combined report
     ├── merge      cross-region distributed probe report merging
