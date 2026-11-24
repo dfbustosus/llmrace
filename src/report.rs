@@ -216,6 +216,14 @@ fn prompt_table(summaries: &[LaneSummary]) -> String {
         "\n## Per prompt\n\n| Provider | Prompt | Rounds | Pass | TTFT | Tokens/s |\n|----------|--------|-------:|-----:|-----:|---------:|\n",
     );
     for s in summaries {
+        // same-provider multi-model races name the model, mirroring the
+        // significance labels
+        let dup = summaries.iter().filter(|x| x.name == s.name).count() > 1;
+        let provider = if dup && !s.model.is_empty() {
+            format!("{}/{}", s.name, s.model)
+        } else {
+            s.name.clone()
+        };
         for row in s.prompt_rows() {
             let pass = match row.task_pass {
                 Some((ok, n)) => format!("{ok}/{n}"),
@@ -223,7 +231,7 @@ fn prompt_table(summaries: &[LaneSummary]) -> String {
             };
             out.push_str(&format!(
                 "| {} | `{}` | {} | {pass} | {:.0} ms | {:.1} |\n",
-                s.name, row.id, row.rounds, row.ttfb_ms, row.tokens_per_sec
+                provider, row.id, row.rounds, row.ttfb_ms, row.tokens_per_sec
             ));
         }
     }
