@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-11-24
+
+Embedders can now watch a race live and stop it cleanly, through the public API.
+
+### Added
+
+- `Race::spawn()` returns a `RaceHandle`: `progress()` is a merged live stream of every lane's updates on a plain `std::sync::mpsc` channel (no async needed on the reading thread), `stop()` ends every lane after its in-flight round, and `finish()` awaits the usual `RaceOutcome`. `Race::run()` is now `spawn().finish()` — same behavior, one code path
+
 ## [1.34.0] - 2026-11-24
 
 Structured output is now raceable: force JSON mode and measure what it costs, then grade whether the answer complied.
@@ -761,7 +769,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.34.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.35.0...HEAD
+[1.35.0]: https://github.com/dfbustosus/llmrace/compare/v1.34.0...v1.35.0
 [1.34.0]: https://github.com/dfbustosus/llmrace/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/dfbustosus/llmrace/compare/v1.32.1...v1.33.0
 [1.32.1]: https://github.com/dfbustosus/llmrace/compare/v1.32.0...v1.32.1
