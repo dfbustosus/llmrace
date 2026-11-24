@@ -301,6 +301,18 @@ async fn the_gate_stays_green() {
 
 `RaceOutcome` carries `summaries`, `request_sha256`, `markdown()`, `json()`, `podium()` and `gate()`. A `llmrace::cost::PriceBook` scopes price overrides to one race, so parallel tests never share the global override map. A runnable copy lives in [`examples/cargo_test_gate.rs`](examples/cargo_test_gate.rs).
 
+Watch or stop a running race through the public API — progress arrives on a plain channel any thread can read:
+
+```rust
+let mut handle = Race::new([ProviderSpec::mock()]).runs(10).spawn()?;
+let progress = handle.progress().unwrap();
+std::thread::spawn(move || while let Ok(update) = progress.recv() {
+    println!("{}: {} tok", update.provider, update.tokens);
+});
+// handle.stop();           // stop after the in-flight round
+let outcome = handle.finish().await?;
+```
+
 ## Distributed probes
 
 Run region-distributed probes from any workflow with the reusable [probe workflow](.github/workflows/probe.yml):
