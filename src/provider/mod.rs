@@ -22,7 +22,7 @@ pub fn sigv4_credential_check() -> Option<()> {
 
 pub use request::{
     is_reasoning_model, list_models, split_model_override, stream_completion, CompletionRequest,
-    Sampling,
+    JsonOutput, Sampling,
 };
 
 /// HTTP client tuned for a fair streaming race.
