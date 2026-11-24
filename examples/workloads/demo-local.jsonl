@@ -1,0 +1,3 @@
+{"id":"capital","prompt":"Reply with exactly one word: the capital of France.","expect":"Paris","match":"contains"}
+{"id":"sum","prompt":"What is 2+2? Reply with digits only.","expect":"4","match":"exact"}
+{"id":"color","prompt":"Return only a JSON object with one key, color, whose value is blue.","expect":"\"color\": \"blue\"","match":"contains"}
