@@ -138,6 +138,7 @@ pub fn race_report_schema() -> String {
           "cache_write_tokens": {"type": ["number", "null"]},
           "cache_write_1h_tokens": {"type": ["number", "null"]},
           "cache_discount_applied": {"type": "boolean"},
+          "cache_hit_rounds": {"type": "integer", "minimum": 0},
           "server_ms": {"type": ["number", "null"]},
           "network_overhead_ms": {"type": ["number", "null"]},
           "itl_p50_ms": {"type": ["number", "null"]},
