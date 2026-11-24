@@ -458,6 +458,22 @@ pub fn request_sha256(
             if item.expect_match != crate::workload::ExpectMatch::Exact {
                 push_field(&mut blob, "match", item.expect_match.as_str());
             }
+            if let Some(system) = &item.system {
+                push_field(&mut blob, "system", system);
+            }
+            if !item.messages.is_empty() {
+                let mut turns = String::new();
+                for message in &item.messages {
+                    push_field(&mut turns, "role", message.role.as_str());
+                    push_field(&mut turns, "content", &message.content);
+                }
+                push_field(&mut blob, "messages", &turns);
+            }
+            if let Some(tool) = &item.tool {
+                push_field(&mut blob, "tool", &tool.name);
+                push_field(&mut blob, "tool_description", &tool.description);
+                push_field(&mut blob, "tool_parameters", &tool.parameters.to_string());
+            }
         }
         push_field(&mut body, "workload", &blob);
     }
