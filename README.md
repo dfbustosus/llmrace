@@ -355,7 +355,7 @@ llmrace openai groq -n 10 --warmup 2 \
   --json --out llmrace-report.md
 ```
 
-`llmrace-report.json` then has `regression.ok`, `regression.request_mismatch`, and `regression.failures[]` with `provider`, `metric`, and `prompt_id`. Read that object. The terminal table is for a person.
+`llmrace-report.json` then has `regression.ok`, `regression.request_mismatch`, and `regression.failures[]` with `provider`, `metric`, and `prompt_id`. The markdown report has the same verdict under `## Regression`, including a prompt whose latency or time to first token rose. Read the JSON in a pipeline. The terminal table is for a person.
 
 The check compares mean latency, p95 and TTFT (increases) and tokens/s (decreases) against the threshold. When the baseline recorded them, it also fails if the failure rate rises by more than the threshold in percentage points, if goodput or task success falls by more than the threshold, or if cost/run rises by more than the threshold. A baseline that omits those fields skips them. When both the baseline and this race record `request_sha256` and the hashes differ, the gate fails and does not compare metrics. A baseline that omitted the hash still compares. A race with no task has no task-success metric, so a plain latency gate does not move. The report prints an old → new diff table with per-metric Welch p-values, and flags providers that are new or missing from the baseline. With `--require-significance`, a latency or tokens/s breach fails the gate only when the difference is statistically significant (p < 0.05 on per-run data). Failure rate, goodput, cost and task success are ratios of the whole sample, so a threshold breach on those counts without a t-test:
 
