@@ -154,7 +154,7 @@ impl RegressionReport {
     /// Renders the comparison as a terminal table.
     pub fn terminal_table(&self, max_regression_pct: f64) -> String {
         let mut out = format!(
-            "regression check vs baseline (threshold {max_regression_pct:.0}%)\n{:<14} {:<16} {:>18} {:>18} {:>9}\n",
+            "regression check vs baseline (threshold {max_regression_pct:.0}%)\n{:<14} {:<24} {:>18} {:>18} {:>9}\n",
             "Provider", "Metric", "Baseline", "Current", "Δ"
         );
         out.push_str(&"-".repeat(out.len()));
@@ -168,11 +168,11 @@ impl RegressionReport {
                     None => String::new(),
                 };
                 let label = match &m.prompt_id {
-                    Some(id) => format!("prompt {id}"),
+                    Some(id) => format!("prompt {id} {}", m.label),
                     None => m.label.to_string(),
                 };
                 out.push_str(&format!(
-                    "{:<14} {:<16} {:>16.1} \u{2192} {:<16.1} {:>+8.1}%{}{}\n",
+                    "{:<14} {:<24} {:>16.1} \u{2192} {:<16.1} {:>+8.1}%{}{}\n",
                     c.name, label, m.baseline, m.current, m.delta_pct, p_note, mark
                 ));
             }
@@ -191,6 +191,63 @@ impl RegressionReport {
             out.push_str("\n✗ REGRESSION DETECTED: at least one metric exceeded the threshold\n");
         } else {
             out.push_str("\n✓ no regressions beyond threshold\n");
+        }
+        out
+    }
+
+    /// The regression section of a markdown report.
+    ///
+    /// A request mismatch names the refusal and lists no metrics. Otherwise
+    /// every compared metric is a row, and the closing line matches the
+    /// process exit: a breach that `--require-significance` treats as noise
+    /// says so.
+    #[must_use]
+    pub fn markdown_section(&self, max_regression_pct: f64, require_significance: bool) -> String {
+        let mut out = format!("\n## Regression\n\nThreshold {max_regression_pct:.0}%.");
+        if require_significance {
+            out.push_str(
+                " Latency and tokens/s fail only when the difference is significant (p < 0.05).",
+            );
+        }
+        out.push_str("\n\n");
+        if self.request_mismatch {
+            out.push_str(
+                "The request changed, so the metrics were not compared. `regression.ok` is false.\n",
+            );
+            return out;
+        }
+        out.push_str("| Provider | Metric | Prompt | Baseline | Current | Δ | p |\n");
+        out.push_str("|---|---|---|---:|---:|---:|---:|\n");
+        for comparison in &self.comparisons {
+            for metric in &comparison.metrics {
+                let prompt = metric.prompt_id.as_deref().unwrap_or("—");
+                let p = match metric.p_value {
+                    Some(p) => format!("{p:.3}"),
+                    None => "—".to_string(),
+                };
+                let mark = if metric.fails_the_gate(require_significance) {
+                    " ✗"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "| {} | {} | {prompt} | {:.1} | {:.1} | {:+.1}%{mark} | {p} |\n",
+                    comparison.name,
+                    metric.label,
+                    metric.baseline,
+                    metric.current,
+                    metric.delta_pct
+                ));
+            }
+        }
+        if self.gate_failed(require_significance) {
+            out.push_str("\nRegression detected. `regression.ok` is false.\n");
+        } else if require_significance && self.any_regressed() {
+            out.push_str(
+                "\nA threshold was breached, and no breach is statistically significant. `regression.ok` is true.\n",
+            );
+        } else {
+            out.push_str("\nNo regression beyond the threshold. `regression.ok` is true.\n");
         }
         out
     }
@@ -219,6 +276,10 @@ pub struct BaselineRun {
     /// Round throughput in tokens per second.
     #[serde(default)]
     pub tokens_per_sec: f64,
+    /// Workload prompt id. Empty on reports written before a round named
+    /// its prompt, and on a race that used one prompt.
+    #[serde(default)]
+    pub prompt_id: String,
 }
 
 /// One provider entry of a baseline report.
@@ -277,6 +338,14 @@ pub struct BaselinePrompt {
     /// the prompt had no task.
     #[serde(default)]
     pub task_pass_rate: Option<f64>,
+    /// Mean total latency of this prompt, in milliseconds. Absent on
+    /// baselines written before a prompt could fail the latency gate.
+    #[serde(default)]
+    pub mean_total_ms: Option<f64>,
+    /// Mean time to first token of this prompt, in milliseconds. Absent
+    /// on baselines written before a prompt could fail the latency gate.
+    #[serde(default)]
+    pub mean_ttfb_ms: Option<f64>,
 }
 
 impl BaselineReport {
@@ -374,6 +443,8 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                                 ok as f64 / n as f64
                             }
                         }),
+                        mean_total_ms: Some(row.total_ms),
+                        mean_ttfb_ms: Some(row.ttfb_ms),
                     })
                     .collect(),
                 runs: s
@@ -383,6 +454,7 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                         total_ms: r.total_ms,
                         ttfb_ms: r.ttfb_ms,
                         tokens_per_sec: r.tokens_per_sec(),
+                        prompt_id: r.prompt_id.clone(),
                     })
                     .collect(),
             })
@@ -536,6 +608,45 @@ pub fn compare_baselines(
                 max_regression_pct,
             ));
         }
+        for base_prompt in &base.prompts {
+            let Some(current_prompt) = current
+                .prompts
+                .iter()
+                .find(|prompt| prompt.id == base_prompt.id)
+            else {
+                continue;
+            };
+            let base_runs = runs_for_prompt(&base.runs, &base_prompt.id);
+            let current_runs = runs_for_prompt(&current.runs, &base_prompt.id);
+            if let (Some(base_ms), Some(current_ms)) =
+                (base_prompt.mean_total_ms, current_prompt.mean_total_ms)
+            {
+                metrics.push(with_prompt(
+                    latency_metric(
+                        "mean latency",
+                        base_ms,
+                        current_ms,
+                        max_regression_pct,
+                        metric_p_value(&base_runs, &current_runs, |run| run.total_ms),
+                    ),
+                    &base_prompt.id,
+                ));
+            }
+            if let (Some(base_ms), Some(current_ms)) =
+                (base_prompt.mean_ttfb_ms, current_prompt.mean_ttfb_ms)
+            {
+                metrics.push(with_prompt(
+                    latency_metric(
+                        "ttfb",
+                        base_ms,
+                        current_ms,
+                        max_regression_pct,
+                        metric_p_value(&base_runs, &current_runs, |run| run.ttfb_ms),
+                    ),
+                    &base_prompt.id,
+                ));
+            }
+        }
         report.comparisons.push(ProviderComparison {
             name: current.provider.clone(),
             baseline_model: base.model.clone(),
@@ -644,6 +755,20 @@ fn throughput_metric(
         p_value,
         prompt_id: None,
     }
+}
+
+fn with_prompt(metric: MetricComparison, id: &str) -> MetricComparison {
+    MetricComparison {
+        prompt_id: Some(id.to_string()),
+        ..metric
+    }
+}
+
+fn runs_for_prompt(runs: &[BaselineRun], id: &str) -> Vec<BaselineRun> {
+    runs.iter()
+        .filter(|run| run.prompt_id == id)
+        .cloned()
+        .collect()
 }
 
 /// Welch p-value for a metric across two per-run series, when both sides
