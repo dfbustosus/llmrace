@@ -64,7 +64,9 @@ pub(super) fn write_reports(
         println!("{md}");
     } else {
         let md_path = match out_ext.as_deref() {
-            Some("json" | "csv" | "html" | "xml") => crate::report_sibling(&cfg.out, "md"),
+            Some("json" | "csv" | "html" | "xml" | "sarif") => {
+                crate::report_sibling(&cfg.out, "md")
+            }
             _ => cfg.out.clone(),
         };
         std::fs::write(&md_path, &md).with_context(|| format!("writing {md_path}"))?;
@@ -110,6 +112,16 @@ pub(super) fn write_reports(
         let path = crate::report_sibling(&cfg.out, "xml");
         std::fs::write(&path, x).with_context(|| format!("writing {path}"))?;
         cfg.status(format!("\u{1f9ea} junit report saved to {path}"));
+    }
+    if cfg.sarif || out_ext.as_deref() == Some("sarif") {
+        let s = llmrace::sarif::sarif(
+            summaries,
+            regression.map(|r| (r, cfg.max_regression, cfg.require_significance)),
+            cfg.max_ttfb,
+        );
+        let path = crate::report_sibling(&cfg.out, "sarif");
+        std::fs::write(&path, s).with_context(|| format!("writing {path}"))?;
+        cfg.status(format!("\u{1f6e1} sarif report saved to {path}"));
     }
     if cfg.html || out_ext.as_deref() == Some("html") {
         let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
