@@ -478,6 +478,7 @@ fn regression_summary(
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     }
 }
 
@@ -844,6 +845,7 @@ fn gemini_thoughts_are_priced_as_output_and_openai_reasoning_is_not_added_twice(
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     // 100 input at $0.10 and 1050 output (50 visible + 1000 thoughts) at $0.40.
     let cost = gemini.cost_per_run_usd().unwrap();
@@ -869,6 +871,7 @@ fn gemini_thoughts_are_priced_as_output_and_openai_reasoning_is_not_added_twice(
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     // completion_tokens already includes the 80 reasoning tokens.
     let cost = openai.cost_per_run_usd().unwrap();
@@ -992,6 +995,7 @@ async fn percentile_ladder_and_histogram_render() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
 
     let ladder = summary.latency_percentiles();
@@ -1142,6 +1146,7 @@ fn itl_metrics_aggregate_across_runs() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     assert_eq!(summary.stutters(), 1);
     let p50 = summary.itl_p50_ms().unwrap();
@@ -1168,6 +1173,7 @@ fn itl_absent_when_single_token() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     assert!(summary.itl_p50_ms().is_none());
     assert_eq!(summary.stutters(), 0);
@@ -1234,6 +1240,7 @@ fn lane_throughput_aggregates_effective_windows() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let tps = summary.mean_tokens_per_sec();
     assert!((tps - 1000.0 / 2.798).abs() < 1.0, "got {tps}");
@@ -1289,6 +1296,7 @@ fn html_report_renders_lanes_and_bars() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let html = llmrace::report::html_report(std::slice::from_ref(&summary), "demo", 1, 32, &[]);
     assert!(html.contains("<!DOCTYPE html>"));
@@ -1326,6 +1334,7 @@ fn reasoning_tokens_split_from_visible() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     assert_eq!(summary.reasoning_tokens(), 440);
     assert_eq!(summary.visible_tokens(), 60);
@@ -1345,6 +1354,7 @@ fn reasoning_tokens_split_from_visible() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     assert_eq!(classic.reasoning_tokens(), 0);
 }
@@ -1369,6 +1379,7 @@ fn terminal_table_marks_reasoning_lanes() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let table = llmrace::report::terminal_table(&[summary]);
     assert!(table.contains("🧠440"), "{table}");
@@ -1414,6 +1425,7 @@ fn html_report_escapes_hostile_model_names() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let html =
         llmrace::report::html_report(std::slice::from_ref(&summary), "prompt <x>", 1, 32, &[]);
@@ -1446,6 +1458,7 @@ fn csv_escapes_commas_and_quotes() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let csv = llmrace::report::csv(&[summary]);
     let line = csv.lines().nth(1).unwrap_or_default();
@@ -1562,6 +1575,7 @@ fn baseline_matches_sweep_variants() {
         concurrency: 1,
         variant: variant.map(str::to_string),
         tool_task: None,
+        price_book: None,
     };
 
     // short lane regressed (100 -> 300 ms), json lane improved (200 -> 100 ms)
@@ -1602,6 +1616,7 @@ fn markdown_report_notes_unpriced_lanes() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let md = llmrace::report::markdown(&[summary], "demo", 1, 32);
     assert!(md.contains("no pricing data for 1 lane(s)"), "{md}");
@@ -1641,6 +1656,7 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let est = summary.thinking_ms_estimate().unwrap();
     assert!((est - 1398.0 * 255.0 / 256.0).abs() < 1e-6, "{est}");
@@ -1666,6 +1682,7 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     assert!(classic.thinking_ms_estimate().is_none());
 }
@@ -1709,6 +1726,7 @@ fn markdown_reasoning_lane_keeps_tokens_per_sec() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let md = llmrace::report::markdown(&[summary], "demo", 2, 256);
     let row = md.lines().find(|l| l.contains("gpt-5-nano")).unwrap();
@@ -1738,6 +1756,7 @@ fn significance_verdict_distinguishes_signal_from_noise() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     // clear separation: 100 vs 300
     let clear = llmrace::report::terminal_table(&[
@@ -1790,6 +1809,7 @@ fn ttfb_percentiles_exposed_in_json() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     assert_eq!(summary.ttfb_p50_ms(), Some(200.0));
     assert_eq!(summary.ttfb_p95_ms(), Some(290.0));
@@ -1823,6 +1843,7 @@ fn significance_labels_disambiguate_same_provider_models() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let table =
         llmrace::report::terminal_table(&[lane("gpt-4o-mini", 100.0), lane("gpt-4.1", 300.0)]);
@@ -1856,6 +1877,7 @@ fn significance_labels_disambiguate_same_provider_models() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let other = llmrace::bench::LaneSummary {
         name: "mock2".into(),
@@ -1868,6 +1890,7 @@ fn significance_labels_disambiguate_same_provider_models() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let t2 = llmrace::report::terminal_table(&[plain, other]);
     assert!(t2.contains("mock vs mock2"), "{t2}");
@@ -1895,6 +1918,7 @@ fn duration_mode_reports_actual_round_count() {
             concurrency: 1,
             variant: None,
             tool_task: None,
+            price_book: None,
         };
         // emulate what write_reports does: actual_runs = max lane runs len
         let actual = summary.runs.len();
@@ -1924,6 +1948,7 @@ fn histogram_section_includes_ttfb_ladder() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let md = llmrace::report::histogram_section(&[summary]);
     assert!(md.contains("## TTFB distribution"), "{md}");
@@ -1951,6 +1976,7 @@ fn brain_annotation_hidden_for_classic_models_in_tool_mode() {
         concurrency: 1,
         variant: None,
         tool_task: Some("math".into()),
+        price_book: None,
     };
     let table = llmrace::report::terminal_table(&[lane("gpt-4o-mini"), lane("gpt-5-nano")]);
     let classic_row = table.lines().find(|l| l.contains("gpt-4o-mini")).unwrap();
@@ -2131,6 +2157,7 @@ fn suite_combined_report_renders_tables_and_significance() {
         concurrency: 1,
         variant: None,
         tool_task: None,
+        price_book: None,
     };
     let results = vec![
         llmrace::suite::SuiteResult {
