@@ -176,6 +176,10 @@ llmrace --endpoint http://localhost:8000/v1/chat/completions \
         --provider-name vllm --api-key-env VLLM_API_KEY \
         openai groq
 
+# …or an endpoint speaking the OpenAI Responses API
+llmrace --endpoint http://localhost:8000/v1/responses \
+        --provider-name vllm --wire responses --api-key-env VLLM_API_KEY
+
 # Markdown to stdout (pipe into CI step summaries), JSON alongside
 llmrace openai groq -n 5 --out - --json > "$GITHUB_STEP_SUMMARY"
 
@@ -195,6 +199,7 @@ Every provider with a matching env var races automatically — no config file:
 | Provider | Env var | Default model |
 |----------|---------|---------------|
 | `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| `openai-responses` | `OPENAI_API_KEY` | `gpt-4o-mini` on `/v1/responses` (opt-in) |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-haiku-latest` |
 | `gemini` | `GEMINI_API_KEY` | `gemini-3.5-flash-lite` |
 | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
@@ -238,7 +243,7 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 
 Methodology notes:
 
-- One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes. A warmup failure is not a measured failure
+- One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes. A warmup failure is not a measured failure. The warmup sends the first workload prompt by default, which can also prime the provider's prefix cache for that prompt; `--warmup-mode probe` sends a minimal `ping` (`max_tokens: 1`, no system prompt) instead, so every measured round starts cold. When a lane mixes cold and warm rounds the report says so (`Cache mix`), and `race.json` counts `cache_hit_rounds` per lane
 - **Failed measured rounds stay in the report.** Latency, tokens/s and cost/run use successful rounds only. The rank uses goodput (tokens/s × the success rate), so a provider that timed out half its calls cannot win on the calls that happened to succeed. Retries are counted and not priced: a failed attempt does not return token usage. `--record`, `--baseline` and `--recommend` keep the same failure rate, goodput, retry count and cost. A history file or baseline written before those fields existed still loads; the gate skips a metric the baseline did not record
 - Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other. Exception: `provider=model` lanes of the *same* provider race concurrently — the provider's rate limits and capacity are then shared between those lanes, which is exactly what a mixed-model race measures in practice
 - Rounds with 3σ latency outliers are flagged with `†`
