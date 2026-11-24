@@ -1917,6 +1917,26 @@ fn thinking_ms_estimate_scales_server_window_by_reasoning_share() {
 }
 
 #[test]
+fn openrouter_models_raced_in_the_readme_have_pricing() {
+    // The four-model demo race must price every lane. Rows were read from
+    // the OpenRouter models API on 2026-11-24.
+    for (key, input, output) in [
+        ("anthropic/claude-haiku-4.5", 1.00, 5.00),
+        ("deepseek/deepseek-chat-v3.1", 0.25, 0.95),
+        ("meta-llama/llama-3.3-70b-instruct", 0.71, 0.71),
+    ] {
+        let (provider, model) = key.split_once('/').unwrap();
+        assert_eq!(
+            llmrace::cost::pricing(&format!("openrouter/{provider}"), model),
+            Some((input, output)),
+            "{key}"
+        );
+    }
+    let haiku = llmrace::cost::token_rates("openrouter", "anthropic/claude-haiku-4.5").unwrap();
+    assert_eq!(haiku.cache_read, Some(0.10));
+}
+
+#[test]
 fn every_cloud_default_model_has_pricing() {
     // Locks the pricing table against drift: adding a cloud provider
     // without a default-model price row fails here.
