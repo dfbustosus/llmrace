@@ -578,6 +578,16 @@ impl LaneSummary {
         rows
     }
 
+    /// Measured rounds that hit the provider's prefix cache.
+    ///
+    /// A lane where this is between 1 and `runs.len() − 1` mixes cold and
+    /// warm rounds: the latency sample is not homogeneous, and the cost of
+    /// cached input is discounted only on the warm rounds.
+    #[must_use]
+    pub fn cache_hit_rounds(&self) -> usize {
+        self.runs.iter().filter(|r| r.cache_read_tokens > 0).count()
+    }
+
     /// `(passed, measured)` for the task, when this lane had one.
     ///
     /// The denominator is every measured round, including HTTP failures,
