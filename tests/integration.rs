@@ -126,6 +126,61 @@ fn openai_wire_decodes_deltas_and_usage() {
 }
 
 #[test]
+fn junit_xml_names_the_failing_prompt_and_escapes_names() {
+    use llmrace::bench::LaneSummary;
+    let mut lane = regression_summary("openai", 100.0, 110.0, 20.0, 80.0);
+    lane.runs = vec![
+        RunMetrics {
+            prompt_id: "capital".into(),
+            task_ok: Some(true),
+            total_ms: 100.0,
+            ttfb_ms: 20.0,
+            tokens: 8,
+            ..RunMetrics::default()
+        },
+        RunMetrics {
+            prompt_id: "sum<x>".into(),
+            task_ok: Some(false),
+            total_ms: 200.0,
+            ttfb_ms: 20.0,
+            tokens: 16,
+            ..RunMetrics::default()
+        },
+    ];
+    let xml = llmrace::report::junit_xml(std::slice::from_ref(&lane));
+    assert!(
+        xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+        "{xml}"
+    );
+    assert!(
+        xml.contains("<testsuites tests=\"2\" failures=\"1\">"),
+        "{xml}"
+    );
+    assert!(xml.contains("classname=\"openai/m\""), "{xml}");
+    assert!(xml.contains("name=\"capital\""), "{xml}");
+    assert!(xml.contains("name=\"sum&lt;x&gt;\""), "{xml}");
+    assert!(!xml.contains("sum<x>"), "unescaped prompt id: {xml}");
+    assert!(xml.contains("task passed 0/1 measured rounds"), "{xml}");
+
+    let dead = LaneSummary {
+        name: "groq".into(),
+        model: "m".into(),
+        error: Some("connection refused".into()),
+        ..LaneSummary::default()
+    };
+    let xml = llmrace::report::junit_xml(std::slice::from_ref(&dead));
+    assert!(xml.contains("name=\"completion\""), "{xml}");
+    assert!(xml.contains("connection refused"), "{xml}");
+
+    let empty: &[LaneSummary] = &[];
+    let xml = llmrace::report::junit_xml(empty);
+    assert!(
+        xml.contains("<testsuites tests=\"0\" failures=\"0\">"),
+        "{xml}"
+    );
+}
+
+#[test]
 fn cache_mix_is_named_in_the_report_and_counted_in_json() {
     let lane = |hits: &[bool]| llmrace::bench::LaneSummary {
         name: "openai".into(),
