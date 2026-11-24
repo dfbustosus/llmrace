@@ -284,6 +284,12 @@ pub fn sampling_inline(sampling: &crate::provider::Sampling) -> Option<String> {
     if sampling.system.as_deref().is_some_and(|s| !s.is_empty()) {
         parts.push("system prompt".to_string());
     }
+    if let Some(json_output) = &sampling.json_output {
+        parts.push(match json_output {
+            crate::provider::JsonOutput::Object => "json output".to_string(),
+            crate::provider::JsonOutput::Schema(_) => "json schema".to_string(),
+        });
+    }
     Some(parts.join(", "))
 }
 
@@ -334,6 +340,15 @@ pub fn sampling_json(sampling: &crate::provider::Sampling) -> Option<serde_json:
     }
     if let Some(sys) = sampling.system.as_deref().filter(|s| !s.is_empty()) {
         obj.insert("system".into(), serde_json::Value::String(sys.to_string()));
+    }
+    if let Some(json_output) = &sampling.json_output {
+        obj.insert(
+            "json_output".into(),
+            match json_output {
+                crate::provider::JsonOutput::Object => serde_json::json!("object"),
+                crate::provider::JsonOutput::Schema(_) => serde_json::json!("schema"),
+            },
+        );
     }
     Some(serde_json::Value::Object(obj))
 }
@@ -474,6 +489,13 @@ pub fn request_sha256(
         "system",
         sampling.system.as_deref().unwrap_or(""),
     );
+    if let Some(json_output) = &sampling.json_output {
+        let value = match json_output {
+            crate::provider::JsonOutput::Object => "object".to_string(),
+            crate::provider::JsonOutput::Schema(schema) => schema.to_string(),
+        };
+        push_field(&mut body, "json_output", &value);
+    }
     push_field(&mut body, "tools", tools.unwrap_or(""));
     if workload.is_empty() {
         push_field(&mut body, "prompt", sent_prompt);
