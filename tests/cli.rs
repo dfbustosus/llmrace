@@ -894,6 +894,8 @@ fn cli_contract_every_documented_flag_exists() {
         "--prompt-file",
         "--runs",
         "--warmup",
+        "--warmup-mode",
+        "--wire",
         "--duration",
         "--concurrency",
         "--model",
