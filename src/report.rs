@@ -683,6 +683,114 @@ fn render_json(
     .unwrap_or_default()
 }
 
+/// A JUnit XML report: one `<testsuite>` per lane and one `<testcase>` per
+/// checked prompt (or per lane when the race had no task).
+///
+/// A case fails when its prompt's task did not pass every measured round,
+/// or when the prompt had HTTP failures; a lane-level case fails when the
+/// lane failed or dropped rounds. CI systems (GitHub, GitLab, Buildkite)
+/// ingest JUnit natively, so a failing prompt shows up as a failing test.
+#[must_use]
+pub fn junit_xml(summaries: &[LaneSummary]) -> String {
+    struct Case {
+        classname: String,
+        name: String,
+        time_s: f64,
+        failure: Option<String>,
+    }
+    let mut suites: Vec<(String, Vec<Case>)> = Vec::new();
+    for s in summaries {
+        let classname = match &s.variant {
+            Some(v) => format!("{}/{} ({v})", s.name, s.model),
+            None => format!("{}/{}", s.name, s.model),
+        };
+        let suite_name = classname.clone();
+        let mut cases: Vec<Case> = Vec::new();
+        let rows = s.prompt_rows();
+        if rows.is_empty() {
+            let failure = if !s.successful() {
+                Some(
+                    s.error
+                        .clone()
+                        .unwrap_or_else(|| "no successful rounds".to_string()),
+                )
+            } else if !s.failures.is_empty() {
+                Some(format!(
+                    "{} of {} measured rounds failed",
+                    s.failures.len(),
+                    s.measured_rounds()
+                ))
+            } else {
+                None
+            };
+            cases.push(Case {
+                classname: classname.clone(),
+                name: "completion".to_string(),
+                time_s: s.mean_total_ms() / 1000.0,
+                failure,
+            });
+        } else {
+            for row in &rows {
+                let http_failed = s.failures.iter().filter(|f| f.prompt_id == row.id).count();
+                let failure = match row.task_pass {
+                    Some((ok, n)) if ok < n => {
+                        Some(format!("task passed {ok}/{n} measured rounds"))
+                    }
+                    _ if http_failed > 0 => Some(format!(
+                        "{http_failed} of this prompt's measured rounds failed"
+                    )),
+                    _ => None,
+                };
+                cases.push(Case {
+                    classname: classname.clone(),
+                    name: row.id.clone(),
+                    time_s: row.total_ms / 1000.0,
+                    failure,
+                });
+            }
+        }
+        suites.push((suite_name, cases));
+    }
+    let total_tests: usize = suites.iter().map(|(_, c)| c.len()).sum();
+    let total_failures: usize = suites
+        .iter()
+        .flat_map(|(_, c)| c.iter())
+        .filter(|c| c.failure.is_some())
+        .count();
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    out.push_str(&format!(
+        "<testsuites tests=\"{total_tests}\" failures=\"{total_failures}\">\n"
+    ));
+    for (name, cases) in &suites {
+        let failures = cases.iter().filter(|c| c.failure.is_some()).count();
+        let time: f64 = cases.iter().map(|c| c.time_s).sum();
+        out.push_str(&format!(
+            "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" time=\"{time:.3}\">\n",
+            crate::util::html_escape(name),
+            cases.len(),
+            failures
+        ));
+        for case in cases {
+            out.push_str(&format!(
+                "    <testcase classname=\"{}\" name=\"{}\" time=\"{:.3}\">\n",
+                crate::util::html_escape(&case.classname),
+                crate::util::html_escape(&case.name),
+                case.time_s
+            ));
+            if let Some(message) = &case.failure {
+                out.push_str(&format!(
+                    "      <failure message=\"{}\"/>\n",
+                    crate::util::html_escape(message)
+                ));
+            }
+            out.push_str("    </testcase>\n");
+        }
+        out.push_str("  </testsuite>\n");
+    }
+    out.push_str("</testsuites>\n");
+    out
+}
+
 /// Renders per-run rows as CSV.
 pub fn csv(summaries: &[LaneSummary]) -> String {
     let mut out = String::from("provider,model,run,total_ms,ttfb_ms,tokens,tokens_per_sec\n");
