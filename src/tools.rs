@@ -103,6 +103,18 @@ fn lookup() -> ToolTask {
     }
 }
 
+/// A tool declared on a workload prompt.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ToolDefinition {
+    /// Function name sent in the tool schema.
+    pub name: String,
+    /// One-line description sent with the schema.
+    #[serde(default)]
+    pub description: String,
+    /// JSON Schema for the arguments object.
+    pub parameters: serde_json::Value,
+}
+
 /// All built-in tool tasks.
 pub fn registry() -> Vec<ToolTask> {
     vec![weather(), math(), lookup()]
@@ -117,30 +129,248 @@ pub fn find(name: &str) -> Option<ToolTask> {
 /// Builds the wire-specific `tools` request field for a task.
 #[must_use]
 pub fn tool_schema(task: &ToolTask, wire: Wire) -> Value {
-    let parameters = (task.parameters)();
+    tool_body(
+        wire,
+        &ToolDefinition {
+            name: task.function.to_string(),
+            description: task.description.to_string(),
+            parameters: (task.parameters)(),
+        },
+    )
+}
+
+/// The JSON value assigned to a wire's tools field for one definition.
+///
+/// Bedrock receives a `toolConfig` document. Vertex uses the Gemini
+/// `function_declarations` shape. Mock receives nothing.
+#[must_use]
+pub fn tool_body(wire: Wire, tool: &ToolDefinition) -> Value {
     match wire {
         Wire::OpenAiCompat | Wire::Cohere => json!([{
             "type": "function",
             "function": {
-                "name": task.function,
-                "description": task.description,
-                "parameters": parameters,
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
             }
         }]),
         Wire::Anthropic => json!([{
-            "name": task.function,
-            "description": task.description,
-            "input_schema": parameters,
+            "name": tool.name,
+            "description": tool.description,
+            "input_schema": tool.parameters,
         }]),
-        Wire::Gemini => json!([{
+        Wire::Gemini | Wire::Vertex => json!([{
             "function_declarations": [{
-                "name": task.function,
-                "description": task.description,
-                "parameters": parameters,
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
             }]
         }]),
-        Wire::Bedrock | Wire::Vertex | Wire::Mock => json!([]),
+        Wire::Bedrock => json!({
+            "tools": [{
+                "toolSpec": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": { "json": tool.parameters },
+                }
+            }]
+        }),
+        Wire::Mock => json!([]),
     }
+}
+
+/// Rejects a schema this crate will not evaluate.
+///
+/// The supported keywords are `type`, `required`, `properties`,
+/// `additionalProperties`, `items`, `enum`, `minimum`, `maximum`,
+/// `minLength` and `maxLength`. Nesting stops at 8 levels.
+pub fn check_schema(schema: &Value) -> Result<(), String> {
+    check_schema_at(schema, 0)
+}
+
+fn check_schema_at(schema: &Value, depth: usize) -> Result<(), String> {
+    if depth > 8 {
+        return Err("schema nests more than 8 levels".into());
+    }
+    let Some(object) = schema.as_object() else {
+        return Err("schema must be a JSON object".into());
+    };
+    for key in object.keys() {
+        match key.as_str() {
+            "type"
+            | "required"
+            | "properties"
+            | "additionalProperties"
+            | "items"
+            | "enum"
+            | "minimum"
+            | "maximum"
+            | "minLength"
+            | "maxLength" => {}
+            other => return Err(format!("unsupported schema keyword '{other}'")),
+        }
+    }
+    if let Some(kind) = object.get("type") {
+        let ok = matches!(
+            kind.as_str(),
+            Some("object" | "array" | "string" | "number" | "integer" | "boolean" | "null")
+        );
+        if !ok {
+            return Err(format!("unsupported schema type {kind}"));
+        }
+    }
+    if let Some(required) = object.get("required") {
+        let keys = required
+            .as_array()
+            .is_some_and(|items| items.iter().all(|k| k.is_string()));
+        if !keys {
+            return Err("required must be an array of strings".into());
+        }
+    }
+    if let Some(properties) = object.get("properties") {
+        let Some(properties) = properties.as_object() else {
+            return Err("properties must be an object".into());
+        };
+        for schema in properties.values() {
+            check_schema_at(schema, depth + 1)?;
+        }
+    }
+    if let Some(extra) = object.get("additionalProperties") {
+        if extra.as_bool().is_none() {
+            check_schema_at(extra, depth + 1)?;
+        }
+    }
+    if let Some(items) = object.get("items") {
+        check_schema_at(items, depth + 1)?;
+    }
+    if let Some(enum_vals) = object.get("enum") {
+        if !enum_vals.is_array() {
+            return Err("enum must be an array".into());
+        }
+    }
+    for key in ["minimum", "maximum"] {
+        if object.get(key).is_some_and(|v| !v.is_number()) {
+            return Err(format!("{key} must be a number"));
+        }
+    }
+    for key in ["minLength", "maxLength"] {
+        if object.get(key).is_some_and(|v| v.as_u64().is_none()) {
+            return Err(format!("{key} must be an integer"));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `value` satisfies a schema accepted by [`check_schema`].
+#[must_use]
+pub fn value_matches_schema(value: &Value, schema: &Value) -> bool {
+    let Some(object) = schema.as_object() else {
+        return false;
+    };
+    if let Some(enum_vals) = object.get("enum").and_then(Value::as_array) {
+        if !enum_vals.iter().any(|item| item == value) {
+            return false;
+        }
+    }
+    if let Some(kind) = object.get("type").and_then(Value::as_str) {
+        let typed = match kind {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "boolean" => value.is_boolean(),
+            "null" => value.is_null(),
+            _ => false,
+        };
+        if !typed {
+            return false;
+        }
+    }
+    match value {
+        Value::Object(map) => {
+            if let Some(required) = object.get("required").and_then(Value::as_array) {
+                for key in required {
+                    let Some(key) = key.as_str() else {
+                        return false;
+                    };
+                    if !map.contains_key(key) {
+                        return false;
+                    }
+                }
+            }
+            if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+                for (key, sub) in properties {
+                    if let Some(child) = map.get(key) {
+                        if !value_matches_schema(child, sub) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            match object.get("additionalProperties") {
+                Some(Value::Bool(false)) => {
+                    let known = object.get("properties").and_then(Value::as_object);
+                    if map
+                        .keys()
+                        .any(|key| known.is_none_or(|props| !props.contains_key(key)))
+                    {
+                        return false;
+                    }
+                }
+                Some(sub) if sub.is_object() => {
+                    let known = object.get("properties").and_then(Value::as_object);
+                    for (key, child) in map {
+                        if known.is_none_or(|props| !props.contains_key(key))
+                            && !value_matches_schema(child, sub)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Value::Array(items) => {
+            if let Some(item_schema) = object.get("items") {
+                if items
+                    .iter()
+                    .any(|item| !value_matches_schema(item, item_schema))
+                {
+                    return false;
+                }
+            }
+        }
+        Value::String(text) => {
+            if let Some(min) = object.get("minLength").and_then(Value::as_u64) {
+                if text.chars().count() < min as usize {
+                    return false;
+                }
+            }
+            if let Some(max) = object.get("maxLength").and_then(Value::as_u64) {
+                if text.chars().count() > max as usize {
+                    return false;
+                }
+            }
+        }
+        Value::Number(number) => {
+            let Some(number) = number.as_f64() else {
+                return false;
+            };
+            if let Some(min) = object.get("minimum").and_then(Value::as_f64) {
+                if number < min {
+                    return false;
+                }
+            }
+            if let Some(max) = object.get("maximum").and_then(Value::as_f64) {
+                if number > max {
+                    return false;
+                }
+            }
+        }
+        _ => {}
+    }
+    true
 }
 
 /// Validates accumulated tool-call arguments as JSON containing a `city`.
@@ -193,6 +423,10 @@ pub fn answer_matches_mode(answer: &str, expect: &str, mode: crate::workload::Ex
         ExpectMatch::Regex => {
             compile_answer_regex(expect).is_ok_and(|re| re.is_match(answer.trim()))
         }
+        ExpectMatch::JsonSchema => serde_json::from_str::<Value>(answer.trim())
+            .ok()
+            .zip(serde_json::from_str::<Value>(expect).ok())
+            .is_some_and(|(value, schema)| value_matches_schema(&value, &schema)),
     }
 }
 
@@ -210,10 +444,11 @@ pub fn task_ok(
     expect: Option<&str>,
     answer: &str,
 ) -> Option<bool> {
-    task_ok_match(
+    task_ok_with_tool(
         tools,
         tool_task,
         tool_args,
+        None,
         expect,
         crate::workload::ExpectMatch::Exact,
         answer,
@@ -230,12 +465,37 @@ pub fn task_ok_match(
     mode: crate::workload::ExpectMatch,
     answer: &str,
 ) -> Option<bool> {
+    task_ok_with_tool(tools, tool_task, tool_args, None, expect, mode, answer)
+}
+
+/// Like [`task_ok_match`], and checks a workload tool schema when one was sent.
+///
+/// `tool_parameters` replaces the built-in task validator. `None` keeps the
+/// registry task named by `tool_task`.
+#[must_use]
+pub fn task_ok_with_tool(
+    tools: bool,
+    tool_task: &str,
+    tool_args: &str,
+    tool_parameters: Option<&Value>,
+    expect: Option<&str>,
+    mode: crate::workload::ExpectMatch,
+    answer: &str,
+) -> Option<bool> {
     let mut checks = Vec::new();
     if tools {
-        let validate = find(tool_task)
-            .map(|task| task.validate)
-            .unwrap_or(validate_args);
-        checks.push(!tool_args.is_empty() && validate(tool_args));
+        let valid = match tool_parameters {
+            Some(schema) => serde_json::from_str::<Value>(tool_args)
+                .ok()
+                .is_some_and(|value| value_matches_schema(&value, schema)),
+            None => {
+                let validate = find(tool_task)
+                    .map(|task| task.validate)
+                    .unwrap_or(validate_args);
+                !tool_args.is_empty() && validate(tool_args)
+            }
+        };
+        checks.push(valid);
     }
     if let Some(expect) = expect {
         checks.push(answer_matches_mode(answer, expect, mode));
