@@ -226,6 +226,11 @@ async fn run_round(
     let model_label: Arc<str> = Arc::from(model);
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..config.concurrency.max(1) {
+        let item = config.workload.iter().find(|item| item.id == prompt_id);
+        let mut sampling = config.sampling.clone();
+        if let Some(system) = item.and_then(|item| item.system.clone()) {
+            sampling.system = Some(system);
+        }
         let job = RequestJob {
             client: client.clone(),
             spec: spec.clone(),
@@ -233,23 +238,16 @@ async fn run_round(
             model_label: Arc::clone(&model_label),
             prompt: prompt.to_string(),
             prompt_id: prompt_id.to_string(),
-            expect: config
-                .workload
-                .iter()
-                .find(|item| item.id == prompt_id)
-                .and_then(|item| item.expect.clone()),
-            expect_match: config
-                .workload
-                .iter()
-                .find(|item| item.id == prompt_id)
-                .map(|item| item.expect_match)
-                .unwrap_or_default(),
+            messages: item.map(|item| item.messages.clone()).unwrap_or_default(),
+            expect: item.and_then(|item| item.expect.clone()),
+            expect_match: item.map(|item| item.expect_match).unwrap_or_default(),
             max_tokens: config.max_tokens,
             timeout: Duration::from_secs(config.timeout_secs),
-            tools: config.tools,
+            tools: config.tools || item.is_some_and(|item| item.tool.is_some()),
             tool_task: config.tool_task.clone(),
+            tool: item.and_then(|item| item.tool.clone()),
             variant_label: config.variant.clone(),
-            sampling: config.sampling.clone(),
+            sampling,
         };
         let progress = progress.clone();
         tasks.spawn(async move { single_request(job, &progress).await });
@@ -336,12 +334,14 @@ struct RequestJob {
     model_label: Arc<str>,
     prompt: String,
     prompt_id: String,
+    messages: Vec<crate::workload::WorkloadMessage>,
     expect: Option<String>,
     expect_match: crate::workload::ExpectMatch,
     max_tokens: u64,
     timeout: Duration,
     tools: bool,
     tool_task: String,
+    tool: Option<crate::tools::ToolDefinition>,
     variant_label: Option<Arc<str>>,
     sampling: crate::provider::Sampling,
 }
@@ -358,12 +358,14 @@ async fn single_request(
         model_label,
         prompt,
         prompt_id,
+        messages,
         expect,
         expect_match,
         max_tokens,
         timeout,
         tools,
         tool_task,
+        tool,
         variant_label,
         sampling,
     } = job;
@@ -374,6 +376,8 @@ async fn single_request(
         tools,
         tool_task: Some(&tool_task),
         sampling,
+        messages: &messages,
+        tool: tool.as_ref(),
     };
     let start = Instant::now();
     let mut stream = stream_completion(&client, &spec, &req).await?;
@@ -487,10 +491,11 @@ async fn single_request(
     } else {
         tokens = visible_tokens;
     }
-    let task_ok = crate::tools::task_ok_match(
+    let task_ok = crate::tools::task_ok_with_tool(
         tools,
         &tool_task,
         &tool_args,
+        tool.as_ref().map(|tool| &tool.parameters),
         expect.as_deref(),
         expect_match,
         &answer,
