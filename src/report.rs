@@ -542,17 +542,23 @@ fn render_json(
                     "attempts": f.attempts,
                     "message": f.message,
                 })).collect::<Vec<_>>(),
-                "runs": s.runs.iter().map(|r| serde_json::json!({
-                    "total_ms": r.total_ms,
-                    "ttfb_ms": r.ttfb_ms,
-                    "tokens": r.tokens,
-                    "chars": r.chars,
-                    "prompt_tokens": r.prompt_tokens,
-                    "cache_read_tokens": r.cache_read_tokens,
-                    "cache_write_tokens": r.cache_write_tokens,
-                    "cache_write_1h_tokens": r.cache_write_1h_tokens,
-                    "tokens_per_sec": r.tokens_per_sec(),
-                })).collect::<Vec<_>>(),
+                "runs": s.runs.iter().map(|r| {
+                    let mut run = serde_json::json!({
+                        "total_ms": r.total_ms,
+                        "ttfb_ms": r.ttfb_ms,
+                        "tokens": r.tokens,
+                        "chars": r.chars,
+                        "prompt_tokens": r.prompt_tokens,
+                        "cache_read_tokens": r.cache_read_tokens,
+                        "cache_write_tokens": r.cache_write_tokens,
+                        "cache_write_1h_tokens": r.cache_write_1h_tokens,
+                        "tokens_per_sec": r.tokens_per_sec(),
+                    });
+                    if !r.prompt_id.is_empty() {
+                        run["prompt_id"] = serde_json::json!(r.prompt_id);
+                    }
+                    run
+                }).collect::<Vec<_>>(),
                 "mean_total_ms": s.mean_total_ms(),
                 "median_total_ms": s.median_total_ms(),
                 "p95_total_ms": s.p95_total_ms(),
