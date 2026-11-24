@@ -154,6 +154,12 @@ pub fn tool_body(wire: Wire, tool: &ToolDefinition) -> Value {
                 "parameters": tool.parameters,
             }
         }]),
+        Wire::OpenAiResponses => json!([{
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+        }]),
         Wire::Anthropic => json!([{
             "name": tool.name,
             "description": tool.description,
