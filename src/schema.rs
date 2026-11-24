@@ -110,7 +110,8 @@ pub fn race_report_schema() -> String {
                 "cache_read_tokens": {"type": "integer", "minimum": 0},
                 "cache_write_tokens": {"type": "integer", "minimum": 0},
                 "cache_write_1h_tokens": {"type": "integer", "minimum": 0},
-                "tokens_per_sec": {"type": "number", "minimum": 0}
+                "tokens_per_sec": {"type": "number", "minimum": 0},
+                "prompt_id": {"type": "string"}
               }
             }
           },
