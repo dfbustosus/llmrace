@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-11-24
+
+The terminal table shows what the workload proved, and the demo is a real model giving a real wrong answer.
+
+### Added
+
+- The terminal table gains a **Pass** column whenever the race had a task (`--workload` with `expect`, or `--tools`). A race with no task keeps today's shape
+- `examples/workloads/demo-local.jsonl`: three short prompts with `contains`, `exact` and `contains` matching, sized so a small local model passes two and honestly fails one
+
+### Changed
+
+- The demo GIF is a real Ollama race (llama3.2:1b, no API key) on that workload: per-lane Pass counts, the significance line, and the podium
+
 ## [1.31.0] - 2026-11-24
 
 Gate failures can now land in the Security tab and on the PR checks pane, with no bot.
@@ -722,7 +735,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.31.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.32.0...HEAD
+[1.32.0]: https://github.com/dfbustosus/llmrace/compare/v1.31.0...v1.32.0
 [1.31.0]: https://github.com/dfbustosus/llmrace/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/dfbustosus/llmrace/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/dfbustosus/llmrace/compare/v1.28.0...v1.29.0
