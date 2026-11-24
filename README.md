@@ -401,6 +401,25 @@ A ready-to-copy workflow lives in [`docs/example-latency-gate.yml`](docs/example
 
 ## Real-world results
 
+Measured 2026-11-24 from South America — OpenAI direct plus three frontier models through OpenRouter, racing the [`demo-local`](examples/workloads/demo-local.jsonl) workload (3 short-answer prompts, `contains`/`exact`/`contains` checks), 3 rounds each, warmup excluded, provider-default sampling:
+
+| Provider | Model | TTFT | p95 | Tokens/s | Pass | Podium |
+|---|---|---:|---:|---:|---|---|
+| openrouter | `anthropic/claude-haiku-4.5` | 993 ms | 1352 ms | **394.5** | 3/3 | 🥈 52.3 |
+| openrouter | `meta-llama/llama-3.3-70b-instruct` | **327 ms** | **420 ms** | 104.9 | 3/3 | 🥇 55.9 |
+| openrouter | `deepseek/deepseek-chat-v3.1` | 494 ms | 679 ms | 88.8 | 3/3 | 🥉 45.0 |
+| openai | `gpt-4o-mini` | 677 ms | 849 ms | 18.3 | 3/3 | 13.7 |
+
+The finding: claude-haiku-4.5 *streams* almost 4× faster than llama-3.3-70b-instruct (394.5 vs 104.9 tok/s) but starts answering three times later (993 vs 327 ms TTFT) — and the verdict is **`⚖ Δ +630 ms, NOT significant (p = 0.08)`**. At 3 rounds the gap could be noise; the podium still goes to the lane that finishes first *and* passes every prompt. Reproduce:
+
+```bash
+llmrace openai=gpt-4o-mini \
+  openrouter=anthropic/claude-haiku-4.5 \
+  openrouter=deepseek/deepseek-chat-v3.1 \
+  openrouter=meta-llama/llama-3.3-70b-instruct \
+  --workload examples/workloads/demo-local.jsonl -n 3 --warmup 1 --winner
+```
+
 Measured 2026-11-15 from South America — three OpenAI models head-to-head vs local inference (Ollama on Apple M5 Pro / 48 GB), 5 rounds each, warmup excluded:
 
 | Provider | Model | TTFB | p95 | Tokens/s | ITL p95 | Notes |
