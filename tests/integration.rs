@@ -126,6 +126,72 @@ fn openai_wire_decodes_deltas_and_usage() {
 }
 
 #[test]
+fn sarif_names_the_prompt_and_rule_for_each_gate_failure() {
+    let baseline = BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":110.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,"prompts":[{"id":"sum","task_pass_rate":1.0,"mean_total_ms":100.0,"mean_ttfb_ms":20.0}]}]}"#,
+    )
+    .unwrap();
+    let mut lane = regression_summary("mock", 100.0, 110.0, 20.0, 80.0);
+    lane.runs = vec![
+        RunMetrics {
+            prompt_id: "sum".into(),
+            task_ok: Some(false),
+            total_ms: 300.0,
+            ttfb_ms: 20.0,
+            tokens: 24,
+            ..RunMetrics::default()
+        },
+        RunMetrics {
+            prompt_id: "sum".into(),
+            task_ok: Some(false),
+            total_ms: 310.0,
+            ttfb_ms: 20.0,
+            tokens: 24,
+            ..RunMetrics::default()
+        },
+    ];
+    let regression = evaluate(std::slice::from_ref(&lane), &baseline, 15.0);
+    assert!(regression.gate_failed(false));
+    let log: serde_json::Value = serde_json::from_str(&llmrace::sarif::sarif(
+        &[lane],
+        Some((&regression, 15.0, false)),
+        None,
+    ))
+    .unwrap();
+    assert_eq!(log["version"], "2.1.0");
+    let results = log["runs"][0]["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    let rules: Vec<&str> = results
+        .iter()
+        .map(|r| r["ruleId"].as_str().unwrap())
+        .collect();
+    assert!(rules.contains(&"llmrace/regression"), "{rules:?}");
+    let prompt_hit = results.iter().any(|r| {
+        r["message"]["text"]
+            .as_str()
+            .is_some_and(|m| m.contains("prompt sum"))
+    });
+    assert!(prompt_hit, "{results:?}");
+    let located = results.iter().any(|r| {
+        r["locations"][0]["logicalLocations"]
+            .as_array()
+            .is_some_and(|l| l.iter().any(|loc| loc["kind"] == "prompt"))
+    });
+    assert!(located, "{results:?}");
+    let driver_rules = log["runs"][0]["tool"]["driver"]["rules"]
+        .as_array()
+        .unwrap();
+    assert!(driver_rules.iter().any(|r| r["id"] == "llmrace/regression"));
+
+    let lane = regression_summary("mock", 100.0, 110.0, 900.0, 80.0);
+    let log: serde_json::Value =
+        serde_json::from_str(&llmrace::sarif::sarif(&[lane], None, Some(500.0))).unwrap();
+    let results = log["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["ruleId"], "llmrace/ttfb-gate");
+}
+
+#[test]
 fn junit_xml_names_the_failing_prompt_and_escapes_names() {
     use llmrace::bench::LaneSummary;
     let mut lane = regression_summary("openai", 100.0, 110.0, 20.0, 80.0);
