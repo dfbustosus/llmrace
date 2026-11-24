@@ -126,6 +126,35 @@ fn openai_wire_decodes_deltas_and_usage() {
 }
 
 #[test]
+fn per_prompt_table_names_the_model_when_lanes_share_a_provider() {
+    use llmrace::bench::LaneSummary;
+    let lane = |model: &str, prompt: &str| LaneSummary {
+        name: "openrouter".into(),
+        model: model.into(),
+        runs: vec![RunMetrics {
+            prompt_id: prompt.into(),
+            task_ok: Some(true),
+            total_ms: 100.0,
+            ttfb_ms: 10.0,
+            tokens: 8,
+            ..RunMetrics::default()
+        }],
+        ..LaneSummary::default()
+    };
+    let md = llmrace::report::markdown(
+        &[lane("a/one", "capital"), lane("b/two", "capital")],
+        "w",
+        1,
+        256,
+    );
+    assert!(md.contains("| openrouter/a/one | `capital` |"), "{md}");
+    assert!(md.contains("| openrouter/b/two | `capital` |"), "{md}");
+
+    let solo = llmrace::report::markdown(&[lane("a/one", "capital")], "w", 1, 256);
+    assert!(solo.contains("| openrouter | `capital` |"), "{solo}");
+}
+
+#[test]
 fn sarif_names_the_prompt_and_rule_for_each_gate_failure() {
     let baseline = BaselineReport::from_json_str(
         r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":110.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0,"prompts":[{"id":"sum","task_pass_rate":1.0,"mean_total_ms":100.0,"mean_ttfb_ms":20.0}]}]}"#,
