@@ -280,16 +280,9 @@ pub(crate) async fn run_suite(
         // resolve provider specs
         let mut specs: Vec<llmrace::provider::ProviderSpec> = Vec::new();
         for name in &providers {
-            let (id, model_override) = match name.split_once('=') {
-                Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
-                _ => (name.as_str(), None),
-            };
-            let Some(mut spec) = llmrace::provider::ProviderSpec::find(id) else {
+            let Some(spec) = llmrace::provider::ProviderSpec::parse(name) else {
                 anyhow::bail!("unknown provider '{name}' (try --list)");
             };
-            if let Some(m) = model_override {
-                spec.default_model = std::sync::Arc::from(m);
-            }
             specs.push(spec);
         }
         if specs.is_empty() {
