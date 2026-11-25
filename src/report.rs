@@ -23,6 +23,64 @@ pub(crate) fn significance_line(summaries: &[LaneSummary]) -> Option<String> {
     })
 }
 
+/// One plain-language sentence: who leads, by how much, and whether the
+/// gap is real. `None` with fewer than two successful lanes.
+///
+/// The table answers "what happened" in full detail; this is the first
+/// question every user asks — who won, by how much, and should I trust
+/// it — in words.
+#[must_use]
+pub fn verdict_line(summaries: &[LaneSummary]) -> Option<String> {
+    let ranked = rank(summaries);
+    if ranked.len() < 2 {
+        return None;
+    }
+    let (winner, runner) = (ranked[0], ranked[1]);
+    let label = |s: &LaneSummary| {
+        let dup = summaries
+            .iter()
+            .filter(|x| x.name == s.name && x.successful())
+            .count()
+            > 1;
+        if dup && !s.model.is_empty() {
+            format!("{}/{}", s.name, s.model)
+        } else {
+            s.name.clone()
+        }
+    };
+    let mut line = format!(
+        "Verdict: {} leads — {:.1} tok/s, {:.0} ms mean, TTFT {} ms",
+        label(winner),
+        winner.mean_tokens_per_sec(),
+        winner.mean_total_ms(),
+        fmt_ms(winner.mean_ttfb_ms())
+    );
+    if let Some((ok, n)) = winner.task_pass() {
+        line.push_str(&format!(", {ok}/{n} prompts passed"));
+    }
+    let ratio = if winner.mean_total_ms() > 1.0 {
+        runner.mean_total_ms() / winner.mean_total_ms()
+    } else {
+        1.0
+    };
+    if ratio >= 1.1 {
+        line.push_str(&format!(" — {ratio:.1}× faster than {}", label(runner)));
+    } else {
+        line.push_str(&format!(" — within 10% of {}", label(runner)));
+    }
+    if let Some((_, _, _, p, significant)) = top_two_significance(summaries) {
+        if significant {
+            line.push_str(&format!("; the gap is significant (p={p:.3})"));
+        } else {
+            line.push_str(&format!(
+                "; the gap could be noise (p={p:.2}) — more rounds would tell"
+            ));
+        }
+    }
+    line.push('.');
+    Some(line)
+}
+
 /// Renders a shareable markdown report ranked by aggregate tokens/s.
 ///
 /// When lanes carry variant labels (a `--sweep` run), one table is emitted
@@ -59,6 +117,9 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
         out.push_str(&format!(
             "\n*Significance*: {a} vs {b} — Δ {delta:+.0} ms mean latency, {verdict} (Welch's t-test on per-run latencies).\n"
         ));
+    }
+    if let Some(line) = verdict_line(summaries) {
+        out.push_str(&format!("\n*{line}*\n"));
     }
 
     let unpriced: Vec<&LaneSummary> = summaries
@@ -708,6 +769,7 @@ fn render_json(
         "request_sha256": request_sha256,
         "runs": runs,
         "max_tokens": max_tokens,
+        "verdict": verdict_line(summaries),
         "significance": top_two_significance(summaries).map(
             |(a, b, delta_ms, p, significant)| {
                 serde_json::json!({
@@ -983,6 +1045,9 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
             s.name,
             s.error.as_deref().unwrap_or("no successful rounds")
         ));
+    }
+    if let Some(line) = verdict_line(summaries) {
+        out.push_str(&format!("{line}\n"));
     }
     if let Some((a, b, delta, p, significant)) = top_two_significance(summaries) {
         let verdict = if significant {
