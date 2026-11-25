@@ -271,6 +271,8 @@ pub(crate) async fn run_suite(
                 .tool_task
                 .clone()
                 .unwrap_or_else(|| "weather".to_string()),
+            retries: cli.retries,
+            warmup_mode: cli.warmup_mode(),
             ..llmrace::bench::BenchConfig::default()
         };
         bench.sampling = crate::sampling_from_cli(cli)?;
