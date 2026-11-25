@@ -299,6 +299,17 @@ pub fn sampling_note(sampling: &crate::provider::Sampling) -> Option<String> {
     sampling_inline(sampling).map(|s| format!("- **Sampling**: {s}\n"))
 }
 
+/// Inserts a metadata note above the Generated line, or appends it when
+/// the report has none. The shared way [`sampling_note`] and
+/// [`cache_note`] reach a report.
+pub fn insert_note(md: &mut String, note: &str) {
+    if let Some(pos) = md.find("- **Generated**:") {
+        md.insert_str(pos, note);
+    } else {
+        md.push_str(note);
+    }
+}
+
 /// A one-line markdown note naming the lanes that mix cold and warm
 /// rounds. `None` when every lane is uniformly cold or uniformly warm.
 #[must_use]
@@ -883,40 +894,28 @@ fn top_two_significance(summaries: &[LaneSummary]) -> Option<(String, String, f6
 pub fn terminal_table(summaries: &[LaneSummary]) -> String {
     let ranked = rank(summaries);
     let any_task = summaries.iter().any(|s| s.task_pass().is_some());
-    let mut out = if any_task {
-        format!(
-            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>5} {:>5} {:>7}\n",
-            "#",
-            "Provider",
-            "Model",
-            "C",
-            "Lat (mean±CI)",
-            "p95",
-            "TTFT",
-            "Server",
-            "Network",
-            "ITLp95",
-            "Fail",
-            "Pass",
-            "Tok/s"
-        )
+    // one header/row shape, with the Pass column spliced in when the race
+    // had a task
+    let task_head = if any_task {
+        format!(" {:>5} {:>5}", "Fail", "Pass")
     } else {
-        format!(
-            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8} {:>5} {:>7}\n",
-            "#",
-            "Provider",
-            "Model",
-            "C",
-            "Lat (mean±CI)",
-            "p95",
-            "TTFT",
-            "Server",
-            "Network",
-            "ITLp95",
-            "Fail",
-            "Tok/s"
-        )
+        format!(" {:>5}", "Fail")
     };
+    let mut out = format!(
+        "{:<4} {:<14} {:<24} {:>3} {:>16} {:>7} {:>8} {:>7} {:>8} {:>8}{} {:>7}\n",
+        "#",
+        "Provider",
+        "Model",
+        "C",
+        "Lat (mean±CI)",
+        "p95",
+        "TTFT",
+        "Server",
+        "Network",
+        "ITLp95",
+        task_head,
+        "Tok/s"
+    );
     out.push_str(&"-".repeat(out.len()));
     out.push('\n');
     for (i, s) in ranked.iter().enumerate() {
@@ -947,56 +946,36 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
             String::new()
         };
         let fail = format!("{}/{}", s.failures.len(), s.measured_rounds());
-        let pass = s
-            .task_pass()
-            .map(|(ok, n)| format!("{ok}/{n}"))
-            .unwrap_or_else(|| "—".into());
-        if any_task {
-            out.push_str(&format!(
-                "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>5} {:>5} {:>8.1}{}{}\n",
-                i + 1,
-                s.name,
-                crate::util::truncate(&s.model, 26),
-                s.concurrency,
-                mean,
-                s.p95_total_ms(),
-                fmt_ms(s.mean_ttfb_ms()),
-                s.median_server_ms()
-                    .map(crate::stats::fmt_ms)
-                    .unwrap_or_else(|| "—".into()),
-                s.network_overhead_ms()
-                    .map(|v| format!("{v:+.0}"))
-                    .unwrap_or_else(|| "—".into()),
-                itl,
-                fail,
-                pass,
-                s.mean_tokens_per_sec(),
-                reasoning,
-                mark
-            ));
+        let fail_cols = if any_task {
+            let pass = s
+                .task_pass()
+                .map(|(ok, n)| format!("{ok}/{n}"))
+                .unwrap_or_else(|| "—".into());
+            format!(" {:>5} {:>5}", fail, pass)
         } else {
-            out.push_str(&format!(
-                "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8} {:>5} {:>8.1}{}{}\n",
-                i + 1,
-                s.name,
-                crate::util::truncate(&s.model, 26),
-                s.concurrency,
-                mean,
-                s.p95_total_ms(),
-                fmt_ms(s.mean_ttfb_ms()),
-                s.median_server_ms()
-                    .map(crate::stats::fmt_ms)
-                    .unwrap_or_else(|| "—".into()),
-                s.network_overhead_ms()
-                    .map(|v| format!("{v:+.0}"))
-                    .unwrap_or_else(|| "—".into()),
-                itl,
-                fail,
-                s.mean_tokens_per_sec(),
-                reasoning,
-                mark
-            ));
-        }
+            format!(" {:>5}", fail)
+        };
+        out.push_str(&format!(
+            "{:<4} {:<14} {:<24} {:>3} {:>16} {:>6.0}ms {:>6}ms {:>7} {:>8} {:>8}{} {:>8.1}{}{}\n",
+            i + 1,
+            s.name,
+            crate::util::truncate(&s.model, 26),
+            s.concurrency,
+            mean,
+            s.p95_total_ms(),
+            fmt_ms(s.mean_ttfb_ms()),
+            s.median_server_ms()
+                .map(crate::stats::fmt_ms)
+                .unwrap_or_else(|| "—".into()),
+            s.network_overhead_ms()
+                .map(|v| format!("{v:+.0}"))
+                .unwrap_or_else(|| "—".into()),
+            itl,
+            fail_cols,
+            s.mean_tokens_per_sec(),
+            reasoning,
+            mark
+        ));
     }
     for s in summaries.iter().filter(|s| !s.successful()) {
         out.push_str(&format!(
