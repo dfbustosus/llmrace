@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.35.1] - 2026-11-24
+
+### Fixed
+
+- `--suite` now propagates `--warmup-mode` and `--retries` into every entry instead of silently resetting them to defaults; the CLI has one shared warmup-mode mapping
+- The live OpenAI lane test asks for a paragraph, not a single word — a one-token answer can honestly measure under 10 tok/s, which is a test bug, not a measurement bug
+
+### Added
+
+- `tests/live_openrouter.rs`: env-gated live smoke tests for the OpenRouter wire (stream, honest TTFB, priced cost), mirroring `tests/live_openai.rs`. Both suites pass against the real APIs today
+
 ## [1.35.0] - 2026-11-24
 
 Embedders can now watch a race live and stop it cleanly, through the public API.
@@ -769,7 +780,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.35.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.35.1...HEAD
+[1.35.1]: https://github.com/dfbustosus/llmrace/compare/v1.35.0...v1.35.1
 [1.35.0]: https://github.com/dfbustosus/llmrace/compare/v1.34.0...v1.35.0
 [1.34.0]: https://github.com/dfbustosus/llmrace/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/dfbustosus/llmrace/compare/v1.32.1...v1.33.0
