@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-11-25
+
+The first question every user asks — who won, by how much, and should I trust it — is now one sentence.
+
+### Added
+
+- A **Verdict line** after the terminal table and in the markdown report: the leader, its throughput and TTFT, prompts passed, how many times faster than the runner-up (or "within 10%"), and whether the gap is significant or could be noise — with "more rounds would tell" when it could not be called
+- `race.json` carries the same sentence as an optional `verdict` string, so agents and pipelines read the conclusion without parsing the table
+
 ## [1.37.2] - 2026-11-25
 
 ### Fixed
@@ -818,7 +827,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.37.2...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.38.0...HEAD
+[1.38.0]: https://github.com/dfbustosus/llmrace/compare/v1.37.2...v1.38.0
 [1.37.2]: https://github.com/dfbustosus/llmrace/compare/v1.37.1...v1.37.2
 [1.37.1]: https://github.com/dfbustosus/llmrace/compare/v1.37.0...v1.37.1
 [1.37.0]: https://github.com/dfbustosus/llmrace/compare/v1.36.0...v1.37.0
