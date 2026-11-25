@@ -126,6 +126,52 @@ fn openai_wire_decodes_deltas_and_usage() {
 }
 
 #[test]
+fn verdict_line_names_the_leader_the_ratio_and_the_trust() {
+    use llmrace::bench::LaneSummary;
+    let lane = |name: &str, total: f64, ttfb: f64, tokens: u64| LaneSummary {
+        name: name.into(),
+        model: "m".into(),
+        runs: (0..4)
+            .map(|i| RunMetrics {
+                total_ms: total + i as f64,
+                ttfb_ms: ttfb,
+                tokens,
+                ..RunMetrics::default()
+            })
+            .collect(),
+        ..LaneSummary::default()
+    };
+    let fast = lane("alpha", 100.0, 20.0, 50);
+    let slow = lane("beta", 400.0, 30.0, 10);
+    let line = llmrace::report::verdict_line(&[slow.clone(), fast.clone()]).unwrap();
+    assert!(line.starts_with("Verdict: alpha leads"), "{line}");
+    assert!(line.contains("faster than beta"), "{line}");
+    assert!(line.contains("×"), "{line}");
+    assert!(
+        line.contains("significant") || line.contains("could be noise"),
+        "{line}"
+    );
+
+    let near_a = lane("a", 100.0, 20.0, 50);
+    let near_b = lane("b", 104.0, 22.0, 49);
+    let line = llmrace::report::verdict_line(&[near_a, near_b]).unwrap();
+    assert!(line.contains("within 10%"), "{line}");
+
+    assert!(llmrace::report::verdict_line(std::slice::from_ref(&fast)).is_none());
+
+    let mut tasked = fast.clone();
+    for run in &mut tasked.runs {
+        run.task_ok = Some(true);
+    }
+    let line = llmrace::report::verdict_line(&[tasked, slow.clone()]).unwrap();
+    assert!(line.contains("4/4 prompts passed"), "{line}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(&llmrace::report::json_report(&[fast, slow], "p", 4, 32)).unwrap();
+    assert!(json["verdict"].as_str().unwrap().starts_with("Verdict:"));
+}
+
+#[test]
 fn provider_spec_parse_handles_id_and_model_override() {
     let plain = ProviderSpec::parse("groq").unwrap();
     assert_eq!(*plain.id, *"groq");
