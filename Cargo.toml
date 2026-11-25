@@ -1,6 +1,6 @@
 [package]
 name = "llmrace"
-version = "1.37.1"
+version = "1.37.2"
 edition = "2021"
 rust-version = "1.88"
 description = "Race the same LLM request across providers: latency, TTFT, tokens/s, cost, and a CI gate that names the prompt."
@@ -16,6 +16,8 @@ categories = ["command-line-utilities", "development-tools"]
 exclude = [
   "docs/demo.gif",
   "docs/demo.tape",
+  "docs/demo-mcp.gif",
+  "docs/demo-mcp.tape",
   "docs/social-preview.png",
   ".github/**",
   "python/**",
