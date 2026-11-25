@@ -30,6 +30,65 @@ PLATFORM_TAGS = {
 
 SUMMARY = "Race LLM providers head-to-head: latency, TTFT, tokens/s, cost, and a CI gate that names the prompt."
 
+LONG_DESCRIPTION = """\
+# llmrace
+
+**The same request, every provider, one verdict.**
+
+Race LLM providers head-to-head from your terminal: latency, TTFT,
+tokens/s, p95, cost and task success — live. Then a CI gate that names
+the prompt that got worse.
+
+This wheel carries the compiled `llmrace` binary for your platform. No
+Rust toolchain needed.
+
+## Quick start
+
+```bash
+pip install llmrace
+
+# no API key needed — two mock lanes, a podium, and whether the gap is noise
+llmrace mock mock --no-tui -n 3 --warmup 0 --winner
+
+# the same race on the providers you pay for
+llmrace openai anthropic groq gemini --winner
+
+# one workload, every lane, the same prompt on the same round
+llmrace openai groq --workload prompts.jsonl --winner
+```
+
+## What it does
+
+- **The race.** One streaming request to every provider at the same
+  time. TTFT, tokens/s, p95, inter-token gaps, cost per run (cache
+  discounts priced), and goodput — a lane that drops half its rounds
+  cannot win on the survivors.
+- **The answer.** A workload checks each prompt (`exact`, `contains`,
+  `regex` or a JSON Schema). A fast wrong answer is a miss. Workloads
+  can be multi-turn conversations with per-prompt system prompts and
+  custom tool schemas.
+- **The gate.** `--baseline` exits 1 when one prompt's success falls or
+  its latency rises past the threshold — with a Welch significance test
+  so noise does not fail your build. `race.json` names the provider, the
+  metric and the prompt id; JUnit and SARIF reports plug the same
+  verdict into test reporters and code scanning.
+- **The noise check.** Every comparison says whether the gap is real or
+  could be noise (Welch's t-test, p < 0.05).
+- **Agents.** `llmrace --mcp` is an MCP server: agents race providers,
+  gate baselines and inspect the registry as native tool calls.
+- **Embeddable.** The `llmrace` Rust crate runs a full multi-lane race
+  from your own test suite with scoped per-race pricing.
+
+Single static binary. No telemetry. 18 cloud providers plus local
+Ollama and any OpenAI-compatible endpoint. Also on Homebrew
+(`brew install dfbustosus/tap/llmrace`), crates.io, Docker and as a
+GitHub Action.
+
+Links: [GitHub](https://github.com/dfbustosus/llmrace) ·
+[Changelog](https://github.com/dfbustosus/llmrace/blob/main/CHANGELOG.md) ·
+[Issue tracker](https://github.com/dfbustosus/llmrace/issues)
+"""
+
 
 def read_binary(archive: str) -> tuple[str, bytes]:
     """Return (binary filename, contents) from a release archive."""
@@ -79,19 +138,23 @@ def build(version: str, archive: str, outdir: str) -> str:
         f"Version: {version}\n"
         f"Summary: {SUMMARY}\n"
         "License: MIT OR Apache-2.0\n"
+        "Keywords: llm, benchmark, openai, anthropic, latency, ci, mcp\n"
         "Requires-Python: >=3.9\n"
         "Project-URL: Repository, https://github.com/dfbustosus/llmrace\n"
         "Project-URL: Changelog, https://github.com/dfbustosus/llmrace/blob/main/CHANGELOG.md\n"
+        "Project-URL: Issues, https://github.com/dfbustosus/llmrace/issues\n"
+        "Classifier: Development Status :: 5 - Production/Stable\n"
         "Classifier: Environment :: Console\n"
-        "Classifier: Operating System :: OS Independent\n"
+        "Classifier: Intended Audience :: Developers\n"
+        "Classifier: Operating System :: MacOS\n"
+        "Classifier: Operating System :: POSIX :: Linux\n"
+        "Classifier: Operating System :: Microsoft :: Windows\n"
         "Classifier: Programming Language :: Rust\n"
         "Classifier: Topic :: Software Development :: Testing\n"
+        "Classifier: Topic :: Software Development :: Quality Assurance\n"
         "Description-Content-Type: text/markdown\n"
         "\n"
-        "Race the same LLM request across providers — latency, TTFT, tokens/s, cost — "
-        "with a live terminal view and a CI gate that names the prompt that got worse. "
-        "This wheel bundles the compiled binary; see the "
-        "[README](https://github.com/dfbustosus/llmrace) for usage.\n"
+        f"{LONG_DESCRIPTION}"
     ).encode()
     wheel_meta = (
         "Wheel-Version: 1.0\n"
