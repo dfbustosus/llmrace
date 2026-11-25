@@ -413,7 +413,7 @@ Four tools: `llmrace_race` (providers, prompt/workload, runs, winner → markdow
 
 ![llmrace MCP demo](docs/demo-mcp.gif)
 
-*The server the way an agent sees it: `tools/list`, then a race returned as a tool result. Recorded from [`examples/mcp-demo.sh`](examples/mcp-demo.sh) — runnable offline, no key.*
+*The server the way an agent sees it: `tools/list`, then a real race — GPT-4o-mini vs DeepSeek, with cost — returned as a tool result. Recorded from [`examples/mcp-demo.sh`](examples/mcp-demo.sh); run it with your providers, or with none — it defaults to two offline mock lanes.*
 
 ## Using llmrace as a CI quality gate
 
