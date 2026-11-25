@@ -126,6 +126,19 @@ fn openai_wire_decodes_deltas_and_usage() {
 }
 
 #[test]
+fn provider_spec_parse_handles_id_and_model_override() {
+    let plain = ProviderSpec::parse("groq").unwrap();
+    assert_eq!(*plain.id, *"groq");
+    assert_eq!(*plain.default_model, *"llama-3.3-70b-versatile");
+    let named = ProviderSpec::parse("openai=gpt-4.1").unwrap();
+    assert_eq!(*named.id, *"openai");
+    assert_eq!(*named.default_model, *"gpt-4.1");
+    assert!(ProviderSpec::parse("nosuch").is_none());
+    assert!(ProviderSpec::parse("openai=").is_none());
+    assert!(ProviderSpec::parse("=model").is_none());
+}
+
+#[test]
 fn per_prompt_table_names_the_model_when_lanes_share_a_provider() {
     use llmrace::bench::LaneSummary;
     let lane = |model: &str, prompt: &str| LaneSummary {
