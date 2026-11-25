@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-11-25
+
+Agents can race providers as tools now, and any repo can gate prompts on commit.
+
+### Added
+
+- `llmrace --mcp`: an MCP server on stdio (newline-delimited JSON-RPC). Four tools — `llmrace_race` (markdown report), `llmrace_gate` (verdict JSON plus the regression section; `isError` when the gate fails), `llmrace_doctor` (configured providers, never key values), `llmrace_list` (the registry). Keys come from the environment; `mock` races offline
+- `.pre-commit-hooks.yaml`: `llmrace-gate` runs the installed binary against your committed baseline in any repository using pre-commit
+
 ## [1.35.1] - 2026-11-24
 
 ### Fixed
@@ -780,7 +789,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.35.1...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.36.0...HEAD
+[1.36.0]: https://github.com/dfbustosus/llmrace/compare/v1.35.1...v1.36.0
 [1.35.1]: https://github.com/dfbustosus/llmrace/compare/v1.35.0...v1.35.1
 [1.35.0]: https://github.com/dfbustosus/llmrace/compare/v1.34.0...v1.35.0
 [1.34.0]: https://github.com/dfbustosus/llmrace/compare/v1.33.0...v1.34.0
