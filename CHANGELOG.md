@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.37.2] - 2026-11-25
+
+### Fixed
+
+- The PyPI project page now carries a real description: quick start, the race/gate/CI/MCP capability story, keywords, classifiers and issue links, instead of one bare paragraph
+
+### Added
+
+- `docs/demo-mcp.gif` in the README's MCP section and `examples/mcp-demo.sh` it records: `tools/list`, then a mock race returned as a tool result, runnable offline
+
 ## [1.37.1] - 2026-11-25
 
 ### Fixed
@@ -808,7 +818,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.37.1...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.37.2...HEAD
+[1.37.2]: https://github.com/dfbustosus/llmrace/compare/v1.37.1...v1.37.2
 [1.37.1]: https://github.com/dfbustosus/llmrace/compare/v1.37.0...v1.37.1
 [1.37.0]: https://github.com/dfbustosus/llmrace/compare/v1.36.0...v1.37.0
 [1.36.0]: https://github.com/dfbustosus/llmrace/compare/v1.35.1...v1.36.0
