@@ -395,6 +395,23 @@ impl ProviderSpec {
             .find(|p| *p.id == *name)
     }
 
+    /// Parses one CLI provider argument: `id` or `id=model`.
+    ///
+    /// `None` when the id is not in the registry — callers name their own
+    /// error context (`--list`, `llmrace_list`).
+    #[must_use]
+    pub fn parse(arg: &str) -> Option<ProviderSpec> {
+        let (id, model) = match arg.split_once('=') {
+            Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
+            _ => (arg, None),
+        };
+        let mut spec = Self::find(id)?;
+        if let Some(model) = model {
+            spec.default_model = Arc::from(model);
+        }
+        Some(spec)
+    }
+
     /// `true` when the required API key is present in the environment.
     pub fn is_available(&self) -> bool {
         self.api_key_env
