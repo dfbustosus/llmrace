@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod mcp;
 mod modes;
 mod run;
 
@@ -137,6 +138,11 @@ pub(crate) struct Cli {
     /// every scored lane has a price.
     #[arg(help_heading = "Scoring", long)]
     weights: Option<String>,
+
+    /// Run an MCP server on stdio — agents race providers and gate
+    /// baselines as tools (race, gate, doctor, list).
+    #[arg(help_heading = "Modes", long)]
+    mcp: bool,
 
     /// Compare two saved JSON reports side by side (a.json,b.json) and exit.
     #[arg(help_heading = "Modes", long, value_delimiter = ',')]
@@ -416,6 +422,9 @@ async fn dispatch(
 
     if cli.init {
         return modes::init().map(|_| 0);
+    }
+    if cli.mcp {
+        return mcp::serve().await.map(|_| 0);
     }
     if cli.doctor {
         return modes::doctor(cli.json).await.map(|_| 0);
