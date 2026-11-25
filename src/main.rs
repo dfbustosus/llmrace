@@ -12,7 +12,6 @@ use clap::Parser;
 use llmrace::bench::BenchConfig;
 use llmrace::provider::ProviderSpec;
 use run::{resolve_model, RunConfig};
-use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -773,16 +772,10 @@ fn resolve_providers(cli: &Cli) -> Result<Vec<ProviderSpec>> {
             // `provider=model` entries race that provider with a specific
             // model; the same provider may appear multiple times with
             // different models.
-            let (id, model_override) = match arg.split_once('=') {
-                Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
-                _ => (arg.as_str(), None),
-            };
-            let mut spec = ProviderSpec::find(id)
-                .with_context(|| format!("unknown provider '{arg}' (try --list)"))?;
-            if let Some(m) = model_override {
-                spec.default_model = Arc::from(m);
-            }
-            out.push(spec);
+            out.push(
+                ProviderSpec::parse(arg)
+                    .with_context(|| format!("unknown provider '{arg}' (try --list)"))?,
+            );
         }
         return Ok(out);
     }
