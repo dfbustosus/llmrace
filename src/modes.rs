@@ -212,6 +212,18 @@ pub(crate) async fn run_suite(
 ) -> anyhow::Result<()> {
     let mut results: Vec<llmrace::suite::SuiteResult> = Vec::new();
 
+    // Shared race configuration, built once by the same builder the race
+    // path uses. Entries clone it and override what they define.
+    let mut base_cli = cli.clone();
+    if base_cli.providers.is_empty() {
+        base_cli.providers = suite
+            .suites
+            .first()
+            .map(|entry| entry.providers.clone())
+            .unwrap_or_default();
+    }
+    let base = crate::build_run_config(base_cli, Default::default())?;
+
     for (idx, entry) in suite.suites.iter().enumerate() {
         println!(
             "\n▸ suite {}/{} — {} ({})",
@@ -251,32 +263,6 @@ pub(crate) async fn run_suite(
             entry.providers.clone()
         };
 
-        // build a mini RunConfig for this entry
-        let client = llmrace::provider::benchmark_client(
-            std::time::Duration::from_secs(cli.timeout),
-            entry.concurrency,
-        )?;
-
-        let bench_prompt = prompt_label;
-        let mut bench = llmrace::bench::BenchConfig {
-            prompt,
-            workload,
-            runs: entry.runs.max(1),
-            warmup: entry.warmup,
-            concurrency: entry.concurrency.max(1),
-            max_tokens: entry.max_tokens,
-            timeout_secs: cli.timeout,
-            tools: entry.tools,
-            tool_task: entry
-                .tool_task
-                .clone()
-                .unwrap_or_else(|| "weather".to_string()),
-            retries: cli.retries,
-            warmup_mode: cli.warmup_mode(),
-            ..llmrace::bench::BenchConfig::default()
-        };
-        bench.sampling = crate::sampling_from_cli(cli)?;
-
         // resolve provider specs
         let mut specs: Vec<llmrace::provider::ProviderSpec> = Vec::new();
         for name in &providers {
@@ -299,41 +285,34 @@ pub(crate) async fn run_suite(
             format!("{stem}-{}.md", entry.name.replace(' ', "-"))
         };
 
-        let cfg = crate::run::RunConfig {
-            client,
-            providers: specs,
-            model_overrides: cli.model.clone(),
-            bench,
-            prompt: bench_prompt.clone(),
-            sweep: entry.sweep.clone(),
-            custom_variants: Default::default(),
-            ramp: None,
-            quiet: cli.quiet,
-            no_tui: true,
-            winner: cli.winner,
-            weights: llmrace::score::Weights::default(),
-            histogram: cli.histogram,
-            json: cli.json,
-            csv: cli.csv,
-            html: cli.html,
-            junit: cli.junit,
-            sarif: cli.sarif,
-            out: suite_out,
-            region: cli.region.clone(),
-            push_gateway: cli.push_gateway.clone(),
-            prom_output: cli.prom_output.clone(),
-            alert_webhook: cli.alert_webhook.clone(),
-            notify_desktop: cli.notify_desktop,
-            record: cli.record,
-            storage: cli.storage.clone(),
-            max_ttfb: cli.max_ttfb,
-            baseline: cli.baseline.clone(),
-            max_regression: cli.max_regression,
-            require_significance: cli.require_significance,
-            watch: false,
-            every_secs: 900,
-            alert_rounds: 1,
-        };
+        // one builder for the whole RunConfig: the suite only overrides
+        // what the entry itself defines, so a flag added to the race path
+        // (weights, warmup mode, retries, gates, new report formats)
+        // reaches suites automatically instead of drifting
+        let mut cfg = base.clone();
+        cfg.client = llmrace::provider::benchmark_client(
+            std::time::Duration::from_secs(cli.timeout),
+            entry.concurrency,
+        )?;
+        cfg.providers = specs;
+        cfg.prompt = prompt_label;
+        cfg.bench.prompt = prompt;
+        cfg.bench.workload = workload;
+        cfg.bench.runs = entry.runs.max(1);
+        cfg.bench.warmup = entry.warmup;
+        cfg.bench.concurrency = entry.concurrency.max(1);
+        cfg.bench.max_tokens = entry.max_tokens;
+        cfg.bench.tools = entry.tools;
+        cfg.bench.tool_task = entry
+            .tool_task
+            .clone()
+            .unwrap_or_else(|| "weather".to_string());
+        cfg.bench.duration_secs = None;
+        cfg.sweep = entry.sweep.clone();
+        cfg.ramp = None;
+        cfg.watch = false;
+        cfg.no_tui = true;
+        cfg.out = suite_out;
 
         // run headless, collect results
         let (exit, lane_summaries) = crate::run::run_race(cfg).await?;
