@@ -50,6 +50,14 @@ Every provider says it is fast. `llmrace` sends one streaming request to all of 
 brew install dfbustosus/tap/llmrace
 ```
 
+**pip (Python):**
+
+```bash
+pip install llmrace
+```
+
+The wheel carries the compiled binary for your platform — no Rust toolchain needed.
+
 **Prebuilt binary** (no Rust toolchain needed):
 
 ```bash
