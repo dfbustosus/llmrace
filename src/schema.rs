@@ -57,6 +57,10 @@ pub fn race_report_schema() -> String {
         }
       }
     },
+    "verdict": {
+      "type": ["string", "null"],
+      "description": "One plain-language sentence: who leads, by how much, and whether the gap is real. Null with fewer than two successful lanes."
+    },
     "significance": {
       "type": ["object", "null"],
       "properties": {
