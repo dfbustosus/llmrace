@@ -63,7 +63,10 @@ async fn openai_lane_reports_honest_ttfb() {
         ProviderSpec::openai(),
         "gpt-4o-mini".into(),
         BenchConfig {
-            prompt: "Reply with a single word.".into(),
+            // a paragraph gives the throughput sample enough tokens to be
+            // meaningful; a single-word answer can honestly measure < 10
+            // tok/s when the provider thinks longer than it streams
+            prompt: "Write one vivid paragraph about a lighthouse at dawn.".into(),
             runs: 2,
             warmup: 1,
             ..BenchConfig::default()
@@ -76,5 +79,9 @@ async fn openai_lane_reports_honest_ttfb() {
         ttfb > 50.0,
         "cloud TTFB must include the network round trip, got {ttfb} ms"
     );
-    assert!(summary.mean_tokens_per_sec() > 10.0);
+    assert!(
+        summary.mean_tokens_per_sec() > 10.0,
+        "a paragraph from gpt-4o-mini streams faster than 10 tok/s, got {}",
+        summary.mean_tokens_per_sec()
+    );
 }
