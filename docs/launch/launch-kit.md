@@ -101,7 +101,7 @@ JUnit/SARIF/JSON renderers are public functions.
 - [x] Have one real fresh race ready to paste: the 2026-11-24
       four-model table in the README (OpenAI direct + three via
       OpenRouter, Pass 3/3, cost on every lane, p = 0.003 verdict).
-      Upload /tmp/cloud-race-cost.md as a gist before posting
+      Gist: https://gist.github.com/dfbustosus/3400b6fe9396cea972dc496a6105bcca
 - [ ] Have the CI workflow ready to paste too:
       docs/example-latency-gate.yml (baseline → gate → JUnit + SARIF)
 - [ ] Star-gazing is fine; watch for issue #126/#127 (Bedrock/Vertex
