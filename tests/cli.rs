@@ -948,6 +948,7 @@ fn cli_contract_every_documented_flag_exists() {
         "--models",
         "--compare",
         "--merge",
+        "--mcp",
         "--region",
         "--winner",
         "--weights",
