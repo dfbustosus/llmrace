@@ -1,0 +1,142 @@
+use std::io::Write as _;
+use std::process::{Command, Stdio};
+
+fn talk(requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .arg("--mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn llmrace --mcp");
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        for request in requests {
+            writeln!(stdin, "{}", request).unwrap();
+        }
+    }
+    let out = child.wait_with_output().expect("collect mcp output");
+    assert!(out.status.success(), "server exits cleanly on EOF");
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each line is a JSON-RPC message"))
+        .collect()
+}
+
+#[test]
+fn handshake_lists_the_four_tools() {
+    let responses = talk(&[
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}}),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+    ]);
+    assert_eq!(responses.len(), 2, "notifications get no response");
+    assert_eq!(responses[0]["id"], 1);
+    assert_eq!(responses[0]["result"]["serverInfo"]["name"], "llmrace");
+    assert_eq!(responses[0]["result"]["protocolVersion"], "2024-11-05");
+    let tools = responses[1]["result"]["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "llmrace_race",
+            "llmrace_gate",
+            "llmrace_doctor",
+            "llmrace_list"
+        ]
+    );
+    assert!(tools[0]["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("providers")));
+}
+
+#[test]
+fn race_tool_runs_a_mock_race_and_returns_markdown() {
+    let responses = talk(&[
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "llmrace_race", "arguments": {
+            "providers": ["mock", "mock"],
+            "runs": 1,
+            "warmup": 0,
+            "winner": true,
+        }}}),
+    ]);
+    assert_eq!(responses.len(), 2);
+    let result = &responses[1]["result"];
+    assert_eq!(result["isError"], false);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("# 🏁 llmrace report"), "{text}");
+    assert!(text.contains("mock-1"), "{text}");
+    assert!(text.contains("## Podium"), "{text}");
+}
+
+#[test]
+fn race_tool_rejects_empty_providers_and_unknown_methods_error() {
+    let responses = talk(&[
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "llmrace_race", "arguments": {"providers": []}}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "bogus/method"}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "llmrace_race", "arguments": {"providers": ["nosuchprovider"]}}}),
+    ]);
+    assert_eq!(responses[0]["result"]["isError"], true);
+    assert!(responses[0]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("must not be empty"));
+    assert_eq!(responses[1]["error"]["code"], -32601);
+    assert_eq!(responses[2]["result"]["isError"], true);
+    assert!(responses[2]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("unknown provider"));
+}
+
+#[test]
+fn gate_tool_verdict_matches_the_cli_exit_rule() {
+    let dir = std::env::temp_dir().join(format!("llmrace-mcp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline_md = dir.join("baseline.md");
+    let record = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .args([
+            "mock", "--no-tui", "-n", "2", "--warmup", "0", "--quiet", "--json", "--out",
+        ])
+        .arg(&baseline_md)
+        .output()
+        .unwrap();
+    assert!(record.status.success());
+    let baseline = baseline_md.with_extension("json");
+
+    let responses = talk(&[
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "llmrace_gate", "arguments": {
+            "providers": ["mock"],
+            "baseline": baseline.to_string_lossy(),
+            "runs": 2,
+            "warmup": 0,
+            "max_regression": 10000.0,
+        }}}),
+    ]);
+    let result = &responses[1]["result"];
+    assert_eq!(result["isError"], false);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let verdict: serde_json::Value = serde_json::from_str(
+        text.split('\n')
+            .take_while(|line| !line.starts_with("## Regression"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim(),
+    )
+    .expect("the gate answer starts with the JSON verdict");
+    assert_eq!(verdict["ok"], true);
+    assert_eq!(verdict["verdict"]["request_mismatch"], false);
+    assert!(text.contains("## Regression"), "{text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
