@@ -43,6 +43,16 @@ gh run list --repo dfbustosus/homebrew-tap --workflow bump --limit 1
 brew upgrade llmrace && llmrace --version
 ```
 
+The **PyPI wheels build on `release: published`**
+(`.github/workflows/publish-pypi.yml`): every platform binary is wrapped
+into a platform wheel by `python/make_wheel.py` and uploaded as a
+workflow artifact. With a `PYPI_API_TOKEN` repo secret the same run
+uploads the wheels to PyPI (`pip install llmrace`). Backfill an older
+release any time with:
+```bash
+gh workflow run publish-pypi.yml -f tag=vX.Y.Z
+```
+
 ## Version policy
 
 - Patch (x.y.Z): fixes only.
