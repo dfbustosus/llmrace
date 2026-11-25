@@ -54,11 +54,11 @@ Also in the box: live TUI race view, TTFT/inter-token-latency/cost per
 provider (cache discounts priced), saturation curves (`--ramp 1,2,4,8`),
 cross-region probe merging, watch mode with debounced alerts, the OpenAI
 Responses API as a first-class wire next to Chat Completions, one-line
-GitHub Action, Homebrew/Docker/crates.io distribution. 100% safe Rust,
-no telemetry, no config file required.
+GitHub Action, Homebrew/Docker/crates.io/PyPI distribution. 100% safe
+Rust, no telemetry, no config file required.
 
 ```bash
-brew install dfbustosus/tap/llmrace
+brew install dfbustosus/tap/llmrace   # or: pip install llmrace
 llmrace mock mock --no-tui -n 3 --warmup 0 --winner   # no key needed
 llmrace openai anthropic groq gemini --winner
 ```
