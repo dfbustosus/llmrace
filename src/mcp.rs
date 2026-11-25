@@ -177,16 +177,10 @@ fn resolve_providers(args: &Value) -> Result<Vec<ProviderSpec>, String> {
         let name = name
             .as_str()
             .ok_or("each provider must be a string".to_string())?;
-        let (id, model) = match name.split_once('=') {
-            Some((id, m)) if !id.is_empty() && !m.is_empty() => (id, Some(m)),
-            _ => (name, None),
-        };
-        let mut spec = ProviderSpec::find(id)
-            .ok_or_else(|| format!("unknown provider '{id}' (try llmrace_list)"))?;
-        if let Some(model) = model {
-            spec.default_model = std::sync::Arc::from(model);
-        }
-        specs.push(spec);
+        specs.push(
+            ProviderSpec::parse(name)
+                .ok_or_else(|| format!("unknown provider '{name}' (try llmrace_list)"))?,
+        );
     }
     Ok(specs)
 }
