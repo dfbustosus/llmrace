@@ -13,7 +13,7 @@ use llmrace::bench::BenchConfig;
 use llmrace::provider::ProviderSpec;
 use run::{resolve_model, RunConfig};
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(
     name = "llmrace",
     version,
