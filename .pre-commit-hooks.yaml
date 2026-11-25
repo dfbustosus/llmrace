@@ -1,0 +1,32 @@
+# Use llmrace as a pre-commit gate in any repository:
+#
+#   - repo: https://github.com/dfbustosus/llmrace
+#     rev: v1.36.0
+#     hooks:
+#       - id: llmrace-gate
+#         args:
+#           - openai
+#           - groq
+#           - --baseline
+#           - baseline/llmrace-report.json
+#           - --max-regression
+#           - "15"
+#           - --require-significance
+#           - --workload
+#           - prompts/workload.jsonl
+#           - -n
+#           - "5"
+#           - --warmup
+#           - "1"
+#
+# `language: system` runs the llmrace you already installed (brew, pip,
+# cargo binstall or cargo install). Provider API keys come from the
+# environment, as usual.
+- id: llmrace-gate
+  name: llmrace quality gate
+  description: Race LLM providers against your committed baseline and fail the commit on a prompt regression
+  entry: llmrace
+  language: system
+  pass_filenames: false
+  always_run: true
+  minimum_pre_commit_version: "3.2.0"
