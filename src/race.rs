@@ -385,18 +385,10 @@ impl RaceOutcome {
             self.bench.max_tokens,
         );
         if let Some(note) = crate::report::sampling_note(&self.bench.sampling) {
-            if let Some(pos) = md.find("- **Generated**:") {
-                md.insert_str(pos, &note);
-            } else {
-                md.push_str(&note);
-            }
+            crate::report::insert_note(&mut md, &note);
         }
         if let Some(note) = crate::report::cache_note(&self.summaries) {
-            if let Some(pos) = md.find("- **Generated**:") {
-                md.insert_str(pos, &note);
-            } else {
-                md.push_str(&note);
-            }
+            crate::report::insert_note(&mut md, &note);
         }
         let podium = self.podium();
         if !podium.is_empty() {
