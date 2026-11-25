@@ -397,6 +397,20 @@ llmrace openai groq --watch --every 900 --alert-rounds 2 \
 llmrace openai groq --notify-desktop
 ```
 
+## Agents: MCP server
+
+Any MCP-capable agent (Claude Code, Cursor, your own framework) can race providers and gate baselines as native tool calls:
+
+```json
+{
+  "mcpServers": {
+    "llmrace": { "command": "llmrace", "args": ["--mcp"] }
+  }
+}
+```
+
+Four tools: `llmrace_race` (providers, prompt/workload, runs, winner → markdown report), `llmrace_gate` (+ baseline path → verdict JSON and the regression section, `isError` when the gate fails), `llmrace_doctor` (which providers are configured — never key values), and `llmrace_list` (the registry). Keys come from the environment; `mock` races offline with none.
+
 ## Using llmrace as a CI quality gate
 
 Record a baseline of the workload once, then fail the pipeline when a prompt's success falls. A race with no `expect` has no task, so that gate does not move.
@@ -425,7 +439,17 @@ The check compares mean latency, p95 and TTFT (increases) and tokens/s (decrease
 llmrace openai groq --baseline llmrace-report.json --max-regression 15 --require-significance
 ```
 
-A ready-to-copy workflow lives in [`docs/example-latency-gate.yml`](docs/example-latency-gate.yml). With `--sweep`, each variant lane compares against that provider's matching variant baseline entry, falling back to a plain (variant-less) entry. A run where **every** provider failed exits non-zero — a green pipeline over a total outage is never silent.
+A ready-to-copy workflow lives in [`docs/example-latency-gate.yml`](docs/example-latency-gate.yml). As a pre-commit hook in any repo (runs your installed `llmrace`):
+
+```yaml
+- repo: https://github.com/dfbustosus/llmrace
+  rev: v1.36.0
+  hooks:
+    - id: llmrace-gate
+      args: [openai, groq, --baseline, baseline/llmrace-report.json,
+             --max-regression, "15", --require-significance,
+             --workload, prompts/workload.jsonl, -n, "5", --warmup, "1"]
+``` With `--sweep`, each variant lane compares against that provider's matching variant baseline entry, falling back to a plain (variant-less) entry. A run where **every** provider failed exits non-zero — a green pipeline over a total outage is never silent.
 
 ## Real-world results
 
