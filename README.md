@@ -411,6 +411,10 @@ Any MCP-capable agent (Claude Code, Cursor, your own framework) can race provide
 
 Four tools: `llmrace_race` (providers, prompt/workload, runs, winner → markdown report), `llmrace_gate` (+ baseline path → verdict JSON and the regression section, `isError` when the gate fails), `llmrace_doctor` (which providers are configured — never key values), and `llmrace_list` (the registry). Keys come from the environment; `mock` races offline with none.
 
+![llmrace MCP demo](docs/demo-mcp.gif)
+
+*The server the way an agent sees it: `tools/list`, then a race returned as a tool result. Recorded from [`examples/mcp-demo.sh`](examples/mcp-demo.sh) — runnable offline, no key.*
+
 ## Using llmrace as a CI quality gate
 
 Record a baseline of the workload once, then fail the pipeline when a prompt's success falls. A race with no `expect` has no task, so that gate does not move.
