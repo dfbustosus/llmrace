@@ -1,13 +1,13 @@
 name: Publish wheels to PyPI
 
-# Wraps every platform binary from a GitHub release into a platform wheel
-# (ruff-style binary shim) and uploads to PyPI when PYPI_API_TOKEN exists.
-# Without the secret the wheels are still built and uploaded as an
-# artifact, so the pipeline is verifiable before the account exists.
+# Manual backfill: wraps every platform binary from a GitHub release into
+# a platform wheel (ruff-style binary shim) and uploads to PyPI when
+# PYPI_API_TOKEN exists. Automated releases publish wheels from the
+# `pypi` job in release.yml instead — events produced by GITHUB_TOKEN do
+# not trigger other workflows, so `release: published` would never fire
+# for an automated release.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
