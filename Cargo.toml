@@ -18,6 +18,7 @@ exclude = [
   "docs/demo.tape",
   "docs/social-preview.png",
   ".github/**",
+  "python/**",
   "llmrace-report.*",
 ]
 
