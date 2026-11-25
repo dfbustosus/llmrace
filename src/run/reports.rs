@@ -21,18 +21,10 @@ pub(super) fn write_reports(
         .unwrap_or(cfg.bench.runs);
     let mut md = report::markdown(summaries, &cfg.prompt, actual_runs, cfg.bench.max_tokens);
     if let Some(note) = report::sampling_note(&cfg.bench.sampling) {
-        if let Some(pos) = md.find("- **Generated**:") {
-            md.insert_str(pos, &note);
-        } else {
-            md.push_str(&note);
-        }
+        report::insert_note(&mut md, &note);
     }
     if let Some(note) = report::cache_note(summaries) {
-        if let Some(pos) = md.find("- **Generated**:") {
-            md.insert_str(pos, &note);
-        } else {
-            md.push_str(&note);
-        }
+        report::insert_note(&mut md, &note);
     }
     if cfg.winner {
         let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
