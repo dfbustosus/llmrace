@@ -1,6 +1,6 @@
 [package]
 name = "llmrace"
-version = "1.35.1"
+version = "1.36.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Race the same LLM request across providers: latency, TTFT, tokens/s, cost, and a CI gate that names the prompt."
@@ -50,7 +50,7 @@ sqlite = ["dep:rusqlite"]
 
 [dependencies]
 rusqlite = { version = "0.42", optional = true, features = ["bundled"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "signal", "io-std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "http2"] }
 futures-util = "0.3"
 bytes = "1"
