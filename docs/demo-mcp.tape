@@ -9,8 +9,8 @@ Set Padding 18
 Set TypingSpeed 10ms
 Set CursorBlink true
 
-# The MCP server the way an agent sees it: tools/list, then a race
-# returned as a tool result. Offline, no API key.
-Type "bash examples/mcp-demo.sh"
+# The MCP server the way an agent sees it: tools/list, then a real race
+# (OpenAI + DeepSeek through OpenRouter) returned as a tool result.
+Type "bash examples/mcp-demo.sh openai=gpt-4o-mini openrouter=deepseek/deepseek-chat-v3.1"
 Enter
-Sleep 10s
+Sleep 14s
