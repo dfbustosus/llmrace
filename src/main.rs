@@ -583,6 +583,17 @@ fn cfg_watch(cfg: &RunConfig) -> bool {
     cfg.watch
 }
 
+impl Cli {
+    /// The warmup mode selected on the CLI, shared by the race and suite paths.
+    pub(crate) fn warmup_mode(&self) -> llmrace::bench::WarmupMode {
+        if self.warmup_mode == "probe" {
+            llmrace::bench::WarmupMode::ConnectionProbe
+        } else {
+            llmrace::bench::WarmupMode::SamePrompt
+        }
+    }
+}
+
 /// Resolves the CLI into the plain data the race path needs.
 fn build_run_config(
     cli: Cli,
@@ -663,11 +674,7 @@ fn build_run_config(
         retries: cli.retries,
         sampling,
         price_book: None,
-        warmup_mode: if cli.warmup_mode == "probe" {
-            llmrace::bench::WarmupMode::ConnectionProbe
-        } else {
-            llmrace::bench::WarmupMode::SamePrompt
-        },
+        warmup_mode: cli.warmup_mode(),
     };
     let weights = match &cli.weights {
         Some(spec) => llmrace::score::Weights::parse(spec)
