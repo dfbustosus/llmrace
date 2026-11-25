@@ -1,0 +1,78 @@
+name: Publish wheels to PyPI
+
+# Wraps every platform binary from a GitHub release into a platform wheel
+# (ruff-style binary shim) and uploads to PyPI when PYPI_API_TOKEN exists.
+# Without the secret the wheels are still built and uploaded as an
+# artifact, so the pipeline is verifiable before the account exists.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build wheels from (e.g. v1.35.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Resolve tag and check for PyPI token
+        id: gate
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo "PYPI_API_TOKEN not set — wheels will be built but not uploaded" >> "$GITHUB_STEP_SUMMARY"
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "upload=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download release binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.gate.outputs.tag }}
+        run: gh release download "$TAG" --pattern 'llmrace-*' --dir dist-assets
+
+      - name: Build platform wheels
+        env:
+          TAG: ${{ steps.gate.outputs.tag }}
+        run: |
+          version="${TAG#v}"
+          # musl archives cover manylinux; the gnu archives map to the same
+          # wheel tags, so they are skipped to avoid duplicate wheels
+          for archive in dist-assets/*.tar.gz dist-assets/*.zip; do
+            case "$archive" in
+              *unknown-linux-gnu*) continue ;;
+            esac
+            python3 python/make_wheel.py "$version" "$archive" dist/
+          done
+          ls -la dist/
+
+      - name: Upload wheels as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pypi-wheels
+          path: dist/*.whl
+
+      - name: Upload to PyPI
+        if: steps.gate.outputs.upload == 'true'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install --quiet twine
+          twine upload dist/*.whl
