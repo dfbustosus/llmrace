@@ -13,7 +13,24 @@
     "workload": {"type": "array", "items": {"type": "string"}},
     "prompt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "runs": {"type": "integer", "minimum": 1},
+    "runs": {"type": "integer", "minimum": 0},
+    "measurement_version": {"type": "integer", "minimum": 1},
+    "experiment_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "experiment": {
+      "type": "object",
+      "required": ["measurement_version", "request_sha256", "concurrency", "warmup", "warmup_mode", "retries", "timeout_secs", "duration_secs", "variants"],
+      "properties": {
+        "measurement_version": {"type": "integer", "minimum": 1},
+        "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "concurrency": {"type": "integer", "minimum": 1},
+        "warmup": {"type": "integer", "minimum": 0},
+        "warmup_mode": {"enum": ["same-prompt", "probe"]},
+        "retries": {"type": "integer", "minimum": 0},
+        "timeout_secs": {"type": "integer", "minimum": 0},
+        "duration_secs": {"type": ["integer", "null"], "minimum": 0},
+        "variants": {"type": "array", "items": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}}
+      }
+    },
     "max_tokens": {"type": "integer", "minimum": 1},
     "sampling": {
       "type": "object",
@@ -32,6 +49,8 @@
       "required": ["ok", "request_mismatch", "threshold_pct", "failures"],
       "properties": {
         "ok": {"type": "boolean"},
+        "status": {"enum": ["pass", "fail", "inconclusive"]},
+        "inconclusive": {"type": "array", "items": {"type": "object"}},
         "request_mismatch": {"type": "boolean"},
         "threshold_pct": {"type": "number", "minimum": 0},
         "failures": {
@@ -79,6 +98,10 @@
           "error": {"type": ["string", "null"]},
           "measured_rounds": {"type": "integer", "minimum": 0},
           "failed_rounds": {"type": "integer", "minimum": 0},
+          "measured_requests": {"type": "integer", "minimum": 0},
+          "failed_requests": {"type": "integer", "minimum": 0},
+          "request_failure_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "end_to_end_tokens_per_sec": {"type": "number", "minimum": 0},
           "failure_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
           "retry_attempts": {"type": "integer", "minimum": 0},
           "goodput_tokens_per_sec": {"type": "number", "minimum": 0},
@@ -118,7 +141,7 @@
           "median_total_ms": {"type": "number"},
           "p95_total_ms": {"type": "number"},
           "ci95_total_ms": {
-            "type": ["array", "number"],
+            "type": ["array", "number", "null"],
             "items": {"type": "number"},
             "minItems": 2, "maxItems": 2
           },
@@ -161,10 +184,11 @@
               "required": ["id", "rounds", "mean_total_ms", "mean_ttfb_ms", "mean_tokens_per_sec"],
               "properties": {
                 "id": {"type": "string"},
-                "rounds": {"type": "integer", "minimum": 1},
-                "mean_total_ms": {"type": "number"},
-                "mean_ttfb_ms": {"type": "number"},
-                "mean_tokens_per_sec": {"type": "number"},
+                "rounds": {"type": "integer", "minimum": 0},
+                "failed_rounds": {"type": "integer", "minimum": 0},
+                "mean_total_ms": {"type": ["number", "null"]},
+                "mean_ttfb_ms": {"type": ["number", "null"]},
+                "mean_tokens_per_sec": {"type": ["number", "null"]},
                 "task_pass": {
                   "type": ["array", "null"],
                   "items": {"type": "integer", "minimum": 0},
