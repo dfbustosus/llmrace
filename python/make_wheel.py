@@ -121,6 +121,7 @@ def record_line(path: str, data: bytes) -> str:
 
 
 def build(version: str, archive: str, outdir: str) -> str:
+    verify_checksum(archive)
     target = target_of(archive)
     tag = PLATFORM_TAGS[target]
     bin_name, binary = read_binary(archive)
@@ -133,11 +134,13 @@ def build(version: str, archive: str, outdir: str) -> str:
 
     dist_info = f"llmrace-{version}.dist-info"
     metadata = (
-        "Metadata-Version: 2.1\n"
+        "Metadata-Version: 2.4\n"
         "Name: llmrace\n"
         f"Version: {version}\n"
         f"Summary: {SUMMARY}\n"
-        "License: MIT OR Apache-2.0\n"
+        "License-Expression: MIT OR Apache-2.0\n"
+        "License-File: LICENSE-MIT\n"
+        "License-File: LICENSE-APACHE\n"
         "Keywords: llm, benchmark, openai, anthropic, latency, ci, mcp\n"
         "Requires-Python: >=3.9\n"
         "Project-URL: Repository, https://github.com/dfbustosus/llmrace\n"
@@ -172,6 +175,9 @@ def build(version: str, archive: str, outdir: str) -> str:
         f"{dist_info}/WHEEL": wheel_meta,
         f"{dist_info}/entry_points.txt": entry_points,
     }
+    for license_name in ("LICENSE-MIT", "LICENSE-APACHE"):
+        with open(os.path.join(here, "..", license_name), "rb") as fh:
+            files[f"{dist_info}/licenses/{license_name}"] = fh.read()
     record = "".join(record_line(path, data) + "\n" for path, data in files.items())
     record += f"{dist_info}/RECORD,,\n"
     files[f"{dist_info}/RECORD"] = record.encode()
@@ -181,12 +187,25 @@ def build(version: str, archive: str, outdir: str) -> str:
     with zipfile.ZipFile(wheel_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for path, data in files.items():
             info = zipfile.ZipInfo(path)
+            info.compress_type = zipfile.ZIP_DEFLATED
             if path.startswith("llmrace/bin/"):
                 info.external_attr = (stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
                                       | stat.S_IRGRP | stat.S_IXGRP
                                       | stat.S_IROTH | stat.S_IXOTH) << 16
             zf.writestr(info, data)
     return wheel_path
+
+
+def verify_checksum(archive: str) -> None:
+    """Verify the release's SHA-256 sidecar before packaging its executable."""
+    with open(archive + ".sha256", encoding="ascii") as fh:
+        expected = fh.read().split()[0].lower()
+    digest = hashlib.sha256()
+    with open(archive, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected:
+        raise SystemExit(f"SHA-256 mismatch for {archive}")
 
 
 def main() -> None:
