@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-11-26
+
+Measurement integrity, consistent gates, and reproducible execution records.
+
 ### Added
 
-- Per-request attempt records on round metrics and failures, request-level failure counts, and end-to-end output throughput. New public `RequestOutcome` / `RequestAttempt` types; `RunMetrics.requests`, `RoundFailure.requests` / `task_checked`, and `PromptRow.failed_rounds` are additive library fields for the next minor release
+- Per-request attempt records on round metrics and failures, request-level failure counts, and end-to-end output throughput. New public `RequestOutcome` / `RequestAttempt` types; `RunMetrics.requests`, `RoundFailure.requests` / `task_checked`, and `PromptRow.failed_rounds` are additive library fields in this minor release
 - `experiment_sha256` and `measurement_version` identify execution settings as well as request content; model-aware baseline matching and explicit availability/configuration gate failures
 - `regression.status` and missing-evidence details; `--fail-on-inconclusive`, MCP's matching option, and `gate_failed_with_policy` allow strict gates without calling untestable changes noise
 - Consumer contract checks for real JSON Schema validation, CLI/JSON/JUnit/SARIF agreement, single-worker TUI execution, watch persistence, and offline wheel installation
@@ -850,7 +854,8 @@ First stable release. The surface is frozen: CLI flags are a contract, library c
 
 - Initial release: race OpenAI, Anthropic, Groq, OpenRouter and local Ollama with a live TUI and markdown/JSON reports.
 
-[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.38.0...HEAD
+[Unreleased]: https://github.com/dfbustosus/llmrace/compare/v1.39.0...HEAD
+[1.39.0]: https://github.com/dfbustosus/llmrace/compare/v1.38.0...v1.39.0
 [1.38.0]: https://github.com/dfbustosus/llmrace/compare/v1.37.2...v1.38.0
 [1.37.2]: https://github.com/dfbustosus/llmrace/compare/v1.37.1...v1.37.2
 [1.37.1]: https://github.com/dfbustosus/llmrace/compare/v1.37.0...v1.37.1
