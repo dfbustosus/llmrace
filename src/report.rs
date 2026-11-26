@@ -35,7 +35,11 @@ pub fn verdict_line(summaries: &[LaneSummary]) -> Option<String> {
     if ranked.len() < 2 {
         return None;
     }
-    let (winner, runner) = (ranked[0], ranked[1]);
+    let winner = ranked[0];
+    let runner = ranked
+        .iter()
+        .skip(1)
+        .find(|lane| lane.variant == winner.variant)?;
     let label = |s: &LaneSummary| {
         let dup = summaries
             .iter()
@@ -49,31 +53,42 @@ pub fn verdict_line(summaries: &[LaneSummary]) -> Option<String> {
         }
     };
     let mut line = format!(
-        "Verdict: {} leads — {:.1} tok/s, {:.0} ms mean, TTFT {} ms",
+        "Verdict: {} leads on goodput — {:.1} tok/s, {:.0} ms mean, TTFT {} ms",
         label(winner),
-        winner.mean_tokens_per_sec(),
+        winner.goodput_tokens_per_sec(),
         winner.mean_total_ms(),
         fmt_ms(winner.mean_ttfb_ms())
     );
     if let Some((ok, n)) = winner.task_pass() {
         line.push_str(&format!(", {ok}/{n} prompts passed"));
     }
-    let ratio = if winner.mean_total_ms() > 1.0 {
+    let ratio = if winner.mean_total_ms() > 0.0 {
         runner.mean_total_ms() / winner.mean_total_ms()
     } else {
         1.0
     };
     if ratio >= 1.1 {
-        line.push_str(&format!(" — {ratio:.1}× faster than {}", label(runner)));
+        line.push_str(&format!(
+            " — {ratio:.1}× faster than {} in mean latency",
+            label(runner)
+        ));
+    } else if ratio > 0.0 && ratio <= 1.0 / 1.1 {
+        line.push_str(&format!(
+            " — {:.1}× slower than {} in mean latency",
+            1.0 / ratio,
+            label(runner)
+        ));
     } else {
         line.push_str(&format!(" — within 10% of {}", label(runner)));
     }
     if let Some((_, _, _, p, significant)) = top_two_significance(summaries) {
         if significant {
-            line.push_str(&format!("; the gap is significant (p={p:.3})"));
+            line.push_str(&format!(
+                "; the mean-latency difference is significant (p={p:.3})"
+            ));
         } else {
             line.push_str(&format!(
-                "; the gap could be noise (p={p:.2}) — more rounds would tell"
+                "; the mean-latency difference is not significant (p={p:.2}) — more rounds would tell"
             ));
         }
     }
@@ -156,9 +171,9 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
     }
 
     out.push_str(&prompt_table(summaries));
-    out.push_str("\n> TTFT is time to first token, the same clock as TTFB. Tokens/s is measured over the generation window (total time minus TTFT), summed across concurrent requests per round. TPOT is that window divided by output tokens; the JSON report gives its median and p95. Token counts use provider-reported usage when available. Latency, tokens/s and cost/run use successful rounds only.\n");
-    if summaries.iter().any(|s| !s.failures.is_empty()) {
-        out.push_str("> Fail is failed/measured rounds. Rank is goodput: tokens/s × the success rate, so a lane that dropped rounds does not outrank one that answered every round.\n");
+    out.push_str("\n> TTFT is time to first token, the same clock as TTFB. Tokens/s divides successful output tokens by the effective generation window: the larger of total minus TTFT and reported server time. TPOT is that window divided by output tokens. Latency, tokens/s and cost/run summarize rounds with at least one successful response; round wall time includes failed requests and retry delays. Token counts prefer provider-reported usage.\n");
+    if summaries.iter().any(|s| s.failed_rounds() > 0) {
+        out.push_str("> Fail is failed/measured rounds: any failed request marks its round as failed. JSON also reports the request-level failure rate. Rank is goodput: tokens/s × the round success rate.\n");
     }
     if summaries.iter().any(|s| s.task_pass().is_some()) {
         out.push_str("> Pass is task successes over measured rounds. A fast wrong answer is still a successful request. `--winner` counts it; a race with no task leaves the column blank and the podium unchanged.\n");
@@ -226,7 +241,7 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
             .itl_p95_ms()
             .map(|v| format!("{v:.0} ms"))
             .unwrap_or_else(|| "—".into());
-        let fail = format!("{}/{}", s.failures.len(), s.measured_rounds());
+        let fail = format!("{}/{}", s.failed_rounds(), s.measured_rounds());
         let pass = match s.task_pass() {
             Some((ok, n)) => format!("{ok}/{n}"),
             None => "—".to_string(),
@@ -613,6 +628,60 @@ fn push_field(out: &mut String, name: &str, value: &str) {
     out.push('\n');
 }
 
+/// Identity of execution settings as well as the request. Round count is
+/// deliberately excluded so a longer sample can compare to its baseline.
+/// Sweep variants include the actual resolved prompt texts.
+pub fn experiment_sha256(
+    config: &crate::bench::BenchConfig,
+    variants: &[(String, String)],
+) -> String {
+    crate::provider::sha256_hex(experiment_manifest(config, variants).to_string().as_bytes())
+}
+
+/// Execution settings recorded alongside the hash so it can be independently
+/// reconstructed. The request itself is identified by its existing hash.
+pub fn experiment_manifest(
+    config: &crate::bench::BenchConfig,
+    variants: &[(String, String)],
+) -> serde_json::Value {
+    let request = request_sha256(
+        &config.prompt,
+        &config.workload,
+        &config.sampling,
+        config.max_tokens,
+        config.tools.then_some(config.tool_task.as_str()),
+    );
+    serde_json::json!({
+        "measurement_version": 2,
+        "request_sha256": request,
+        "concurrency": config.concurrency,
+        "warmup": config.warmup,
+        "warmup_mode": match config.warmup_mode {
+            crate::bench::WarmupMode::SamePrompt => "same-prompt",
+            crate::bench::WarmupMode::ConnectionProbe => "probe",
+        },
+        "retries": config.retries,
+        "timeout_secs": config.timeout_secs,
+        "duration_secs": config.duration_secs,
+        "variants": variants,
+    })
+}
+
+/// Adds the execution identity used for baseline compatibility checks.
+pub fn insert_experiment_json(
+    json: &str,
+    config: &crate::bench::BenchConfig,
+    variants: &[(String, String)],
+) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return json.to_string();
+    };
+    value["experiment_sha256"] = serde_json::json!(experiment_sha256(config, variants));
+    value["experiment"] = experiment_manifest(config, variants);
+    value["measurement_version"] = serde_json::json!(2);
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| json.to_string())
+}
+
 fn fmt_opt_f64(value: Option<f64>) -> String {
     value.map(|v| format!("{v:?}")).unwrap_or_default()
 }
@@ -637,10 +706,7 @@ fn citation(sent: &SentPrompts<'_>, rounds: usize) -> (Vec<String>, String) {
 fn counted_rounds(summaries: &[LaneSummary], fallback: usize) -> usize {
     let n = summaries
         .iter()
-        .map(|s| {
-            let concurrent = s.concurrency.max(1);
-            s.runs.len().div_ceil(concurrent) + s.failures.len()
-        })
+        .map(|s| s.measured_rounds())
         .max()
         .unwrap_or(0);
     if n == 0 {
@@ -672,33 +738,12 @@ fn render_json(
                 "successful": s.successful(),
                 "error": s.error,
                 "measured_rounds": s.measured_rounds(),
-                "failed_rounds": s.failures.len(),
+                "failed_rounds": s.failed_rounds(),
                 "failure_rate": s.failure_rate(),
                 "retry_attempts": s.retry_attempts,
                 "goodput_tokens_per_sec": s.goodput_tokens_per_sec(),
-                "failures": s.failures.iter().map(|f| serde_json::json!({
-                    "elapsed_ms": f.elapsed_ms,
-                    "class": f.class.as_str(),
-                    "attempts": f.attempts,
-                    "message": f.message,
-                })).collect::<Vec<_>>(),
-                "runs": s.runs.iter().map(|r| {
-                    let mut run = serde_json::json!({
-                        "total_ms": r.total_ms,
-                        "ttfb_ms": r.ttfb_ms,
-                        "tokens": r.tokens,
-                        "chars": r.chars,
-                        "prompt_tokens": r.prompt_tokens,
-                        "cache_read_tokens": r.cache_read_tokens,
-                        "cache_write_tokens": r.cache_write_tokens,
-                        "cache_write_1h_tokens": r.cache_write_1h_tokens,
-                        "tokens_per_sec": r.tokens_per_sec(),
-                    });
-                    if !r.prompt_id.is_empty() {
-                        run["prompt_id"] = serde_json::json!(r.prompt_id);
-                    }
-                    run
-                }).collect::<Vec<_>>(),
+                "failures": s.failures,
+                "runs": s.runs.iter().map(run_json).collect::<Vec<_>>(),
                 "mean_total_ms": s.mean_total_ms(),
                 "median_total_ms": s.median_total_ms(),
                 "p95_total_ms": s.p95_total_ms(),
@@ -727,6 +772,10 @@ fn render_json(
                 "request_id": s.last_request_id(),
                 "tool_validity": s.tool_validity(),
             });
+            value["measured_requests"] = serde_json::json!(s.measured_requests());
+            value["failed_requests"] = serde_json::json!(s.failed_requests());
+            value["request_failure_rate"] = serde_json::json!(s.request_failure_rate());
+            value["end_to_end_tokens_per_sec"] = serde_json::json!(s.end_to_end_tokens_per_sec());
             let prompts: Vec<serde_json::Value> = s
                 .prompt_rows()
                 .into_iter()
@@ -734,9 +783,10 @@ fn render_json(
                     serde_json::json!({
                         "id": row.id,
                         "rounds": row.rounds,
-                        "mean_total_ms": row.total_ms,
-                        "mean_ttfb_ms": row.ttfb_ms,
-                        "mean_tokens_per_sec": row.tokens_per_sec,
+                        "failed_rounds": row.failed_rounds,
+                        "mean_total_ms": (row.rounds > 0).then_some(row.total_ms),
+                        "mean_ttfb_ms": (row.rounds > 0).then_some(row.ttfb_ms),
+                        "mean_tokens_per_sec": (row.rounds > 0).then_some(row.tokens_per_sec),
                         "task_pass": row.task_pass.map(|(ok, n)| serde_json::json!([ok, n])),
                         "task_pass_rate": row.task_pass.map(|(ok, n)| {
                             if n == 0 { 0.0 } else { ok as f64 / n as f64 }
@@ -786,6 +836,12 @@ fn render_json(
     .unwrap_or_default()
 }
 
+fn run_json(run: &crate::bench::RunMetrics) -> serde_json::Value {
+    let mut value = serde_json::to_value(run).unwrap_or_else(|_| serde_json::json!({}));
+    value["tokens_per_sec"] = serde_json::json!(run.tokens_per_sec());
+    value
+}
+
 /// A JUnit XML report: one `<testsuite>` per lane and one `<testcase>` per
 /// checked prompt (or per lane when the race had no task).
 ///
@@ -795,6 +851,17 @@ fn render_json(
 /// ingest JUnit natively, so a failing prompt shows up as a failing test.
 #[must_use]
 pub fn junit_xml(summaries: &[LaneSummary]) -> String {
+    junit_xml_with_gate(summaries, None, false, false)
+}
+
+/// JUnit task cases plus baseline-gate failures, including missing evidence
+/// when the caller explicitly requires it.
+pub fn junit_xml_with_gate(
+    summaries: &[LaneSummary],
+    regression: Option<&crate::regression::RegressionReport>,
+    require_significance: bool,
+    fail_on_inconclusive: bool,
+) -> String {
     struct Case {
         classname: String,
         name: String,
@@ -817,10 +884,10 @@ pub fn junit_xml(summaries: &[LaneSummary]) -> String {
                         .clone()
                         .unwrap_or_else(|| "no successful rounds".to_string()),
                 )
-            } else if !s.failures.is_empty() {
+            } else if s.failed_rounds() > 0 {
                 Some(format!(
                     "{} of {} measured rounds failed",
-                    s.failures.len(),
+                    s.failed_rounds(),
                     s.measured_rounds()
                 ))
             } else {
@@ -834,7 +901,7 @@ pub fn junit_xml(summaries: &[LaneSummary]) -> String {
             });
         } else {
             for row in &rows {
-                let http_failed = s.failures.iter().filter(|f| f.prompt_id == row.id).count();
+                let http_failed = row.failed_rounds;
                 let failure = match row.task_pass {
                     Some((ok, n)) if ok < n => {
                         Some(format!("task passed {ok}/{n} measured rounds"))
@@ -853,6 +920,45 @@ pub fn junit_xml(summaries: &[LaneSummary]) -> String {
             }
         }
         suites.push((suite_name, cases));
+    }
+    if let Some(gate) = regression {
+        let mut cases = Vec::new();
+        if gate.request_mismatch {
+            cases.push(Case {
+                classname: "baseline".into(),
+                name: "request identity".into(),
+                time_s: 0.0,
+                failure: Some("request or execution settings changed".into()),
+            });
+        }
+        for comparison in &gate.comparisons {
+            for metric in &comparison.metrics {
+                if metric.fails_the_gate(require_significance)
+                    || (fail_on_inconclusive && metric.inconclusive(require_significance))
+                {
+                    cases.push(Case {
+                        classname: format!("{}/{}", comparison.name, comparison.current_model),
+                        name: format!(
+                            "{}: {}",
+                            metric.prompt_id.as_deref().unwrap_or("lane"),
+                            metric.label
+                        ),
+                        time_s: 0.0,
+                        failure: Some(if metric.inconclusive(require_significance) {
+                            "threshold breached without a usable significance test".into()
+                        } else {
+                            format!(
+                                "{} changed from {} to {}",
+                                metric.label, metric.baseline, metric.current
+                            )
+                        }),
+                    });
+                }
+            }
+        }
+        if !cases.is_empty() {
+            suites.push(("baseline gate".into(), cases));
+        }
     }
     let total_tests: usize = suites.iter().map(|(_, c)| c.len()).sum();
     let total_failures: usize = suites
@@ -1007,7 +1113,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
         } else {
             String::new()
         };
-        let fail = format!("{}/{}", s.failures.len(), s.measured_rounds());
+        let fail = format!("{}/{}", s.failed_rounds(), s.measured_rounds());
         let fail_cols = if any_task {
             let pass = s
                 .task_pass()
@@ -1216,7 +1322,7 @@ pub fn html_report_grouped(
                 Some((ok, n)) => format!("{ok}/{n}"),
                 None => "—".to_string(),
             },
-            s.failures.len(),
+            s.failed_rounds(),
             s.measured_rounds(),
             s.mean_tokens_per_sec(),
         ));
