@@ -10,8 +10,18 @@ use crate::watch::Alert;
 /// incoming webhooks, Discord webhooks, and most generic alert receivers.
 pub async fn post_webhook(client: &reqwest::Client, url: &str, alert: &Alert) -> Result<()> {
     let text = format!(
-        "⚠ llmrace alert: {} {} degraded {:.0} → {:.0} ms (+{:.0}%) at round {}",
-        alert.provider, alert.metric, alert.baseline, alert.current, alert.delta_pct, alert.round
+        "⚠ llmrace alert: {} {} degraded {:.0} → {:.0} {} (+{:.0}%) at round {}",
+        alert.provider,
+        alert.metric,
+        alert.baseline,
+        alert.current,
+        if alert.metric == "availability" {
+            "% failed rounds"
+        } else {
+            "ms"
+        },
+        alert.delta_pct,
+        alert.round
     );
     let resp = client
         .post(url)
