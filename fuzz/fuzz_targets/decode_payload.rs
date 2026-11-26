@@ -9,6 +9,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(text) = std::str::from_utf8(data) {
         for wire in [
             Wire::OpenAiCompat,
+            Wire::OpenAiResponses,
             Wire::Anthropic,
             Wire::Gemini,
             Wire::Cohere,
