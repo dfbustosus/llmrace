@@ -63,11 +63,6 @@ pub fn builtins() -> Vec<Variant> {
 ///
 /// Fails with a [`Error::Config`] naming the unknown variant and listing the
 /// available ones.
-/// Resolves a comma-separated sweep list (e.g. `short,json`) into variants.
-///
-/// Fails with a [`Error::Config`](crate::error::Error::Config) naming the
-/// unknown variant and listing the available ones.
-///
 /// ```
 /// use llmrace::variants;
 ///
