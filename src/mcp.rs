@@ -111,7 +111,8 @@ fn tools_list() -> Value {
                     "warmup": {"type": "integer", "minimum": 0},
                     "max_tokens": {"type": "integer", "minimum": 1},
                     "max_regression": {"type": "number", "description": "Threshold in percent (default 15)"},
-                    "require_significance": {"type": "boolean", "description": "Latency/throughput breaches must be significant (default true)"}
+                    "require_significance": {"type": "boolean", "description": "Latency/throughput breaches must be significant (default true)"},
+                    "fail_on_inconclusive": {"type": "boolean", "description": "Fail breached metrics with no usable significance test (default false)"}
                 }
             },
         },
@@ -223,7 +224,11 @@ async fn tool_race(args: &Value) -> Result<String, String> {
         .run()
         .await
         .map_err(|e| e.to_string())?;
-    Ok(outcome.markdown())
+    if llmrace::gates::all_lanes_failed(&outcome.summaries) {
+        Err(outcome.markdown())
+    } else {
+        Ok(outcome.markdown())
+    }
 }
 
 async fn tool_gate(args: &Value) -> Result<String, String> {
@@ -235,29 +240,40 @@ async fn tool_gate(args: &Value) -> Result<String, String> {
         .map_err(|e| format!("reading baseline {baseline_path}: {e}"))?;
     let baseline = BaselineReport::from_json_str(&raw)
         .map_err(|e| format!("parsing baseline {baseline_path}: {e}"))?;
+    let threshold = args
+        .get("max_regression")
+        .and_then(Value::as_f64)
+        .unwrap_or(15.0);
+    if !threshold.is_finite() || threshold < 0.0 {
+        return Err("max_regression must be finite and nonnegative".into());
+    }
     let outcome = build_race(args)
         .await?
         .run()
         .await
         .map_err(|e| e.to_string())?;
     let policy = GatePolicy {
-        max_regression_pct: args
-            .get("max_regression")
-            .and_then(Value::as_f64)
-            .unwrap_or(15.0),
+        max_regression_pct: threshold,
         require_significance: args
             .get("require_significance")
             .and_then(Value::as_bool)
             .unwrap_or(true),
     };
     let gate = outcome.gate(&baseline, policy);
-    let failed = gate.gate_failed(policy.require_significance);
+    let strict = args
+        .get("fail_on_inconclusive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let failed = gate.gate_failed_with_policy(policy.require_significance, strict);
     let body = serde_json::json!({
         "ok": !failed,
-        "verdict": gate.verdict_json(policy.max_regression_pct, policy.require_significance),
+        "verdict": gate.verdict_json_with_policy(policy.max_regression_pct, policy.require_significance, strict),
     });
     let mut text = serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?;
     text.push_str(&gate.markdown_section(policy.max_regression_pct, policy.require_significance));
+    if strict && gate.inconclusive(policy.require_significance) {
+        text.push_str("\nThe gate fails because fail_on_inconclusive requires usable evidence.\n");
+    }
     if failed {
         Err(text)
     } else {
