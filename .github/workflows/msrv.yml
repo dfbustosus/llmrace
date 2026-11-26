@@ -12,10 +12,19 @@ env:
 
 jobs:
   msrv:
-    name: Verify rust-version 1.88
+    name: MSRV ${{ matrix.toolchain }} (${{ matrix.features || 'default' }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - toolchain: "1.88.0"
+            features: ""
+          - toolchain: "1.89.0"
+            features: "sqlite"
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+      - run: cargo check --locked --all-targets --features "${{ matrix.features }}"
