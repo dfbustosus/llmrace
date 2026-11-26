@@ -106,7 +106,10 @@ impl Race {
     pub fn new(providers: impl IntoIterator<Item = ProviderSpec>) -> Self {
         Self {
             providers: providers.into_iter().collect(),
-            bench: BenchConfig::default(),
+            bench: BenchConfig {
+                price_book: Some(crate::cost::PriceBook::new()),
+                ..BenchConfig::default()
+            },
             models: Vec::new(),
             weights: Weights::default(),
             winner: false,
@@ -244,6 +247,20 @@ impl Race {
     /// Progress arrives on a plain `std::sync::mpsc` receiver, so a GUI or
     /// logger thread needs no async runtime of its own.
     pub fn spawn(self) -> Result<RaceHandle> {
+        if self.providers.is_empty() {
+            return Err(Error::Config("a race needs at least one provider".into()));
+        }
+        self.bench
+            .sampling
+            .clone()
+            .checked()
+            .map_err(Error::Config)?;
+        if self.bench.max_tokens == 0 {
+            return Err(Error::Config("max_tokens must be positive".into()));
+        }
+        if self.bench.warmup.checked_add(self.bench.runs).is_none() {
+            return Err(Error::Config("round count overflow".into()));
+        }
         let client = benchmark_client(
             Duration::from_secs(self.bench.timeout_secs),
             self.bench.concurrency,
@@ -320,7 +337,10 @@ impl RaceHandle {
     }
 
     /// Waits for every lane and returns the outcome.
-    pub async fn finish(self) -> Result<RaceOutcome> {
+    pub async fn finish(mut self) -> Result<RaceOutcome> {
+        // A caller using run()/finish() without taking progress must not
+        // accumulate an unread, unbounded queue of token updates.
+        drop(self.progress.take());
         let mut summaries = Vec::with_capacity(self.lanes.len());
         for handle in self.lanes {
             summaries.push(
@@ -359,7 +379,7 @@ impl RaceOutcome {
     pub fn actual_runs(&self) -> usize {
         self.summaries
             .iter()
-            .map(|s| s.runs.len())
+            .map(|s| s.measured_rounds())
             .max()
             .unwrap_or(self.bench.runs)
     }
@@ -407,7 +427,7 @@ impl RaceOutcome {
     /// The JSON report the CLI writes with `--json`.
     #[must_use]
     pub fn json(&self) -> String {
-        crate::report::insert_sampling_json(
+        let json = crate::report::insert_sampling_json(
             &crate::report::json_report_cited(
                 &self.summaries,
                 &self.bench.prompt,
@@ -422,7 +442,8 @@ impl RaceOutcome {
                 &self.request_sha256,
             ),
             &self.bench.sampling,
-        )
+        );
+        crate::report::insert_experiment_json(&json, &self.bench, &[])
     }
 
     /// Compares this race against a baseline report.
@@ -431,11 +452,12 @@ impl RaceOutcome {
     /// the process exit code the CLI would produce for the same race.
     #[must_use]
     pub fn gate(&self, baseline: &BaselineReport, policy: GatePolicy) -> RegressionReport {
-        crate::regression::evaluate_request(
+        crate::regression::evaluate_experiment(
             &self.summaries,
             baseline,
             policy.max_regression_pct,
             Some(&self.request_sha256),
+            Some(&crate::report::experiment_sha256(&self.bench, &[])),
         )
     }
 }
