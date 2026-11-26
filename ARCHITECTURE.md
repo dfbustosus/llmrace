@@ -8,6 +8,7 @@ embedded.
 
 ```
 main.rs            CLI (clap), profile/provider resolution, exit codes
+├── mcp            stdio tools, using the public Race builder and gate evaluator
 ├── modes          standalone CLI modes (--init, --doctor, --compare, --merge, --suite)
 ├── run/           multi-lane race, --ramp saturation curve, --watch loop, report I/O
 └── lib.rs
@@ -17,7 +18,7 @@ main.rs            CLI (clap), profile/provider resolution, exit codes
     ├── tools      tool-call tasks, schemas, and answer validation
     ├── provider   registry + wire protocols + SigV4 / OAuth / streaming plumbing
     ├── sse        incremental SSE byte-stream parser (bounded 1 MiB buffer)
-    ├── bench      lanes, rounds, retries, concurrency, RunMetrics / LaneSummary
+    ├── bench      per-request attempts, rounds, retries, concurrency, RunMetrics / LaneSummary
     ├── stats      Sample: percentiles (linear interp), t-CI, Welch t-test, 3σ outliers
     ├── cost       per-model pricing, cache discounts, and rate overrides
     ├── score      weighted composite podium scoring (TTFB, tok/s, p95, task, cost)
@@ -85,13 +86,14 @@ lines); adding a new protocol is a `Wire` variant plus request/stream arms.
 - **TTFT / TTFB**: from immediately before the request is sent to the first
   streamed output event — includes connect, TLS, upload, queueing, and
   reasoning pre-fill. Usage-only events do not start the TTFT clock.
-- **Effective generation window**: `max(total − TTFB, server_ms − TTFB)` so
+- **Effective generation window**: `max(total − TTFB, server_ms)` so
   post-thinking token bursts cannot inflate throughput.
 - **Goodput ranking**: tables rank lanes by `tokens/s × success_rate` so a
   provider dropping rounds cannot win on survivors alone.
-- **Saturation mode** (`--concurrency N`): a round aggregates all N requests —
-  wall-clock is `max(total_ms)`, tokens are summed — measuring aggregate
-  throughput.
+- **Saturation mode** (`--concurrency N`): a round retains all N request
+  outcomes, retrying only failed requests. Wall time includes every request
+  and retry delay; successful output tokens are summed. A partial failure
+  counts in both the round failure rate and the separate request failure rate.
 - **Statistics**: percentiles use linear interpolation between closest ranks;
   95% CI uses Student-t critical values; Welch's t-test checks whether gaps and
   regressions are distinguishable from noise (`p < 0.05`); 3σ rounds are
@@ -99,6 +101,14 @@ lines); adding a new protocol is a `Wire` variant plus request/stream arms.
 - **Request identity**: `request_sha256` hashes prompt/workload, `expect` and
   `match` mode, `max_tokens`, sampling, system prompt, and tool task so
   `--baseline` refuses comparisons when the benchmarked request changed.
+- **Experiment identity**: an additional hash records the measurement version,
+  concurrency, warmup, retries, deadlines and resolved sweep prompts. Legacy
+  reports omit it. Baseline lanes match provider + model + variant; unavailable
+  lanes fail the shared gate. Missing significance evidence is explicitly
+  inconclusive and can fail a strict gate.
+- **Monitoring**: finite library watch sessions retain their requested rounds;
+  unbounded watch retains the latest round and 128-value/alert windows. The CLI
+  persists each round through its selected history backend before sleeping.
 
 ## Untrusted-input hardening
 
