@@ -35,25 +35,27 @@ class ConsumerContracts(unittest.TestCase):
         self.env = {key: value for key, value in os.environ.items()
                     if key.upper() in {"PATH", "SYSTEMROOT", "COMSPEC", "PATHEXT", "TEMP", "TMP"}}
         self.env.update(HOME=str(self.root), USERPROFILE=str(self.root),
-                        XDG_DATA_HOME=str(self.root / "data"), NO_PROXY="127.0.0.1,localhost")
+                        XDG_DATA_HOME=str(self.root / "data"), NO_PROXY="127.0.0.1,localhost",
+                        PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
 
     def cli(self, *args, expected=0):
         result = subprocess.run([str(BINARY), *map(str, args)], cwd=self.root, env=self.env,
-                                text=True, capture_output=True, timeout=15)
+                                text=True, encoding="utf-8", capture_output=True, timeout=15)
         self.assertEqual(result.returncode, expected, result.stderr + result.stdout)
         return result
 
     def test_generated_reports_validate_and_schema_has_no_drift(self):
         generated = self.cli("--schema").stdout
-        self.assertEqual(generated.rstrip(), (ROOT / "docs" / "schema.json").read_text().rstrip())
+        self.assertEqual(generated.rstrip(), (ROOT / "docs" / "schema.json").read_text(encoding="utf-8").rstrip())
         schema = json.loads(generated)
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema)
         for name, providers, expected in [("one", ["mock"], 0), ("outage", ["openai"], 1),
                                            ("mixed", ["openai", "mock"], 0)]:
             output = self.root / f"{name}.json"
-            self.cli(*providers, "--no-tui", "-n", "1", "--warmup", "0", "--out", output, expected=expected)
-            document = json.loads(output.read_text())
+            self.cli(*providers, "--no-tui", "-n", "1", "--warmup", "0",
+                     "-p", "Résumé — café 🏁", "--out", output, expected=expected)
+            document = json.loads(output.read_text(encoding="utf-8"))
             validator.validate(document)
             canonical = json.dumps(document["experiment"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
             self.assertEqual(document["experiment_sha256"], hashlib.sha256(canonical.encode()).hexdigest())
@@ -63,15 +65,15 @@ class ConsumerContracts(unittest.TestCase):
         # Deliberately impossible tail baseline, with other metrics permissive.
         baseline.write_text(json.dumps({"providers": [{"provider": "mock", "model": "mock-1",
             "mean_total_ms": 10000, "p95_total_ms": 1, "mean_ttfb_ms": 10000,
-            "mean_tokens_per_sec": 0.001}]}))
+            "mean_tokens_per_sec": 0.001}]}), encoding="utf-8")
         output = self.root / "strict.json"
         self.cli("mock", "--no-tui", "-n", "1", "--warmup", "0", "--baseline", baseline,
                  "--require-significance", "--fail-on-inconclusive", "--junit", "--sarif", "--out", output, expected=1)
-        doc = json.loads(output.read_text())
+        doc = json.loads(output.read_text(encoding="utf-8"))
         self.assertFalse(doc["regression"]["ok"])
         self.assertEqual(doc["regression"]["status"], "inconclusive")
-        self.assertIn("<failure", output.with_suffix(".xml").read_text())
-        sarif = json.loads(output.with_suffix(".sarif").read_text())
+        self.assertIn("<failure", output.with_suffix(".xml").read_text(encoding="utf-8"))
+        sarif = json.loads(output.with_suffix(".sarif").read_text(encoding="utf-8"))
         self.assertTrue(any(r["ruleId"] == "llmrace/inconclusive" for r in sarif["runs"][0]["results"]))
         Draft202012Validator(json.loads(self.cli("--schema").stdout)).validate(doc)
 
@@ -123,8 +125,8 @@ class ConsumerContracts(unittest.TestCase):
             child.send_signal(signal.SIGINT)
             _, error = child.communicate(timeout=3)
             self.assertEqual(child.returncode, 0, error)
-            self.assertEqual(len(history.read_text().splitlines()), 1, "shutdown must not duplicate records")
-            self.assertEqual(json.loads(output.read_text())["runs"], 1)
+            self.assertEqual(len(history.read_text(encoding="utf-8").splitlines()), 1, "shutdown must not duplicate records")
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["runs"], 1)
         finally:
             if child.poll() is None:
                 child.kill()
@@ -147,7 +149,7 @@ class ConsumerContracts(unittest.TestCase):
             with tarfile.open(archive, "w:gz") as tar:
                 tar.add(BINARY, arcname=member)
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        Path(str(archive) + ".sha256").write_text(f"{digest}  {archive.name}\n")
+        Path(str(archive) + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
         wheel = wheel_module.build(version, str(archive), str(self.root / "dist"))
         with zipfile.ZipFile(wheel) as zipped:
             for license_name in ["LICENSE-MIT", "LICENSE-APACHE"]:
@@ -158,10 +160,10 @@ class ConsumerContracts(unittest.TestCase):
         scripts = environment / ("Scripts" if os.name == "nt" else "bin")
         python = scripts / ("python.exe" if os.name == "nt" else "python")
         installed = subprocess.run([str(python), "-m", "pip", "install", "--no-index", "--no-deps", wheel],
-                                   env=self.env, capture_output=True, text=True, timeout=60)
+                                   env=self.env, capture_output=True, text=True, encoding="utf-8", timeout=60)
         self.assertEqual(installed.returncode, 0, installed.stderr)
         for command in [[str(python), "-m", "llmrace"], [str(scripts / BINARY.name)]]:
-            result = subprocess.run([*command, "--version"], env=self.env, capture_output=True, text=True, timeout=10)
+            result = subprocess.run([*command, "--version"], env=self.env, capture_output=True, text=True, encoding="utf-8", timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), f"llmrace {version}")
         with archive.open("ab") as fh:
@@ -171,4 +173,6 @@ class ConsumerContracts(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     unittest.main(verbosity=2)
