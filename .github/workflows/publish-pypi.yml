@@ -31,8 +31,9 @@ jobs:
         id: gate
         env:
           PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          tag="$RELEASE_TAG"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if [ -z "$PYPI_API_TOKEN" ]; then
             echo "PYPI_API_TOKEN not set — wheels will be built but not uploaded" >> "$GITHUB_STEP_SUMMARY"
