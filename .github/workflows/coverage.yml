@@ -20,7 +20,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Collect coverage
-        run: cargo llvm-cov --all-targets --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --all-targets --all-features --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
