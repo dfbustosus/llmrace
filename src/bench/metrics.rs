@@ -3,10 +3,16 @@
 
 use std::sync::Arc;
 
-/// Raw measurements from a single streamed completion.
-#[derive(Debug, Clone, Default)]
+/// Measurements from an attempt or an aggregated round. A round retains its
+/// individual request attempts in [`Self::requests`].
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct RunMetrics {
-    /// Wall-clock time from request to last token, in milliseconds.
+    /// Individual requests and their attempts for an aggregated round.
+    /// Empty for a single attempt or a legacy manually constructed sample.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<RequestOutcome>,
+    /// Wall-clock time through protocol completion, in milliseconds. On an
+    /// aggregate round this includes failed requests and retry delays.
     pub total_ms: f64,
     /// Time from request to first token, in milliseconds.
     pub ttfb_ms: f64,
@@ -54,6 +60,48 @@ pub struct RunMetrics {
     /// delta may carry several tokens). `tokens` minus this (when the
     /// provider reports usage) is the hidden reasoning token count.
     pub visible_tokens: u64,
+}
+
+/// All attempts of one request within a round, in attempt order.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RequestOutcome {
+    /// Wall time including retry delays, in milliseconds.
+    pub elapsed_ms: f64,
+    /// Attempts made; the final attempt determines request success.
+    pub attempts: Vec<RequestAttempt>,
+}
+
+/// The measured outcome of an individual HTTP attempt.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "status", content = "result", rename_all = "snake_case")]
+pub enum RequestAttempt {
+    /// A complete response, including its usage and task result.
+    Success(RunMetrics),
+    /// A failed attempt; its elapsed time includes any partial streaming.
+    Failure(super::summary::RoundFailure),
+}
+
+impl RequestOutcome {
+    /// Metrics of the final attempt, when it succeeded.
+    pub fn metrics(&self) -> Option<&RunMetrics> {
+        match self.attempts.last() {
+            Some(RequestAttempt::Success(metrics)) => Some(metrics),
+            _ => None,
+        }
+    }
+
+    /// Error of the final attempt, when it failed.
+    pub fn failure(&self) -> Option<&super::summary::RoundFailure> {
+        match self.attempts.last() {
+            Some(RequestAttempt::Failure(failure)) => Some(failure),
+            _ => None,
+        }
+    }
+
+    /// Extra attempts after the first.
+    pub fn retries(&self) -> u64 {
+        self.attempts.len().saturating_sub(1) as u64
+    }
 }
 
 /// A gap between consecutive tokens longer than this (ms) counts as a
@@ -129,7 +177,7 @@ pub struct BenchConfig {
     /// Concurrent requests per provider within one round.
     ///
     /// With `concurrency > 1` the aggregate tokens/s is computed over the
-    /// summed generation windows of all requests in a round, measuring
+    /// round's wall-clock generation window, measuring
     /// saturation throughput instead of single-stream speed.
     pub concurrency: usize,
     /// Per-request timeout in seconds.
