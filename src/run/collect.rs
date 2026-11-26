@@ -110,7 +110,7 @@ pub(super) async fn collect_with_tui(
     let merged = std::sync::mpsc::channel::<llmrace::bench::LaneUpdate>();
     for rx in receivers {
         let tx = merged.0.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             while let Ok(u) = rx.recv() {
                 if tx.send(u).is_err() {
                     break;
