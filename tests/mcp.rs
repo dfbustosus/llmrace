@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 fn talk(requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("--mcp")
+        .env_remove("OPENAI_API_KEY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -23,6 +24,50 @@ fn talk(requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("each line is a JSON-RPC message"))
         .collect()
+}
+
+#[test]
+fn failed_provider_has_the_same_gate_result_in_cli_and_mcp() {
+    let dir = std::env::temp_dir().join(format!("llmrace-outage-parity-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("baseline.json");
+    std::fs::write(
+        &baseline,
+        r#"{"providers":[{"provider":"openai","model":"gpt-4o-mini"}]}"#,
+    )
+    .unwrap();
+    let cli = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .env_remove("OPENAI_API_KEY")
+        .args([
+            "openai",
+            "mock",
+            "--no-tui",
+            "--warmup",
+            "0",
+            "-n",
+            "1",
+            "--baseline",
+        ])
+        .arg(&baseline)
+        .arg("--out")
+        .arg(dir.join("current.json"))
+        .output()
+        .unwrap();
+    assert!(!cli.status.success());
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("current.json")).unwrap()).unwrap();
+    assert_eq!(report["regression"]["ok"], false);
+    let response = talk(&[
+        serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{
+            "name":"llmrace_gate", "arguments":{"providers":["openai"],"baseline":baseline.to_string_lossy(), "runs":1,"warmup":0}
+        }}),
+    ]);
+    assert_eq!(response[0]["result"]["isError"], true);
+    assert!(response[0]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("availability"));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
