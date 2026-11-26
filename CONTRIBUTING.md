@@ -6,12 +6,35 @@ Thanks for considering a contribution!
 
 Providers live in `src/provider/spec.rs` (registry, endpoints, defaults) — request building is in `request.rs`, stream decoding in `stream.rs`. To add one:
 
-1. Add a constructor (e.g. `Provider::myprovider()`) with the endpoint, env var name, default model and wire protocol. Any OpenAI-compatible API reuses `Wire::OpenAiCompat`.
-2. Push it onto `Provider::registry()`.
+1. Add a constructor (e.g. `ProviderSpec::myprovider()`) with the endpoint, env var name, default model and wire protocol. Any OpenAI-compatible API reuses `Wire::OpenAiCompat`.
+2. Push it onto `ProviderSpec::registry()`.
 3. If it has public per-token prices, add a row to the table in `src/cost.rs`.
-4. Add or extend a test. Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test`.
+4. Add or extend a test, including an independently sourced completion/error fixture for a new wire. Run the checks below.
 
 That's it — usually under 40 lines.
+
+## Local checks
+
+Use Rust 1.89 or newer and Python 3.11+ for the all-feature checks below. Default features
+support Rust 1.88; SQLite's `rusqlite` dependency requires Rust 1.89.
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo test --locked --doc --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
+cargo build --locked --all-features
+# In a Python virtual environment:
+python -m pip install jsonschema==4.25.1
+python tests/contracts.py
+```
+
+The consumer checks validate real reports, strict gate output, single-worker
+terminal execution, watch persistence, and offline wheel installation. They
+exclude provider credentials. A useful first contribution is one bounded
+protocol fixture or failure-path regression test; native cloud authentication
+integrations should be split into smaller issues.
 
 ## Bug reports
 
