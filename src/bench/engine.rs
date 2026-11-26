@@ -1,11 +1,13 @@
 //! The benchmark engine: lane tasks, rounds, retries and single-request
 //! streaming measurement.
 
-use super::metrics::{BenchConfig, LaneUpdate, RunMetrics, STUTTER_MS};
+use super::metrics::{
+    BenchConfig, LaneUpdate, RequestAttempt, RequestOutcome, RunMetrics, STUTTER_MS,
+};
 use super::summary::{FailureClass, LaneSummary, RoundFailure};
 use crate::error::Error;
 use crate::provider::{stream_completion, CompletionRequest, ProviderSpec, StreamEvent};
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -99,67 +101,34 @@ pub fn spawn_lane_stoppable(
                     break;
                 }
             }
-            let mut attempts_left = config.retries;
-            let mut attempts_used = 0u32;
             let probe = !counted && config.warmup_mode == crate::bench::WarmupMode::ConnectionProbe;
             let (prompt_id, prompt) = if probe {
                 ("", "ping")
             } else {
                 crate::workload::prompt_for(&config.prompt, &config.workload, config.warmup, round)
             };
-            let outcome = loop {
-                attempts_used = attempts_used.saturating_add(1);
-                let started = Instant::now();
-                let job_prompt = RoundPrompt {
+            let outcome = run_round(
+                &client,
+                &spec,
+                &model,
+                &config,
+                RoundPrompt {
                     id: prompt_id,
                     text: prompt,
                     probe,
-                };
-                match run_round(&client, &spec, &model, &config, job_prompt, &tx).await {
-                    Ok(metrics) => break Ok(metrics),
-                    Err(e) if attempts_left > 0 && e.is_retryable() => {
-                        attempts_left -= 1;
-                        if counted {
-                            summary.retry_attempts = summary.retry_attempts.saturating_add(1);
-                        }
-                        let attempt = config.retries - attempts_left;
-                        tokio::time::sleep(backoff(attempt, e.retry_after())).await;
-                        let _ = tx.send(LaneUpdate {
-                            provider: Arc::clone(&spec.id),
-                            variant: config.variant.clone(),
-                            model: Some(Arc::clone(&model_label)),
-                            tokens: 0,
-                            elapsed_ms: 0.0,
-                            ttfb_ms: None,
-                            finished: false,
-                            error: Some(format!(
-                                "round failed, retrying ({attempts_left} left): {e}"
-                            )),
-                            server_ms: None,
-                            last_token: None,
-                            ratelimit: None,
-                        });
-                        continue;
-                    }
-                    Err(e) => {
-                        if counted {
-                            summary.failures.push(RoundFailure {
-                                elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
-                                class: FailureClass::of(&e),
-                                attempts: attempts_used,
-                                message: crate::util::truncate(&e.to_string(), 300),
-                                prompt_id: prompt_id.to_string(),
-                            });
-                        }
-                        break Err(e);
-                    }
-                }
-            };
-            let outcome: crate::error::Result<Vec<RunMetrics>> = outcome;
+                },
+                &tx,
+            )
+            .await;
             match outcome {
                 Ok(metrics) => {
                     if counted {
-                        summary.runs.extend(metrics);
+                        summary.retry_attempts += metrics
+                            .requests
+                            .iter()
+                            .map(RequestOutcome::retries)
+                            .sum::<u64>();
+                        summary.runs.push(metrics);
                     }
                 }
                 Err(e) => {
@@ -171,11 +140,16 @@ pub fn spawn_lane_stoppable(
                         elapsed_ms: 0.0,
                         ttfb_ms: None,
                         finished: round + 1 == total_rounds,
-                        error: Some(e.to_string()),
+                        error: Some(e.message.clone()),
                         server_ms: None,
                         last_token: None,
                         ratelimit: None,
                     });
+                    if counted {
+                        summary.retry_attempts +=
+                            e.requests.iter().map(RequestOutcome::retries).sum::<u64>();
+                        summary.failures.push(e);
+                    }
                 }
             }
         }
@@ -238,7 +212,8 @@ async fn run_round(
     config: &BenchConfig,
     prompt: RoundPrompt<'_>,
     progress: &mpsc::Sender<LaneUpdate>,
-) -> crate::error::Result<Vec<RunMetrics>> {
+) -> Result<RunMetrics, RoundFailure> {
+    let started = Instant::now();
     let RoundPrompt {
         id: prompt_id,
         text: prompt,
@@ -246,7 +221,7 @@ async fn run_round(
     } = prompt;
     let model_label: Arc<str> = Arc::from(model);
     let mut tasks = tokio::task::JoinSet::new();
-    for _ in 0..config.concurrency.max(1) {
+    for index in 0..config.concurrency.max(1) {
         let item = config.workload.iter().find(|item| item.id == prompt_id);
         let mut sampling = config.sampling.clone();
         if let Some(system) = item.and_then(|item| item.system.clone()) {
@@ -276,25 +251,53 @@ async fn run_round(
             sampling,
         };
         let progress = progress.clone();
-        tasks.spawn(async move { single_request(job, &progress).await });
+        let retries = config.retries;
+        tasks.spawn(async move { (index, request_with_retries(job, retries, &progress).await) });
     }
 
-    let mut all = Vec::new();
-    let mut first_err: Option<Error> = None;
+    let mut requests = Vec::new();
     while let Some(joined) = tasks.join_next().await {
         match joined {
-            Ok(Ok(m)) => all.push(m),
-            Ok(Err(e)) => {
-                first_err.get_or_insert(e);
-            }
+            Ok(outcome) => requests.push(outcome),
             Err(join_err) => {
-                first_err
-                    .get_or_insert(Error::Stream(format!("request task panicked: {join_err}")));
+                requests.push((
+                    usize::MAX,
+                    RequestOutcome {
+                        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                        attempts: vec![RequestAttempt::Failure(attempt_failure(
+                            &Error::Stream(format!("request task failed: {join_err}")),
+                            prompt_id,
+                            started.elapsed().as_secs_f64() * 1000.0,
+                            1,
+                        ))],
+                    },
+                ));
             }
         }
     }
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    requests.sort_by_key(|(index, _)| *index);
+    let requests: Vec<RequestOutcome> = requests.into_iter().map(|(_, outcome)| outcome).collect();
+    let all: Vec<&RunMetrics> = requests
+        .iter()
+        .filter_map(RequestOutcome::metrics)
+        .collect();
     if all.is_empty() {
-        Err(first_err.unwrap_or_else(|| Error::Protocol("round produced no metrics".into())))
+        let mut failure = requests
+            .iter()
+            .find_map(RequestOutcome::failure)
+            .cloned()
+            .unwrap_or_else(|| {
+                attempt_failure(
+                    &Error::Protocol("round produced no metrics".into()),
+                    prompt_id,
+                    0.0,
+                    1,
+                )
+            });
+        failure.elapsed_ms = elapsed_ms;
+        failure.requests = requests;
+        Err(failure)
     } else {
         let mut itl_gaps_ms = Vec::new();
         let mut stutters = 0u64;
@@ -302,9 +305,16 @@ async fn run_round(
             itl_gaps_ms.extend(m.itl_gaps_ms.iter().copied());
             stutters += m.stutters;
         }
-        Ok(vec![RunMetrics {
-            total_ms: all.iter().map(|m| m.total_ms).fold(f64::MIN, f64::max),
-            ttfb_ms: all.iter().map(|m| m.ttfb_ms).fold(f64::MAX, f64::min),
+        let mut metrics = RunMetrics {
+            requests: Vec::new(),
+            total_ms: elapsed_ms,
+            ttfb_ms: requests
+                .iter()
+                .filter_map(|r| {
+                    r.metrics()
+                        .map(|m| m.ttfb_ms + (r.elapsed_ms - m.total_ms).max(0.0))
+                })
+                .fold(f64::MAX, f64::min),
             tokens: all.iter().map(|m| m.tokens).sum(),
             chars: all.iter().map(|m| m.chars).sum(),
             prompt_tokens: all.iter().map(|m| m.prompt_tokens).sum(),
@@ -329,7 +339,7 @@ async fn run_round(
             server_ms: all
                 .iter()
                 .filter_map(|m| m.server_ms)
-                .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a: f64| a.min(v)))),
+                .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v)))),
             request_id: all.iter().filter_map(|m| m.request_id.clone()).next(),
             ratelimit_remaining: all
                 .iter()
@@ -344,15 +354,87 @@ async fn run_round(
                 if flags.is_empty() {
                     None
                 } else {
-                    Some(flags.iter().all(|ok| *ok))
+                    Some(flags.iter().all(|ok| *ok) && all.len() == requests.len())
                 }
             },
-        }])
+        };
+        metrics.requests = requests;
+        Ok(metrics)
+    }
+}
+
+fn attempt_failure(error: &Error, prompt_id: &str, elapsed_ms: f64, attempts: u32) -> RoundFailure {
+    RoundFailure {
+        task_checked: false,
+        requests: Vec::new(),
+        elapsed_ms,
+        class: FailureClass::of(error),
+        attempts,
+        message: crate::util::truncate(&error.to_string(), 300),
+        prompt_id: prompt_id.to_string(),
+    }
+}
+
+async fn request_with_retries(
+    job: RequestJob,
+    retries: usize,
+    progress: &mpsc::Sender<LaneUpdate>,
+) -> RequestOutcome {
+    let started = Instant::now();
+    let mut attempts = Vec::new();
+    loop {
+        let attempt_start = Instant::now();
+        let result = std::panic::AssertUnwindSafe(single_request(job.clone(), progress))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| Err(Error::Stream("request task panicked".into())));
+        match result {
+            Ok(metrics) => {
+                attempts.push(RequestAttempt::Success(metrics));
+                break;
+            }
+            Err(error) => {
+                let retry = attempts.len() < retries && error.is_retryable();
+                let mut failure = attempt_failure(
+                    &error,
+                    &job.prompt_id,
+                    attempt_start.elapsed().as_secs_f64() * 1000.0,
+                    (attempts.len() + 1) as u32,
+                );
+                failure.task_checked = job.tools || job.expect.is_some();
+                attempts.push(RequestAttempt::Failure(failure));
+                if !retry {
+                    break;
+                }
+                let _ = progress.send(LaneUpdate {
+                    provider: Arc::clone(&job.spec.id),
+                    variant: job.variant_label.clone(),
+                    model: Some(Arc::clone(&job.model_label)),
+                    tokens: 0,
+                    elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                    ttfb_ms: None,
+                    finished: false,
+                    error: Some(format!(
+                        "request failed, retrying ({} left): {error}",
+                        retries + 1 - attempts.len()
+                    )),
+                    server_ms: None,
+                    last_token: None,
+                    ratelimit: None,
+                });
+                tokio::time::sleep(backoff(attempts.len(), error.retry_after())).await;
+            }
+        }
+    }
+    RequestOutcome {
+        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        attempts,
     }
 }
 
 /// Everything one in-flight request needs, bundled so the request path
 /// stays a two-argument function.
+#[derive(Clone)]
 struct RequestJob {
     client: reqwest::Client,
     spec: ProviderSpec,
@@ -406,9 +488,16 @@ async fn single_request(
         tool: tool.as_ref(),
     };
     let start = Instant::now();
-    let mut stream = stream_completion(&client, &spec, &req).await?;
-    let server_timing = stream.server_timing();
     let deadline = tokio::time::Instant::now() + timeout;
+    let mut stream = tokio::time::timeout_at(deadline, stream_completion(&client, &spec, &req))
+        .await
+        .map_err(|_| {
+            Error::Stream(format!(
+                "{} ({model}): request timed out after {timeout:?}",
+                spec.id
+            ))
+        })??;
+    let server_timing = stream.server_timing();
     let mut ttfb: Option<Duration> = None;
     let mut tokens = 0u64;
     let mut chars = 0u64;
@@ -441,8 +530,7 @@ async fn single_request(
         let Some(event) = next else { break };
         let event: StreamEvent = event?;
         let now = Instant::now();
-        let first_output =
-            event.token.is_some() || event.completion_tokens.is_some() || event.tool_args.is_some();
+        let first_output = event.token.is_some() || event.tool_args.is_some();
         if ttfb.is_none() && first_output {
             ttfb = Some(now - start);
         }
@@ -527,6 +615,7 @@ async fn single_request(
         &answer,
     );
     Ok(RunMetrics {
+        requests: Vec::new(),
         total_ms: total.as_secs_f64() * 1000.0,
         ttfb_ms: ttfb.as_secs_f64() * 1000.0,
         tokens,
