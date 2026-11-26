@@ -47,7 +47,7 @@ bin-dir = "{ bin }{ binary-ext }"
 
 [features]
 default = []
-## SQLite storage backend for history (`--storage sqlite`)
+## SQLite storage backend for history (`--storage sqlite`); requires Rust 1.89.
 sqlite = ["dep:rusqlite"]
 
 [dependencies]
