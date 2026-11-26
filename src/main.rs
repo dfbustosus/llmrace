@@ -212,6 +212,11 @@ pub(crate) struct Cli {
     #[arg(help_heading = "CI gates", long)]
     require_significance: bool,
 
+    /// Fail a significance gate when a breached metric has no usable test
+    /// (for example p95 or too few per-prompt samples).
+    #[arg(help_heading = "CI gates", long, requires = "require_significance")]
+    fail_on_inconclusive: bool,
+
     /// Exit 1 if any provider's mean TTFB exceeds this many milliseconds.
     #[arg(help_heading = "CI gates", long)]
     max_ttfb: Option<f64>,
@@ -413,6 +418,18 @@ async fn dispatch(
 ) -> Result<i32> {
     // Reject impossible sampling before any mode, including --suite.
     let _ = sampling_from_cli(&cli)?;
+    if !cli.max_regression.is_finite() || cli.max_regression < 0.0 {
+        anyhow::bail!("--max-regression must be finite and nonnegative");
+    }
+    if cli
+        .max_ttfb
+        .is_some_and(|value| !value.is_finite() || value < 0.0)
+    {
+        anyhow::bail!("--max-ttfb must be finite and nonnegative");
+    }
+    if cli.max_tokens == 0 || cli.warmup.checked_add(cli.runs).is_none() {
+        anyhow::bail!("max-tokens must be positive and round counts must not overflow");
+    }
     if let Some(suite_path) = &cli.suite {
         let suite = llmrace::suite::load(std::path::Path::new(suite_path))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -497,7 +514,8 @@ async fn dispatch(
                 "name": "llmrace",
                 "version": env!("CARGO_PKG_VERSION"),
                 "rustc": option_env!("LLMRACE_RUSTC").unwrap_or("unknown"),
-                "providers": llmrace::provider::ProviderSpec::registry().len(),
+                    "providers": llmrace::provider::ProviderSpec::registry().len(),
+                    "sqlite_enabled": cfg!(feature = "sqlite"),
             }))?
         );
         return Ok(0);
@@ -720,6 +738,7 @@ fn build_run_config(
         baseline: cli.baseline,
         max_regression: cli.max_regression,
         require_significance: cli.require_significance,
+        fail_on_inconclusive: cli.fail_on_inconclusive,
         watch: cli.watch,
         every_secs: cli.every,
         alert_rounds: cli.alert_rounds.max(1),
