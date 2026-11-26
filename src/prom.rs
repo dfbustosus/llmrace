@@ -10,7 +10,7 @@ use crate::bench::LaneSummary;
 /// validity.
 pub fn render_metrics(summaries: &[LaneSummary]) -> String {
     let mut out = String::new();
-    for s in summaries.iter().filter(|s| s.successful()) {
+    for s in summaries {
         let labels = match &s.variant {
             Some(v) => format!(
                 "provider=\"{}\",model=\"{}\",variant=\"{}\"",
@@ -24,6 +24,16 @@ pub fn render_metrics(summaries: &[LaneSummary]) -> String {
                 escape(&s.model)
             ),
         };
+        out.push_str(&format!(
+            "llmrace_up{{{labels}}} {}\n",
+            u8::from(s.successful())
+        ));
+        if let Some(rate) = s.failure_rate() {
+            out.push_str(&format!("llmrace_failure_rate{{{labels}}} {rate:.6}\n"));
+        }
+        if !s.successful() {
+            continue;
+        }
         out.push_str(&format!(
             "llmrace_ttfb_ms{{{labels}}} {:.3}\n",
             s.mean_ttfb_ms()
@@ -48,9 +58,6 @@ pub fn render_metrics(summaries: &[LaneSummary]) -> String {
             "llmrace_goodput_tokens_per_second{{{labels}}} {:.3}\n",
             s.goodput_tokens_per_sec()
         ));
-        if let Some(rate) = s.failure_rate() {
-            out.push_str(&format!("llmrace_failure_rate{{{labels}}} {:.6}\n", rate));
-        }
         out.push_str(&format!(
             "llmrace_retry_attempts{{{labels}}} {}\n",
             s.retry_attempts
