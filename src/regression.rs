@@ -61,10 +61,24 @@ impl MetricComparison {
             None => {
                 matches!(
                     self.label,
-                    "failure rate" | "goodput" | "cost/run" | "task success"
+                    "failure rate"
+                        | "goodput"
+                        | "cost/run"
+                        | "task success"
+                        | "availability"
+                        | "configuration"
                 )
             }
         }
+    }
+
+    /// A breached metric whose uncertainty cannot be evaluated. This is
+    /// missing evidence, not a statistically demonstrated absence of change.
+    pub fn inconclusive(&self, require_significance: bool) -> bool {
+        require_significance
+            && self.regressed
+            && self.p_value.is_none()
+            && !self.fails_the_gate(true)
     }
 }
 
@@ -83,6 +97,25 @@ pub struct RegressionReport {
 }
 
 impl RegressionReport {
+    /// Whether at least one breached metric lacks a usable significance test.
+    pub fn inconclusive(&self, require_significance: bool) -> bool {
+        self.comparisons
+            .iter()
+            .flat_map(|c| &c.metrics)
+            .any(|m| m.inconclusive(require_significance))
+    }
+
+    /// Machine-readable evidence status. `ok` in legacy verdicts remains the
+    /// threshold gate's boolean; consumers can reject `inconclusive` explicitly.
+    pub fn status(&self, require_significance: bool) -> &'static str {
+        if self.gate_failed(require_significance) {
+            "fail"
+        } else if self.inconclusive(require_significance) {
+            "inconclusive"
+        } else {
+            "pass"
+        }
+    }
     /// `true` when at least one metric regressed beyond the threshold.
     #[must_use]
     pub fn any_regressed(&self) -> bool {
@@ -119,6 +152,16 @@ impl RegressionReport {
             })
     }
 
+    /// Applies an explicit policy for breached metrics with missing evidence.
+    pub fn gate_failed_with_policy(
+        &self,
+        require_significance: bool,
+        fail_on_inconclusive: bool,
+    ) -> bool {
+        self.gate_failed(require_significance)
+            || (fail_on_inconclusive && self.inconclusive(require_significance))
+    }
+
     /// The `regression` object written into `race.json` when `--baseline` is set.
     ///
     /// `ok` is false exactly when [`Self::gate_failed`] is true. `failures`
@@ -130,6 +173,16 @@ impl RegressionReport {
         threshold_pct: f64,
         require_significance: bool,
     ) -> serde_json::Value {
+        self.verdict_json_with_policy(threshold_pct, require_significance, false)
+    }
+
+    /// Like [`Self::verdict_json`], with an explicit missing-evidence policy.
+    pub fn verdict_json_with_policy(
+        &self,
+        threshold_pct: f64,
+        require_significance: bool,
+        fail_on_inconclusive: bool,
+    ) -> serde_json::Value {
         let mut failures = Vec::new();
         if !self.request_mismatch {
             for comparison in &self.comparisons {
@@ -139,6 +192,7 @@ impl RegressionReport {
                     }
                     failures.push(serde_json::json!({
                         "provider": comparison.name,
+                        "model": comparison.current_model,
                         "metric": metric.label,
                         "prompt_id": metric.prompt_id,
                         "baseline": metric.baseline,
@@ -149,7 +203,12 @@ impl RegressionReport {
             }
         }
         serde_json::json!({
-            "ok": !self.gate_failed(require_significance),
+            "ok": !self.gate_failed_with_policy(require_significance, fail_on_inconclusive),
+            "status": self.status(require_significance),
+            "inconclusive": self.comparisons.iter().flat_map(|c| c.metrics.iter().filter(|m| m.inconclusive(require_significance)).map(|m| serde_json::json!({
+                "provider": c.name, "model": c.current_model, "metric": m.label,
+                "prompt_id": m.prompt_id, "reason": "no usable significance test",
+            }))).collect::<Vec<_>>(),
             "request_mismatch": self.request_mismatch,
             "threshold_pct": threshold_pct,
             "failures": failures,
@@ -247,6 +306,8 @@ impl RegressionReport {
         }
         if self.gate_failed(require_significance) {
             out.push_str("\nRegression detected. `regression.ok` is false.\n");
+        } else if self.inconclusive(require_significance) {
+            out.push_str("\nInconclusive: a threshold was breached without a usable significance test. This is not evidence of equivalence. `regression.status` is `inconclusive`.\n");
         } else if require_significance && self.any_regressed() {
             out.push_str(
                 "\nA threshold was breached, and no breach is statistically significant. `regression.ok` is true.\n",
@@ -261,6 +322,9 @@ impl RegressionReport {
 /// The subset of a saved JSON report needed for regression checks.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BaselineReport {
+    /// Execution settings hash. Older reports omit it.
+    #[serde(default)]
+    pub experiment_sha256: Option<String>,
     /// Providers recorded in the baseline.
     pub providers: Vec<BaselineProvider>,
     /// Request hash of the saved race. Absent on reports written before
@@ -290,6 +354,12 @@ pub struct BaselineRun {
 /// One provider entry of a baseline report.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BaselineProvider {
+    /// Whether any request succeeded. Missing on older reports.
+    #[serde(default)]
+    pub successful: Option<bool>,
+    /// Concurrency used for the measurement. Missing on older reports.
+    #[serde(default)]
+    pub concurrency: Option<usize>,
     /// Provider id.
     pub provider: String,
     /// Prompt-variant label for sweep baselines; `None` for plain races.
@@ -336,6 +406,9 @@ pub struct BaselineProvider {
 /// One workload prompt in a baseline.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct BaselinePrompt {
+    /// Successful rounds for this prompt. Missing on older reports.
+    #[serde(default)]
+    pub rounds: Option<usize>,
     /// Workload id.
     #[serde(default)]
     pub id: String,
@@ -356,7 +429,13 @@ pub struct BaselinePrompt {
 impl BaselineReport {
     /// Parses a baseline from the JSON written by `llmrace --json`.
     pub fn from_json_str(raw: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(raw)
+        let report: Self = serde_json::from_str(raw)?;
+        if report.providers.is_empty() {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "baseline contains no provider lanes",
+            ));
+        }
+        Ok(report)
     }
 }
 
@@ -413,19 +492,33 @@ pub fn evaluate_request(
     max_regression_pct: f64,
     current_request: Option<&str>,
 ) -> RegressionReport {
+    evaluate_experiment(current, baseline, max_regression_pct, current_request, None)
+}
+
+/// Compares live outcomes with both request and execution-setting identity.
+pub fn evaluate_experiment(
+    current: &[LaneSummary],
+    baseline: &BaselineReport,
+    max_regression_pct: f64,
+    current_request: Option<&str>,
+    current_experiment: Option<&str>,
+) -> RegressionReport {
     let mut current_report = baseline_from_lanes(current);
     current_report.request_sha256 = current_request.map(str::to_string);
+    current_report.experiment_sha256 = current_experiment.map(str::to_string);
     compare_baselines(&current_report, baseline, max_regression_pct)
 }
 
 /// Converts live lane summaries into the baseline subset used by comparisons.
 fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
     BaselineReport {
+        experiment_sha256: None,
         request_sha256: None,
         providers: lanes
             .iter()
-            .filter(|s| s.successful())
             .map(|s| BaselineProvider {
+                successful: Some(s.successful()),
+                concurrency: Some(s.concurrency),
                 provider: s.name.clone(),
                 variant: s.variant.clone(),
                 model: s.model.clone(),
@@ -441,6 +534,7 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                     .prompt_rows()
                     .into_iter()
                     .map(|row| BaselinePrompt {
+                        rounds: Some(row.rounds),
                         id: row.id,
                         task_pass_rate: row.task_pass.map(|(ok, n)| {
                             if n == 0 {
@@ -449,8 +543,8 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
                                 ok as f64 / n as f64
                             }
                         }),
-                        mean_total_ms: Some(row.total_ms),
-                        mean_ttfb_ms: Some(row.ttfb_ms),
+                        mean_total_ms: (row.rounds > 0).then_some(row.total_ms),
+                        mean_ttfb_ms: (row.rounds > 0).then_some(row.ttfb_ms),
                     })
                     .collect(),
                 runs: s
@@ -473,22 +567,20 @@ fn baseline_from_lanes(lanes: &[LaneSummary]) -> BaselineReport {
 /// runs, per lane).
 fn find_base<'a>(
     baseline: &'a BaselineReport,
-    provider: &str,
-    variant: Option<&str>,
-) -> Option<&'a BaselineProvider> {
-    if let Some(v) = variant {
-        if let Some(hit) = baseline
-            .providers
-            .iter()
-            .find(|p| p.provider == provider && p.variant.as_deref() == Some(v))
-        {
-            return Some(hit);
-        }
-    }
+    current: &BaselineProvider,
+    used: &[usize],
+) -> Option<(usize, &'a BaselineProvider)> {
     baseline
         .providers
         .iter()
-        .find(|p| p.provider == provider && p.variant.is_none())
+        .enumerate()
+        .filter(|(i, p)| {
+            (!used.contains(i) || (p.variant.is_none() && current.variant.is_some()))
+                && p.provider == current.provider
+                && (p.model == current.model || p.model.is_empty())
+                && (p.variant == current.variant || p.variant.is_none())
+        })
+        .min_by_key(|(_, p)| (p.variant != current.variant, p.model != current.model))
 }
 
 /// Compares two saved JSON reports (A/B mode): `b` is treated as the
@@ -512,20 +604,43 @@ pub fn compare_baselines(
     max_regression_pct: f64,
 ) -> RegressionReport {
     let mut report = RegressionReport::default();
+    if let (Some(base), Some(current)) = (&a.experiment_sha256, &b.experiment_sha256) {
+        if base != current {
+            report.request_mismatch = true;
+            return report;
+        }
+    }
     if let (Some(base), Some(current)) = (&a.request_sha256, &b.request_sha256) {
         if base != current {
             report.request_mismatch = true;
             return report;
         }
     }
-    let mut compared: Vec<(String, Option<String>)> = Vec::new();
+    let mut compared = Vec::new();
 
     for current in &b.providers {
-        let Some(base) = find_base(a, &current.provider, current.variant.as_deref()) else {
+        let Some((base_index, base)) = find_base(a, current, &compared) else {
             report.new_providers.push(current.provider.clone());
+            if current.successful == Some(false) {
+                report
+                    .comparisons
+                    .push(unavailable(current, "availability"));
+            }
             continue;
         };
-        compared.push((current.provider.clone(), current.variant.clone()));
+        compared.push(base_index);
+        if current.successful == Some(false) {
+            report
+                .comparisons
+                .push(unavailable(current, "availability"));
+            continue;
+        }
+        if matches!((base.concurrency, current.concurrency), (Some(a), Some(b)) if a != b) {
+            report
+                .comparisons
+                .push(unavailable(current, "configuration"));
+            continue;
+        }
         let mut metrics = vec![
             latency_metric(
                 "mean latency",
@@ -620,8 +735,13 @@ pub fn compare_baselines(
                 .iter()
                 .find(|prompt| prompt.id == base_prompt.id)
             else {
+                metrics.push(prompt_unavailable(&base_prompt.id));
                 continue;
             };
+            if current_prompt.rounds == Some(0) {
+                metrics.push(prompt_unavailable(&base_prompt.id));
+                continue;
+            }
             let base_runs = runs_for_prompt(&base.runs, &base_prompt.id);
             let current_runs = runs_for_prompt(&current.runs, &base_prompt.id);
             if let (Some(base_ms), Some(current_ms)) =
@@ -664,13 +784,51 @@ pub fn compare_baselines(
     report.skipped_providers = a
         .providers
         .iter()
-        .filter(|p| !compared.contains(&(p.provider.clone(), p.variant.clone())))
+        .enumerate()
+        .filter(|(index, _)| !compared.contains(index))
+        .map(|(_, p)| p)
         .map(|p| match &p.variant {
             Some(v) => format!("{} ({v})", p.provider),
             None => p.provider.clone(),
         })
         .collect();
+    for (index, missing) in a.providers.iter().enumerate() {
+        if !compared.contains(&index) {
+            report
+                .comparisons
+                .push(unavailable(missing, "availability"));
+        }
+    }
     report
+}
+
+fn unavailable(lane: &BaselineProvider, label: &'static str) -> ProviderComparison {
+    ProviderComparison {
+        name: lane.provider.clone(),
+        baseline_model: lane.model.clone(),
+        current_model: lane.model.clone(),
+        metrics: vec![MetricComparison {
+            label,
+            baseline: 1.0,
+            current: 0.0,
+            delta_pct: -100.0,
+            regressed: true,
+            p_value: None,
+            prompt_id: None,
+        }],
+    }
+}
+
+fn prompt_unavailable(id: &str) -> MetricComparison {
+    MetricComparison {
+        label: "availability",
+        baseline: 1.0,
+        current: 0.0,
+        delta_pct: -100.0,
+        regressed: true,
+        p_value: None,
+        prompt_id: Some(id.to_string()),
+    }
 }
 
 fn latency_metric(
