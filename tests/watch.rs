@@ -100,3 +100,88 @@ fn alert_streaks_debounce_until_consecutive_rounds() {
         "second consecutive degraded round reaches the threshold"
     );
 }
+
+#[tokio::test]
+async fn unbounded_watch_retains_only_latest_round_and_alerts_on_outages() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let stopped = Arc::new(AtomicBool::new(false));
+    let callback_stop = stopped.clone();
+    let result = watch(
+        vec![ProviderSpec::custom(
+            "dead",
+            "http://127.0.0.1:0/v1/chat/completions",
+            None,
+            "m",
+        )],
+        "m".into(),
+        WatchConfig {
+            every_secs: 0,
+            alert_rounds: 2,
+            max_regression_pct: 15.0,
+            rounds: None,
+            bench: BenchConfig {
+                runs: 1,
+                warmup: 0,
+                ..Default::default()
+            },
+        },
+        reqwest::Client::new(),
+        move |round, _, _| {
+            if round == 3 {
+                callback_stop.store(true, Ordering::Relaxed);
+            }
+        },
+        move || stopped.load(Ordering::Relaxed),
+    )
+    .await;
+    assert_eq!(result.rounds_completed, 3);
+    assert_eq!(result.rounds.len(), 1);
+    assert_eq!(result.alerts_emitted, 1);
+    assert_eq!(result.alerts[0].metric, "availability");
+    assert_eq!(result.alerts[0].round, 2);
+    assert!(llmrace::prom::render_metrics(result.last_round())
+        .contains("llmrace_up{provider=\"dead\",model=\"m\"} 0"));
+}
+
+#[tokio::test]
+async fn stopping_watch_interrupts_a_long_sleep() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    let stopped = Arc::new(AtomicBool::new(false));
+    let callback_stop = stopped.clone();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        watch(
+            vec![ProviderSpec::mock()],
+            "m".into(),
+            WatchConfig {
+                every_secs: 900,
+                alert_rounds: 1,
+                max_regression_pct: 15.0,
+                rounds: None,
+                bench: BenchConfig {
+                    runs: 1,
+                    warmup: 0,
+                    ..Default::default()
+                },
+            },
+            reqwest::Client::new(),
+            move |_, _, _| {
+                let stop = callback_stop.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    stop.store(true, Ordering::Relaxed);
+                });
+            },
+            move || stopped.load(Ordering::Relaxed),
+        ),
+    )
+    .await
+    .expect("stop must interrupt the interval");
+    assert_eq!(result.rounds_completed, 1);
+}
