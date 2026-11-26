@@ -12,15 +12,19 @@
 FROM ubuntu:24.04 AS fetch
 ARG VERSION=1.3.0
 ARG TARGET=x86_64-unknown-linux-gnu
+WORKDIR /tmp
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
+ && archive="llmrace-v${VERSION}-${TARGET}.tar.gz" \
  && curl -fsSL \
       "https://github.com/dfbustosus/llmrace/releases/download/v${VERSION}/llmrace-v${VERSION}-${TARGET}.tar.gz" \
-      -o /tmp/llmrace.tar.gz \
- && tar xzf /tmp/llmrace.tar.gz -C /tmp \
+      -o "$archive" \
+ && curl -fsSL "https://github.com/dfbustosus/llmrace/releases/download/v${VERSION}/${archive}.sha256" -o "${archive}.sha256" \
+ && sha256sum -c "${archive}.sha256" \
+ && tar xzf "$archive" -C /tmp \
  && install -m 755 "/tmp/llmrace-v${VERSION}-${TARGET}/bin/llmrace" /usr/local/bin/llmrace \
- && llmrace --version
+ && test "$(llmrace --version)" = "llmrace ${VERSION}"
 
 FROM ubuntu:24.04
 RUN apt-get update \
