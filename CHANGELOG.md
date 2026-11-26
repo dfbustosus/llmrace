@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-request attempt records on round metrics and failures, request-level failure counts, and end-to-end output throughput. New public `RequestOutcome` / `RequestAttempt` types; `RunMetrics.requests`, `RoundFailure.requests` / `task_checked`, and `PromptRow.failed_rounds` are additive library fields for the next minor release
+- `experiment_sha256` and `measurement_version` identify execution settings as well as request content; model-aware baseline matching and explicit availability/configuration gate failures
+- `regression.status` and missing-evidence details; `--fail-on-inconclusive`, MCP's matching option, and `gate_failed_with_policy` allow strict gates without calling untestable changes noise
+- Consumer contract checks for real JSON Schema validation, CLI/JSON/JUnit/SARIF agreement, single-worker TUI execution, watch persistence, and offline wheel installation
+
+### Fixed
+
+- Concurrent failures are retained and only failed requests retry; round timings include failed attempts and backoff
+- Usage-only events no longer start TTFT; malformed, errored and unterminated provider streams fail instead of accepting partial text as completion
+- AWS event-stream CRC-32, header layout and value lengths now match the protocol, with an independently encoded fixture; invalid frames and exception events propagate immediately
+- Fully failed and missing baseline lanes/prompts fail in the CLI, library and MCP; failed-only workload prompts remain in JSON and JUnit. Baseline structs gain optional execution/outcome fields, including `BaselinePrompt.rounds`
+- Verdicts distinguish goodput leadership from mean latency and correctly describe slower leaders; Student-t confidence intervals use finite-sample critical values beyond 30 degrees of freedom
+- Concurrent workload citations count rounds correctly; schema accepts unavailable confidence intervals and failed-only prompt rows; reports retain failure prompt IDs and raw attempt data
+- TUI progress forwarding no longer blocks Tokio workers; unused library progress queues are closed
+- Unbounded watch has bounded retention, alerts on outages, persists rounds immediately with their own timestamps through the chosen backend, and interrupts long sleeps promptly; Prometheus exports availability for failed lanes
+- Recommendations use matching model/workload/variant/concurrency history, exclude currently unavailable providers, and price 30 days at 1,000 requests/day correctly
+- Docker builds and manifest publication share one resolved release version; old-version backfills do not update rolling aliases. Release builds use the lockfile and verify tag/version identity
+- Container and wheel packaging verify archive checksums; wheels include both license texts. CI installs the generated wheel and denies rustdoc warnings
+- MSRV checks cover default features on Rust 1.88 and SQLite on Rust 1.89, documenting the existing `rusqlite 0.42` compiler requirement
+
+
 ## [1.38.0] - 2026-11-25
 
 The first question every user asks — who won, by how much, and should I trust it — is now one sentence.
