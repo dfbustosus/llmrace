@@ -45,11 +45,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      - name: Verify tag matches the package
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          test "$RELEASE_TAG" = "v$version"
       - name: Install musl tools (musl targets)
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
         run: |
@@ -114,10 +121,10 @@ jobs:
           fi
       - name: Packaging dry-run
         if: steps.published.outputs.skip != 'true'
-        run: cargo publish --dry-run --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+        run: cargo publish --locked --dry-run --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
       - name: Publish
         if: steps.published.outputs.skip != 'true'
-        run: cargo publish --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+        run: cargo publish --locked --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
 
   pypi:
     name: Publish wheels to PyPI
