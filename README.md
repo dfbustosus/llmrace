@@ -148,10 +148,10 @@ llmrace openai groq -c 8 -n 5
 # Saturation curve: race at each concurrency level, find the throughput knee
 llmrace openai groq --ramp 1,2,4,8 -n 3
 
-# Time-bounded runs keep every round in memory for statistics
-# (~2 KB/round/lane: inter-token gaps dominate). A 24 h --duration run at
-# one round per lane every ~2 s holds roughly 100 MB per lane — for
-# horizon monitoring prefer --watch, which aggregates each round instead.
+# Time-bounded runs keep rounds and request attempts in memory for statistics.
+# Memory grows with output length, concurrency and retries. For long-horizon
+# monitoring use --watch --record: it persists each round immediately and
+# retains only the latest round plus bounded alert/statistic windows.
 
 # CI gate: fail if any provider exceeds 500ms TTFB
 llmrace openai groq --max-ttfb 500 --quiet
@@ -258,8 +258,8 @@ Opt-in local daemons (`lmstudio`, `llamacpp`) only race when named explicitly, s
 
 Methodology notes:
 
-- One **warmup round** per provider (excluded from stats) to absorb connection setup and TLS handshakes. A warmup failure is not a measured failure. The warmup sends the first workload prompt by default, which can also prime the provider's prefix cache for that prompt; `--warmup-mode probe` sends a minimal `ping` (`max_tokens: 1`, no system prompt) instead, so every measured round starts cold. When a lane mixes cold and warm rounds the report says so (`Cache mix`), and `race.json` counts `cache_hit_rounds` per lane
-- **Failed measured rounds stay in the report.** Latency, tokens/s and cost/run use successful rounds only. The rank uses goodput (tokens/s × the success rate), so a provider that timed out half its calls cannot win on the calls that happened to succeed. Retries are counted and not priced: a failed attempt does not return token usage. `--record`, `--baseline` and `--recommend` keep the same failure rate, goodput, retry count and cost. A history file or baseline written before those fields existed still loads; the gate skips a metric the baseline did not record
+- One **warmup round** per provider (excluded from stats) absorbs connection setup and TLS handshakes. `--warmup-mode probe` sends a minimal `ping` instead of the first workload prompt, so warmup does not prime that workload's prefix cache. Measured requests can still populate and reuse the cache. Mixed cache samples are labeled (`Cache mix`) and `race.json` counts `cache_hit_rounds`.
+- **Every request outcome is retained.** A concurrent round with any failed request counts as a failed round, even when siblings succeed. JSON also reports request-level counts and `request_failure_rate`, and preserves each request's attempts. Retries reissue only the failed request; round wall time includes failed attempts and backoff. Latency, decode throughput and cost/run use rounds with at least one successful response. Fully failed rounds remain in `failures`. `end_to_end_tokens_per_sec` includes all measured wall time. Failed attempts without usage remain unpriced. History records fully failed lanes too.
 - Rounds are **concurrent across providers** but sequential within a provider, so providers don't throttle each other. Exception: `provider=model` lanes of the *same* provider race concurrently — the provider's rate limits and capacity are then shared between those lanes, which is exactly what a mixed-model race measures in practice
 - Rounds with 3σ latency outliers are flagged with `†`
 - **ITL caveat**: inter-token gaps are timestamped when the runtime polls the event, so they include local scheduling jitter (sub-millisecond on a quiet machine, more under heavy concurrent load) — compare ITL across providers measured in the *same* race, not across machines
@@ -272,6 +272,17 @@ Methodology notes:
 - **Reasoning models** (gpt-5, o-series): TTFT honestly includes thinking time — the model emits nothing visible while it reasons. When the provider reports server processing time, tokens/s uses the wider of the observed streaming window and the server window, so burst delivery after thinking cannot inflate throughput ([#125](https://github.com/dfbustosus/llmrace/issues/125)). Gemini `thoughtsTokenCount` is billed as output on top of `candidatesTokenCount`. OpenAI `completion_tokens` already includes `reasoning_tokens`, so that count is recorded and not added again. When the provider sends no count, the visible-stream estimate remains
 
 ## Reports
+
+Reports additionally record execution settings in `experiment`, with an
+independently reconstructible `experiment_sha256` and a `measurement_version`.
+When both reports carry the experiment hash,
+the baseline gate refuses changed concurrency, warmup, retries, timeouts or
+resolved sweep prompts. Older baselines without these fields still load.
+Models match their own baseline lanes; failed or missing baseline lanes fail
+the availability gate in the CLI, Rust API and MCP server. A required baseline
+prompt that is missing or has no successful responses also fails availability.
+The experiment hash is SHA-256 of the UTF-8 compact JSON representation of
+`experiment`, with lexicographically sorted keys and unescaped Unicode.
 
 ```bash
 llmrace openai groq --out race.md --json --csv --html
@@ -417,6 +428,20 @@ Four tools: `llmrace_race` (providers, prompt/workload, runs, winner → markdow
 
 ## Using llmrace as a CI quality gate
 
+`regression.status` is `pass`, `fail`, or `inconclusive`. A breached metric
+without a usable significance test (including p95 and too-small samples)
+is **inconclusive**, not evidence of equivalence. `regression.ok` remains the
+process-gate boolean. Add `--fail-on-inconclusive` with
+`--require-significance` to reject missing evidence too; JSON, JUnit and SARIF
+then reflect that strict decision. Rust callers use
+`gate_failed_with_policy(require_significance, true)`; MCP accepts
+`fail_on_inconclusive: true`.
+
+Three rounds are a smoke test, not a reliable estimate of tail latency.
+Plan repeated observations per prompt before interpreting significance;
+the verdict's statistical statement concerns **mean latency**, while the
+table leader is ranked by goodput and the optional podium uses its weights.
+
 Record a baseline of the workload once, then fail the pipeline when a prompt's success falls. A race with no `expect` has no task, so that gate does not move.
 
 ```bash
@@ -541,7 +566,7 @@ Missing a capability you need? [Open an issue](https://github.com/dfbustosus/llm
 
 - **CLI**: flags are a contract — deprecations get one minor release of dual support before removal
 - **Library**: semver — breaking API changes only in a new major version; new fields arrive only additively in minors
-- **MSRV**: Rust 1.88, enforced in CI; MSRV bumps are minor-release changes announced in the changelog
+- **MSRV**: Rust 1.88 for default features; the optional `sqlite` feature requires Rust 1.89 through `rusqlite`. Both configurations are enforced in CI; MSRV bumps are minor-release changes announced in the changelog
 - **Reports**: `race.json` / `race.csv` field changes are additive-only; `--baseline` and `--compare` keep parsing older reports (written since 0.3)
 
 ## Roadmap
@@ -553,7 +578,7 @@ Most provider additions are tagged [`good first issue`](https://github.com/dfbus
 
 ## Contributing
 
-PRs welcome — adding a provider is ~40 lines (see `src/provider.rs`). Fork it, add your favorite provider, ship it.
+PRs welcome — adding an OpenAI-compatible provider is ~40 lines (see `src/provider/spec.rs`). See [CONTRIBUTING.md](CONTRIBUTING.md) for protocol fixtures and the verification commands.
 
 ## License
 
