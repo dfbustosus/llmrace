@@ -80,13 +80,36 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
     providers
         .into_iter()
         .filter_map(|name| {
-            let races: Vec<&HistoryRecord> =
-                records.iter().filter(|r| r.provider == name).collect();
+            let latest = records
+                .iter()
+                .filter(|r| r.provider == name)
+                .max_by_key(|r| r.timestamp_unix)?;
+            if latest.failure_rate == Some(1.0) {
+                return None;
+            }
+            let races: Vec<&HistoryRecord> = records
+                .iter()
+                .filter(|r| {
+                    r.provider == name
+                        && r.model == latest.model
+                        && r.variant == latest.variant
+                        && r.concurrency == latest.concurrency
+                        && r.request_sha256 == latest.request_sha256
+                })
+                .collect();
             if races.is_empty() {
                 return None;
             }
-            let latencies: Vec<f64> = races.iter().map(|r| r.mean_total_ms).collect();
-            let ttfbs: Vec<f64> = races.iter().map(|r| r.mean_ttfb_ms).collect();
+            let latencies: Vec<f64> = races
+                .iter()
+                .filter(|r| r.failure_rate != Some(1.0))
+                .map(|r| r.mean_total_ms)
+                .collect();
+            let ttfbs: Vec<f64> = races
+                .iter()
+                .filter(|r| r.failure_rate != Some(1.0))
+                .map(|r| r.mean_ttfb_ms)
+                .collect();
             let tps: Vec<f64> = races.iter().map(|r| r.mean_tokens_per_sec).collect();
             let goodputs: Vec<f64> = races
                 .iter()
@@ -97,11 +120,7 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
             let recorded_costs: Vec<f64> =
                 races.iter().filter_map(|r| r.cost_per_run_usd).collect();
             let sample = Sample::from_values(latencies.clone());
-            let estimated = crate::cost::pricing(
-                &name,
-                &races.last().map(|r| r.model.clone()).unwrap_or_default(),
-            )
-            .map(|(_pin, pout)| {
+            let estimated = crate::cost::pricing(&name, &latest.model).map(|(_pin, pout)| {
                 let avg_tokens = tps.iter().sum::<f64>() / tps.len() as f64
                     * (latencies.iter().sum::<f64>() / latencies.len() as f64 / 1000.0);
                 avg_tokens * pout / 1_000_000.0
@@ -113,7 +132,7 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
             } else {
                 Some(Sample::from_values(recorded_costs).median())
             };
-            let monthly_cost = cost.map(|per_run| per_run * 1000.0); // 1000 req/day * 30 days
+            let monthly_cost = cost.map(|per_run| per_run * 1000.0 * 30.0);
             let median_tps = Sample::from_values(tps.clone()).median();
             let vfm = cost.map(|per_run| {
                 if per_run > 0.0 {
@@ -126,7 +145,7 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                 monthly_cost_usd: monthly_cost,
                 value_for_money: vfm,
                 name,
-                current_model: races.last().map(|r| r.model.clone()).unwrap_or_default(),
+                current_model: latest.model.clone(),
                 races: races.len(),
                 median_latency_ms: sample.median(),
                 median_ttfb_ms: Sample::from_values(ttfbs).median(),
