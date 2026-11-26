@@ -16,7 +16,7 @@ pub(super) fn write_reports(
     // neither belongs in report metadata.
     let actual_runs = summaries
         .iter()
-        .map(|s| s.runs.len())
+        .map(|s| s.measured_rounds())
         .max()
         .unwrap_or(cfg.bench.runs);
     let mut md = report::markdown(summaries, &cfg.prompt, actual_runs, cfg.bench.max_tokens);
@@ -40,6 +40,11 @@ pub(super) fn write_reports(
     }
     if let Some(regression) = regression {
         md.push_str(&regression.markdown_section(cfg.max_regression, cfg.require_significance));
+        if cfg.fail_on_inconclusive && regression.inconclusive(cfg.require_significance) {
+            md.push_str(
+                "\nThe gate fails because `--fail-on-inconclusive` requires usable evidence.\n",
+            );
+        }
     }
     let out_ext = if cfg.out == "-" {
         None
@@ -83,10 +88,15 @@ pub(super) fn write_reports(
             ),
             &cfg.bench.sampling,
         );
+        j = report::insert_experiment_json(&j, &cfg.bench, &race_experiment_variants(cfg));
         if let Some(regression) = regression {
             j = report::insert_regression_json(
                 &j,
-                &regression.verdict_json(cfg.max_regression, cfg.require_significance),
+                &regression.verdict_json_with_policy(
+                    cfg.max_regression,
+                    cfg.require_significance,
+                    cfg.fail_on_inconclusive,
+                ),
             );
         }
         let path = crate::report_sibling(&cfg.out, "json");
@@ -100,16 +110,22 @@ pub(super) fn write_reports(
         cfg.status(format!("\u{1f4c8} csv report saved to {path}"));
     }
     if cfg.junit || out_ext.as_deref() == Some("xml") {
-        let x = report::junit_xml(summaries);
+        let x = report::junit_xml_with_gate(
+            summaries,
+            regression,
+            cfg.require_significance,
+            cfg.fail_on_inconclusive,
+        );
         let path = crate::report_sibling(&cfg.out, "xml");
         std::fs::write(&path, x).with_context(|| format!("writing {path}"))?;
         cfg.status(format!("\u{1f9ea} junit report saved to {path}"));
     }
     if cfg.sarif || out_ext.as_deref() == Some("sarif") {
-        let s = llmrace::sarif::sarif(
+        let s = llmrace::sarif::sarif_with_policy(
             summaries,
             regression.map(|r| (r, cfg.max_regression, cfg.require_significance)),
             cfg.max_ttfb,
+            cfg.fail_on_inconclusive,
         );
         let path = crate::report_sibling(&cfg.out, "sarif");
         std::fs::write(&path, s).with_context(|| format!("writing {path}"))?;
@@ -169,6 +185,20 @@ fn race_request_sha256(cfg: &RunConfig) -> String {
     )
 }
 
+fn race_experiment_sha256(cfg: &RunConfig) -> String {
+    report::experiment_sha256(&cfg.bench, &race_experiment_variants(cfg))
+}
+
+fn race_experiment_variants(cfg: &RunConfig) -> Vec<(String, String)> {
+    cfg.sweep
+        .as_deref()
+        .and_then(|spec| llmrace::variants::parse_with_custom(spec, &cfg.custom_variants).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| (v.name, v.prompt))
+        .collect()
+}
+
 /// Appends lanes to the persistent history (jsonl or sqlite backend).
 pub(super) fn record_history(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<()> {
     let now = std::time::SystemTime::now()
@@ -178,7 +208,6 @@ pub(super) fn record_history(summaries: &[LaneSummary], cfg: &RunConfig) -> Resu
     let request = race_request_sha256(cfg);
     let records: Vec<llmrace::history::HistoryRecord> = summaries
         .iter()
-        .filter(|s| s.successful())
         .map(|s| {
             let mut record = llmrace::history::record_from_summary(s, now);
             record.request_sha256 = Some(request.clone());
@@ -218,6 +247,10 @@ pub(super) fn ttfb_gate(summaries: &[LaneSummary], cfg: &RunConfig) -> bool {
     let Some(max_ttfb) = cfg.max_ttfb else {
         return true;
     };
+    if summaries.iter().any(|s| !s.successful()) {
+        eprintln!("TTFB gate failed: a requested lane has no successful measurements");
+        return false;
+    }
     let offenders = llmrace::gates::ttfb_offenders(summaries, max_ttfb);
     let verdict = llmrace::gates::render_ttfb_verdict(&offenders, max_ttfb, cfg.quiet);
     if verdict.failed() {
@@ -245,11 +278,12 @@ pub(super) fn load_regression(
     let baseline = llmrace::regression::BaselineReport::from_json_str(&raw)
         .with_context(|| format!("parsing baseline {baseline_path}"))?;
     let request = race_request_sha256(cfg);
-    Ok(Some(llmrace::regression::evaluate_request(
+    Ok(Some(llmrace::regression::evaluate_experiment(
         summaries,
         &baseline,
         cfg.max_regression,
         Some(&request),
+        Some(&race_experiment_sha256(cfg)),
     )))
 }
 
@@ -265,11 +299,13 @@ pub(super) fn regression_gate(
         "\n{}",
         regression.terminal_table(cfg.max_regression)
     ));
-    if cfg.require_significance
+    if regression.inconclusive(cfg.require_significance) {
+        cfg.status("inconclusive: a breached metric has no usable significance test; this is not evidence of equivalence");
+    } else if cfg.require_significance
         && regression.any_regressed()
         && !regression.any_regressed_significant()
     {
         cfg.status("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
     }
-    !regression.gate_failed(cfg.require_significance)
+    !regression.gate_failed_with_policy(cfg.require_significance, cfg.fail_on_inconclusive)
 }
