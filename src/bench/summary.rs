@@ -8,7 +8,8 @@ use crate::stats::Sample;
 ///
 /// The class is coarse on purpose: reports and alerts group timeouts and
 /// rate limits without depending on provider error text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FailureClass {
     /// The request hit its deadline.
     Timeout,
@@ -69,12 +70,16 @@ impl FailureClass {
 }
 
 /// One measured round that produced no metrics after retries were exhausted.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct RoundFailure {
-    /// Wall time of the attempt that failed, in milliseconds.
-    ///
-    /// Earlier attempts in the same round are counted in
-    /// [`LaneSummary::retry_attempts`], not here.
+    /// Whether this request had an answer or tool-call check.
+    pub task_checked: bool,
+    /// Individual requests when this is a fully failed round. Empty for
+    /// individual attempts and legacy manually constructed failures.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<super::metrics::RequestOutcome>,
+    /// Wall time in milliseconds. Individual failures measure one attempt;
+    /// a fully failed round includes all attempts and retry delays.
     pub elapsed_ms: f64,
     /// Coarse cause.
     pub class: FailureClass,
@@ -93,10 +98,12 @@ pub struct LaneSummary {
     pub name: String,
     /// Model that was benchmarked.
     pub model: String,
-    /// Successful measured rounds.
+    /// Measured rounds with at least one successful request.
     ///
-    /// Latency, tokens/s and cost are computed from these only. Failed
-    /// measured rounds are [`Self::failures`] and stay out of those samples.
+    /// Latency, tokens/s and cost are computed from these only.
+    /// Fully failed rounds are [`Self::failures`] and stay out of those samples.
+    /// Partial failures are retained in each run's request outcomes and
+    /// counted by [`Self::failed_rounds`].
     pub runs: Vec<RunMetrics>,
     /// Measured rounds that failed after retries. Warmup failures are not
     /// recorded: warmup is outside the measured sample.
@@ -384,7 +391,7 @@ impl LaneSummary {
         self.itl_sample().map(|s| s.percentile(95.0))
     }
 
-    /// Total stutters (inter-token gaps over [`STUTTER_MS`]) across rounds.
+    /// Total stutters (inter-token gaps over [`super::STUTTER_MS`]) across rounds.
     #[must_use]
     pub fn stutters(&self) -> u64 {
         self.runs.iter().map(|r| r.stutters).sum()
@@ -488,6 +495,61 @@ impl LaneSummary {
         self.runs.len() + self.failures.len()
     }
 
+    /// Rounds with at least one request that failed after retries.
+    pub fn failed_rounds(&self) -> usize {
+        self.failures.len()
+            + self
+                .runs
+                .iter()
+                .filter(|r| r.requests.iter().any(|q| q.failure().is_some()))
+                .count()
+    }
+
+    /// Measured requests, excluding retry attempts.
+    pub fn measured_requests(&self) -> usize {
+        self.runs
+            .iter()
+            .map(|r| r.requests.len().max(self.concurrency.max(1)))
+            .sum::<usize>()
+            + self
+                .failures
+                .iter()
+                .map(|f| f.requests.len().max(self.concurrency.max(1)))
+                .sum::<usize>()
+    }
+
+    /// Requests whose final attempt failed.
+    pub fn failed_requests(&self) -> usize {
+        self.runs
+            .iter()
+            .flat_map(|r| &r.requests)
+            .filter(|q| q.failure().is_some())
+            .count()
+            + self
+                .failures
+                .iter()
+                .map(|f| f.requests.len().max(self.concurrency.max(1)))
+                .sum::<usize>()
+    }
+
+    /// Fraction of requests that failed, distinct from the round failure rate.
+    pub fn request_failure_rate(&self) -> Option<f64> {
+        let n = self.measured_requests();
+        (n > 0).then(|| self.failed_requests() as f64 / n as f64)
+    }
+
+    /// Output tokens from successful requests per elapsed second, including
+    /// failed rounds and retry delays in the denominator.
+    pub fn end_to_end_tokens_per_sec(&self) -> f64 {
+        let ms = self.runs.iter().map(|r| r.total_ms).sum::<f64>()
+            + self.failures.iter().map(|f| f.elapsed_ms).sum::<f64>();
+        if ms > 0.0 {
+            self.total_tokens() as f64 * 1000.0 / ms
+        } else {
+            0.0
+        }
+    }
+
     /// Fraction of measured rounds that failed.
     ///
     /// `None` when the lane measured nothing (a stop before the first
@@ -498,7 +560,7 @@ impl LaneSummary {
         if measured == 0 {
             None
         } else {
-            Some(self.failures.len() as f64 / measured as f64)
+            Some(self.failed_rounds() as f64 / measured as f64)
         }
     }
 
@@ -533,10 +595,13 @@ impl LaneSummary {
                 row.ttfb_ms += run.ttfb_ms;
                 row.tokens_per_sec += run.tokens_per_sec();
                 row.rounds += 1;
+                row.failed_rounds +=
+                    usize::from(run.requests.iter().any(|r| r.failure().is_some()));
             } else {
                 rows.push(PromptRow {
                     id: run.prompt_id.clone(),
                     rounds: 1,
+                    failed_rounds: usize::from(run.requests.iter().any(|r| r.failure().is_some())),
                     total_ms: run.total_ms,
                     ttfb_ms: run.ttfb_ms,
                     tokens_per_sec: run.tokens_per_sec(),
@@ -550,12 +615,34 @@ impl LaneSummary {
             row.ttfb_ms /= n;
             row.tokens_per_sec /= n;
         }
+        for failure in &self.failures {
+            if failure.prompt_id.is_empty() {
+                continue;
+            }
+            if let Some(row) = rows.iter_mut().find(|row| row.id == failure.prompt_id) {
+                row.failed_rounds += 1;
+            } else {
+                rows.push(PromptRow {
+                    id: failure.prompt_id.clone(),
+                    rounds: 0,
+                    failed_rounds: 1,
+                    total_ms: 0.0,
+                    ttfb_ms: 0.0,
+                    tokens_per_sec: 0.0,
+                    task_pass: None,
+                });
+            }
+        }
         let checked: Vec<String> = rows
             .iter()
             .filter(|row| {
                 self.runs
                     .iter()
                     .any(|run| run.prompt_id == row.id && run.task_ok.is_some())
+                    || self
+                        .failures
+                        .iter()
+                        .any(|f| f.prompt_id == row.id && f.task_checked)
             })
             .map(|row| row.id.clone())
             .collect();
@@ -594,7 +681,8 @@ impl LaneSummary {
     /// so a dropped round is not a pass. `None` when no round was checked.
     #[must_use]
     pub fn task_pass(&self) -> Option<(usize, usize)> {
-        let checked = self.runs.iter().any(|r| r.task_ok.is_some());
+        let checked = self.runs.iter().any(|r| r.task_ok.is_some())
+            || self.failures.iter().any(|f| f.task_checked);
         if !checked {
             return None;
         }
@@ -617,6 +705,8 @@ pub struct PromptRow {
     pub id: String,
     /// Successful rounds that used this prompt.
     pub rounds: usize,
+    /// Rounds with at least one failed request, including fully failed rounds.
+    pub failed_rounds: usize,
     /// Mean total latency, milliseconds.
     pub total_ms: f64,
     /// Mean time to first token, milliseconds.
