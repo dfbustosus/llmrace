@@ -213,7 +213,7 @@ pub struct ServerTiming {
     pub ratelimit_remaining: Option<String>,
 }
 
-/// The stream returned by [`stream_completion`].
+/// The stream returned by [`super::stream_completion`].
 ///
 /// A named enum instead of a boxed trait object so that common cases avoid
 /// virtual dispatch and the type is `Unpin + Send` by construction.
@@ -257,8 +257,9 @@ pub struct SseStream {
     stream: Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
     parser: crate::sse::SseParser,
     wire: Wire,
-    pending: std::collections::VecDeque<StreamEvent>,
+    pending: std::collections::VecDeque<Result<StreamEvent>>,
     upstream_done: bool,
+    completed: bool,
     timing: ServerTiming,
 }
 
@@ -272,7 +273,8 @@ impl SseStream {
         };
         let processing_ms = header("openai-processing-ms")
             .or_else(|| header("x-processing-time-ms"))
-            .and_then(|v| v.trim().parse::<f64>().ok());
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0);
         let timing = ServerTiming {
             processing_ms,
             request_id: header("x-request-id"),
@@ -284,6 +286,7 @@ impl SseStream {
             wire,
             pending: std::collections::VecDeque::new(),
             upstream_done: false,
+            completed: false,
             timing,
         }
     }
@@ -294,7 +297,53 @@ impl SseStream {
     }
 
     fn enqueue_block(&mut self, block: &str) {
-        for payload in parse_data_events(block) {
+        let payload = parse_data_events(block).join("\n");
+        if payload.is_empty() || self.upstream_done {
+            return;
+        }
+        if payload == "[DONE]" {
+            self.completed = true;
+            self.upstream_done = true;
+            return;
+        }
+        let value: serde_json::Value = match serde_json::from_str(&payload) {
+            Ok(value) => value,
+            Err(error) => {
+                self.pending.push_back(Err(Error::Protocol(format!(
+                    "invalid streaming JSON: {error}"
+                ))));
+                self.upstream_done = true;
+                return;
+            }
+        };
+        let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if value.get("error").is_some_and(|e| !e.is_null())
+            || matches!(kind, "error" | "response.failed")
+        {
+            self.pending.push_back(Err(Error::Stream(format!(
+                "provider stream error: {}",
+                crate::util::truncate(&value.to_string(), 300)
+            ))));
+            self.upstream_done = true;
+            return;
+        }
+        self.completed |= match self.wire {
+            Wire::OpenAiCompat => value
+                .pointer("/choices/0/finish_reason")
+                .is_some_and(|v| v.is_string()),
+            Wire::Anthropic => kind == "message_stop",
+            Wire::Gemini => value
+                .pointer("/candidates/0/finishReason")
+                .is_some_and(|v| v.is_string()),
+            Wire::Cohere => {
+                kind == "message-end"
+                    || value.get("event_type").and_then(|v| v.as_str()) == Some("stream-end")
+            }
+            Wire::OpenAiResponses => matches!(kind, "response.completed" | "response.incomplete"),
+            _ => false,
+        };
+        {
+            let payload = payload.as_str();
             if let Some(event) = decode_payload(payload, self.wire) {
                 let carries_output = event.token.is_some()
                     || event.completion_tokens.is_some()
@@ -305,7 +354,7 @@ impl SseStream {
                     || event.cache_write_1h_tokens.is_some()
                     || event.reasoning_tokens.is_some();
                 if carries_output {
-                    self.pending.push_back(event);
+                    self.pending.push_back(Ok(event));
                 }
             }
         }
@@ -321,7 +370,7 @@ impl futures_util::Stream for SseStream {
     ) -> Poll<Option<Self::Item>> {
         loop {
             if let Some(event) = self.pending.pop_front() {
-                return Poll::Ready(Some(Ok(event)));
+                return Poll::Ready(Some(event));
             }
             if self.upstream_done {
                 return Poll::Ready(None);
@@ -333,16 +382,25 @@ impl futures_util::Stream for SseStream {
                             self.enqueue_block(&block);
                         }
                     }
-                    Err(e) => return Poll::Ready(Some(Err(e))),
+                    Err(e) => {
+                        self.upstream_done = true;
+                        return Poll::Ready(Some(Err(e)));
+                    }
                 },
                 Poll::Ready(Some(Err(e))) => {
+                    self.upstream_done = true;
                     return Poll::Ready(Some(Err(Error::Stream(e.to_string()))));
                 }
                 Poll::Ready(None) => {
-                    self.upstream_done = true;
                     for block in self.parser.finish() {
                         self.enqueue_block(&block);
                     }
+                    if !self.completed && !self.upstream_done {
+                        self.pending.push_back(Err(Error::Protocol(
+                            "response stream ended without a completion marker".into(),
+                        )));
+                    }
+                    self.upstream_done = true;
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -447,9 +505,11 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 })
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
-            let usage = json_u64(v.pointer("/response/meta/billed_units/output_tokens"))
+            let usage = json_u64(v.pointer("/delta/usage/billed_units/output_tokens"))
+                .or_else(|| json_u64(v.pointer("/response/meta/billed_units/output_tokens")))
                 .or_else(|| json_u64(v.pointer("/usage/tokens/output_tokens")));
-            let prompt_tokens = json_u64(v.pointer("/response/meta/billed_units/input_tokens"))
+            let prompt_tokens = json_u64(v.pointer("/delta/usage/billed_units/input_tokens"))
+                .or_else(|| json_u64(v.pointer("/response/meta/billed_units/input_tokens")))
                 .or_else(|| json_u64(v.pointer("/usage/tokens/input_tokens")));
             let input = InputUsage {
                 prompt_tokens,
@@ -571,8 +631,9 @@ impl futures_util::Stream for MockStream {
 pub struct BedrockStream {
     stream: Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
     buf: Vec<u8>,
-    pending: std::collections::VecDeque<StreamEvent>,
+    pending: std::collections::VecDeque<Result<StreamEvent>>,
     upstream_done: bool,
+    completed: bool,
 }
 
 impl BedrockStream {
@@ -582,26 +643,26 @@ impl BedrockStream {
             buf: Vec::new(),
             pending: std::collections::VecDeque::new(),
             upstream_done: false,
+            completed: false,
         }
     }
 
-    fn enqueue_frame(&mut self, frame: &super::event_stream::EventFrame) {
+    fn enqueue_frame(&mut self, frame: &super::event_stream::EventFrame) -> Result<()> {
         use super::event_stream::EventFrame;
         let EventFrame {
             event_type,
             message_type,
             payload,
         } = frame;
-        if message_type == "exception" {
-            // surfaced via the stream ending / error on next poll
+        if message_type == "exception" || message_type == "error" {
             let body = String::from_utf8_lossy(payload);
-            let _ = crate::util::truncate(&body, 300);
-            return;
+            return Err(Error::Stream(format!(
+                "Bedrock {message_type}: {}",
+                crate::util::truncate(&body, 300)
+            )));
         }
-        let Ok(v): std::result::Result<serde_json::Value, _> = serde_json::from_slice(payload)
-        else {
-            return;
-        };
+        let v: serde_json::Value = serde_json::from_slice(payload)
+            .map_err(|e| Error::Protocol(format!("invalid Bedrock JSON: {e}")))?;
         match event_type.as_str() {
             // legacy invoke-with-response-stream shapes
             "chunk" | "contentBlockDelta" => {
@@ -618,17 +679,18 @@ impl BedrockStream {
                     .map(str::to_string);
                 if token.is_some() || tool_args.is_some() {
                     self.pending
-                        .push_back(InputUsage::empty().into_event(token, tool_args, None));
+                        .push_back(Ok(InputUsage::empty().into_event(token, tool_args, None)));
                 }
             }
-            "messageStop" => {}
+            "messageStop" => self.completed = true,
             "metadata" => {
                 if let Some(event) = bedrock_metadata_event(&v) {
-                    self.pending.push_back(event);
+                    self.pending.push_back(Ok(event));
                 }
             }
             _ => {}
         }
+        Ok(())
     }
 }
 
@@ -641,7 +703,7 @@ impl futures_util::Stream for BedrockStream {
     ) -> Poll<Option<Self::Item>> {
         loop {
             if let Some(event) = self.pending.pop_front() {
-                return Poll::Ready(Some(Ok(event)));
+                return Poll::Ready(Some(event));
             }
             if self.upstream_done {
                 return Poll::Ready(None);
@@ -649,17 +711,42 @@ impl futures_util::Stream for BedrockStream {
             match futures_util::StreamExt::poll_next_unpin(&mut self.stream, cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
                     self.buf.extend_from_slice(&chunk);
-                    while let Ok((frame, used)) = super::event_stream::decode_frame(&self.buf) {
-                        let frame = frame.clone();
-                        self.buf.drain(..used);
-                        self.enqueue_frame(&frame);
+                    loop {
+                        let decoded =
+                            super::event_stream::complete_frame_len(&self.buf).and_then(|ready| {
+                                ready
+                                    .map(|_| super::event_stream::decode_frame(&self.buf))
+                                    .transpose()
+                            });
+                        match decoded {
+                            Ok(Some((frame, used))) => {
+                                self.buf.drain(..used);
+                                if let Err(error) = self.enqueue_frame(&frame) {
+                                    self.pending.push_back(Err(error));
+                                    self.upstream_done = true;
+                                    break;
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(error) => {
+                                self.pending.push_back(Err(error));
+                                self.upstream_done = true;
+                                break;
+                            }
+                        }
                     }
                 }
                 Poll::Ready(Some(Err(e))) => {
-                    return Poll::Ready(Some(Err(Error::Stream(e.to_string()))))
+                    self.upstream_done = true;
+                    return Poll::Ready(Some(Err(Error::Stream(e.to_string()))));
                 }
                 Poll::Ready(None) => {
                     self.upstream_done = true;
+                    if !self.buf.is_empty() || !self.completed {
+                        self.pending.push_back(Err(Error::Protocol(
+                            "Bedrock stream ended before a complete messageStop".into(),
+                        )));
+                    }
                 }
                 Poll::Pending => return Poll::Pending,
             }
