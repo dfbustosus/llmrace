@@ -43,9 +43,14 @@ pub struct Alert {
 /// Result of a watch session.
 #[derive(Debug, Clone, Default)]
 pub struct WatchReport {
-    /// All summaries, one inner vector per round.
+    /// Number of rounds completed, including rounds no longer retained.
+    pub rounds_completed: usize,
+    /// Total alerts emitted, including alerts no longer retained.
+    pub alerts_emitted: usize,
+    /// All summaries for finite sessions; the latest round for unbounded
+    /// monitoring. Use the callback to persist every round.
     pub rounds: Vec<Vec<LaneSummary>>,
-    /// Alerts in firing order.
+    /// Alerts in firing order (latest 128 for unbounded monitoring).
     pub alerts: Vec<Alert>,
 }
 
@@ -190,17 +195,33 @@ where
 
         let mut alerts = Vec::new();
         for s in &summaries {
+            let key = format!("{}/{}", s.name, s.model);
+            let failed = !s.successful() || s.failed_rounds() > 0;
+            let streak = streak_of(&mut streaks, &key, "availability", failed);
+            if streak == config.alert_rounds.max(1) && failed {
+                let rate = s.failure_rate().unwrap_or(1.0) * 100.0;
+                alerts.push(Alert {
+                    round,
+                    provider: key.clone(),
+                    metric: "availability",
+                    baseline: 0.0,
+                    current: rate,
+                    delta_pct: rate,
+                });
+            }
             if !s.successful() {
+                streak_of(&mut streaks, &key, "ttfb", false);
+                streak_of(&mut streaks, &key, "p95", false);
                 continue;
             }
-            let ttfb_hist = history.get(&s.name).cloned().unwrap_or_default();
+            let ttfb_hist = history.get(&key).cloned().unwrap_or_default();
             let ttfb_streak = streak_of(
                 &mut streaks,
-                &s.name,
+                &key,
                 "ttfb",
                 degrade_check(
                     round,
-                    &s.name,
+                    &key,
                     "ttfb",
                     &ttfb_hist,
                     s.mean_ttfb_ms(),
@@ -208,10 +229,10 @@ where
                 )
                 .is_some(),
             );
-            if ttfb_streak == config.alert_rounds {
+            if ttfb_streak == config.alert_rounds.max(1) {
                 if let Some(alert) = degrade_check(
                     round,
-                    &s.name,
+                    &key,
                     "ttfb",
                     &ttfb_hist,
                     s.mean_ttfb_ms(),
@@ -220,38 +241,56 @@ where
                     alerts.push(alert);
                 }
             }
-            let p95_hist = p95_history.get(&s.name).cloned().unwrap_or_default();
+            let p95_hist = p95_history.get(&key).cloned().unwrap_or_default();
             let p95_degraded = degrade_check(
                 round,
-                &s.name,
+                &key,
                 "p95",
                 &p95_hist,
                 s.p95_total_ms(),
                 config.max_regression_pct,
             );
-            let p95_streak = streak_of(&mut streaks, &s.name, "p95", p95_degraded.is_some());
-            if p95_streak == config.alert_rounds {
+            let p95_streak = streak_of(&mut streaks, &key, "p95", p95_degraded.is_some());
+            if p95_streak == config.alert_rounds.max(1) {
                 if let Some(alert) = p95_degraded {
                     alerts.push(alert);
                 }
             }
-            history
-                .entry(s.name.clone())
-                .or_default()
-                .push(s.mean_ttfb_ms());
-            p95_history
-                .entry(s.name.clone())
-                .or_default()
-                .push(s.p95_total_ms());
+            push_window(history.entry(key.clone()).or_default(), s.mean_ttfb_ms());
+            push_window(p95_history.entry(key).or_default(), s.p95_total_ms());
         }
 
         on_round(round, &summaries, &alerts);
+        report.rounds_completed = round;
+        report.alerts_emitted += alerts.len();
         report.alerts.extend(alerts);
+        if config.rounds.is_none() {
+            report.rounds.clear();
+            if report.alerts.len() > 128 {
+                report.alerts.drain(..report.alerts.len() - 128);
+            }
+        }
         report.rounds.push(summaries);
 
         if round < limit && !stop() {
-            tokio::time::sleep(Duration::from_secs(config.every_secs)).await;
+            let started = std::time::Instant::now();
+            let interval = Duration::from_secs(config.every_secs);
+            while started.elapsed() < interval && !stop() {
+                tokio::time::sleep(
+                    interval
+                        .saturating_sub(started.elapsed())
+                        .min(Duration::from_millis(100)),
+                )
+                .await;
+            }
         }
     }
     report
+}
+
+fn push_window(values: &mut Vec<f64>, value: f64) {
+    if values.len() == 128 {
+        values.remove(0);
+    }
+    values.push(value);
 }
