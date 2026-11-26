@@ -69,6 +69,8 @@ pub(crate) struct RunConfig {
     pub max_regression: f64,
     /// Only fail the regression gate on statistically significant breaches.
     pub require_significance: bool,
+    /// Fail breached metrics whose significance cannot be evaluated.
+    pub fail_on_inconclusive: bool,
     /// Continuous monitoring mode.
     pub watch: bool,
     /// Seconds between watch rounds.
