@@ -1,7 +1,7 @@
 //! Continuous monitoring mode.
 
 use super::config::{resolve_model, RunConfig};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use llmrace::report;
 
 /// `--watch`: re-runs the race on an interval, alerting on degradation,
@@ -41,11 +41,21 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
     let webhook_url = cfg.alert_webhook.clone();
     let notify_desktop = cfg.notify_desktop;
     let webhook_client = cfg.client.clone();
+    let record_config = cfg.clone();
+    let record_failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let failed_in_callback = record_failed.clone();
+    let failed_to_stop = record_failed.clone();
     let report = llmrace::watch::watch_with_models(
         watch_lanes,
         watch_config,
         cfg.client.clone(),
         move |round, summaries, alerts| {
+            if record_config.record {
+                if let Err(error) = super::reports::record_history(summaries, &record_config) {
+                    eprintln!("history write failed: {error}");
+                    failed_in_callback.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
             for s in summaries {
                 if s.successful() {
                     println!(
@@ -64,8 +74,18 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
             }
             for a in alerts {
                 println!(
-                    "  \u{26a0} ALERT r{} {} {} {:.0} \u{2192} {:.0} ms (+{:.0}%)",
-                    a.round, a.provider, a.metric, a.baseline, a.current, a.delta_pct
+                    "  \u{26a0} ALERT r{} {} {} {:.0} \u{2192} {:.0} {} (+{:.0}%)",
+                    a.round,
+                    a.provider,
+                    a.metric,
+                    a.baseline,
+                    a.current,
+                    if a.metric == "availability" {
+                        "% failed rounds"
+                    } else {
+                        "ms"
+                    },
+                    a.delta_pct
                 );
                 // fire-and-forget webhook (async, can't block the sync closure)
                 if let Some(url) = webhook_url.clone() {
@@ -85,54 +105,24 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
                 }
             }
         },
-        move || ctrl_c_flag.load(std::sync::atomic::Ordering::Relaxed),
+        move || {
+            ctrl_c_flag.load(std::sync::atomic::Ordering::Relaxed)
+                || failed_to_stop.load(std::sync::atomic::Ordering::Relaxed)
+        },
     )
     .await;
 
     println!(
         "\nsession: {} rounds, {} alert(s)",
-        report.rounds.len(),
-        report.alerts.len()
+        report.rounds_completed, report.alerts_emitted
     );
     if cfg.notify_desktop {
         llmrace::notify::desktop_notification(
             "llmrace watch complete",
             &format!(
                 "{} rounds, {} alert(s) — report: {}",
-                report.rounds.len(),
-                report.alerts.len(),
-                cfg.out
+                report.rounds_completed, report.alerts_emitted, cfg.out
             ),
-        );
-    }
-
-    if cfg.record {
-        let mut records = Vec::new();
-        for summaries in &report.rounds {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let request = report::request_sha256(
-                &cfg.bench.prompt,
-                &cfg.bench.workload,
-                &cfg.bench.sampling,
-                cfg.bench.max_tokens,
-                cfg.bench.tools.then_some(cfg.bench.tool_task.as_str()),
-            );
-            for s in summaries.iter().filter(|s| s.successful()) {
-                let mut record = llmrace::history::record_from_summary(s, now);
-                record.request_sha256 = Some(request.clone());
-                records.push(record);
-            }
-        }
-        let path = llmrace::history::history_path();
-        llmrace::history::append(&path, &records)
-            .with_context(|| format!("recording history to {}", path.display()))?;
-        println!(
-            "\u{1f5c2} recorded {} lane(s) to {}",
-            records.len(),
-            path.display()
         );
     }
 
@@ -140,9 +130,17 @@ pub(crate) async fn watch_race(cfg: RunConfig) -> Result<i32> {
     if !last.is_empty() {
         let table = report::terminal_table(last);
         println!("\n{table}");
-        let md = report::markdown(last, &cfg.prompt, cfg.bench.runs, cfg.bench.max_tokens);
-        std::fs::write(&cfg.out, md).with_context(|| format!("writing {}", cfg.out))?;
-        println!("\u{1f4c4} report saved to {}", cfg.out);
+        let regression = super::reports::load_regression(last, &cfg)?;
+        super::reports::write_reports(last, &cfg, regression.as_ref())?;
+        super::reports::export_metrics(last, &cfg).await?;
+        if llmrace::gates::all_lanes_failed(last)
+            || !super::reports::ttfb_gate(last, &cfg)
+            || !super::reports::regression_gate(regression.as_ref(), &cfg)
+        {
+            return Ok(1);
+        }
     }
-    Ok(0)
+    Ok(i32::from(
+        record_failed.load(std::sync::atomic::Ordering::Relaxed),
+    ))
 }
