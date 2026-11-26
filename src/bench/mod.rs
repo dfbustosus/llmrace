@@ -6,5 +6,7 @@ mod metrics;
 mod summary;
 
 pub use engine::{spawn_lane, spawn_lane_stoppable};
-pub use metrics::{BenchConfig, LaneUpdate, RunMetrics, WarmupMode, STUTTER_MS};
+pub use metrics::{
+    BenchConfig, LaneUpdate, RequestAttempt, RequestOutcome, RunMetrics, WarmupMode, STUTTER_MS,
+};
 pub use summary::{FailureClass, LaneSummary, PromptRow, RoundFailure};
