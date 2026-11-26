@@ -600,6 +600,8 @@ fn failed_rounds_do_not_win_on_the_survivors() {
             ..RunMetrics::default()
         }],
         failures: vec![RoundFailure {
+            task_checked: false,
+            requests: Vec::new(),
             elapsed_ms: 5_000.0,
             class: FailureClass::Timeout,
             attempts: 1,
@@ -772,7 +774,7 @@ fn regression_summary(
 
 #[test]
 fn regression_passes_within_threshold() {
-    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"mock-1","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#;
+    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#;
     let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
     let current = vec![regression_summary("mock", 110.0, 130.0, 22.0, 76.0)];
     let report = evaluate(&current, &baseline, 15.0);
@@ -784,7 +786,7 @@ fn regression_passes_within_threshold() {
 
 #[test]
 fn regression_fails_beyond_threshold() {
-    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"mock-1","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#;
+    let baseline_raw = r#"{"providers":[{"provider":"mock","model":"m","mean_total_ms":100.0,"p95_total_ms":120.0,"mean_ttfb_ms":20.0,"mean_tokens_per_sec":80.0}]}"#;
     let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
 
     let slow = vec![regression_summary("mock", 130.0, 150.0, 20.0, 78.0)];
@@ -809,6 +811,8 @@ fn regression_fails_when_failure_rate_rises_or_goodput_falls() {
     let baseline = BaselineReport::from_json_str(baseline_raw).unwrap();
     let mut flaky = regression_summary("mock", 100.0, 120.0, 20.0, 80.0);
     flaky.failures.push(llmrace::bench::RoundFailure {
+        task_checked: false,
+        requests: Vec::new(),
         elapsed_ms: 100.0,
         class: llmrace::bench::FailureClass::Timeout,
         attempts: 1,
@@ -868,6 +872,8 @@ fn regression_names_the_prompt_that_fell() {
         },
     ];
     lane.failures.push(llmrace::bench::RoundFailure {
+        task_checked: true,
+        requests: Vec::new(),
         elapsed_ms: 10.0,
         class: llmrace::bench::FailureClass::Timeout,
         attempts: 1,
@@ -1046,7 +1052,10 @@ fn regression_reports_new_and_skipped_providers() {
     let report = evaluate(&current, &baseline, 15.0);
     assert_eq!(report.new_providers, vec!["mock".to_string()]);
     assert_eq!(report.skipped_providers, vec!["groq".to_string()]);
-    assert!(!report.any_regressed());
+    assert!(
+        report.gate_failed(true),
+        "a missing baseline lane is unavailable, not a passing comparison"
+    );
     let table = report.terminal_table(15.0);
     assert!(table.contains("new provider"));
     assert!(table.contains("not benchmarked"));
@@ -1786,13 +1795,13 @@ fn stats_edge_branches() {
     let ladder = s.percentiles(&[0.0, 50.0, 100.0]);
     assert_eq!(ladder, vec![1.0, 3.0, 5.0]);
 
-    // t-table interpolation between tabulated degrees of freedom (df=12)
+    // Student-t critical value at df=12, independently tabulated.
     let df12: Vec<f64> = (0..13).map(|i| i as f64).collect();
     let ci = Sample::from_values(df12).t_ci95().unwrap();
-    // interpolated t between df=10 (2.228) and df=15 (2.131) ≈ 2.209
-    let half = 2.209 * Sample::from_values((0..13).map(|i| i as f64).collect::<Vec<_>>()).stddev()
+    let half = 2.17881283
+        * Sample::from_values((0..13).map(|i| i as f64).collect::<Vec<_>>()).stddev()
         / (13.0_f64).sqrt();
-    assert!((ci.1 - ci.0 - 2.0 * half).abs() < 0.05, "{ci:?}");
+    assert!((ci.1 - ci.0 - 2.0 * half).abs() < 1e-7, "{ci:?}");
 
     // obvious 3-sigma outlier detection (needs enough clustered samples
     // that the spike cannot inflate sigma past its own deviation)
