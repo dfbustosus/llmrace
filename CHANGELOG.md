@@ -32,6 +32,7 @@ Measurement integrity, consistent gates, and reproducible execution records.
 - Docker builds and manifest publication share one resolved release version; old-version backfills do not update rolling aliases. Release builds use the lockfile and verify tag/version identity
 - Container and wheel packaging verify archive checksums; wheels include both license texts. CI installs the generated wheel and denies rustdoc warnings
 - MSRV checks cover default features on Rust 1.88 and SQLite on Rust 1.89, documenting the existing `rusqlite 0.42` compiler requirement
+- Consumer checks explicitly read UTF-8 on Windows; the fuzz workflow explicitly installs its pinned tool and preserves separate crash artifacts per target
 
 
 ## [1.38.0] - 2026-11-25
