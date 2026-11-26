@@ -18,6 +18,8 @@ enum Script {
     /// Sends one token, then stops sending anything — keeps the connection
     /// open to exercise the mid-stream timeout path.
     Stall,
+    /// Usage arrives before any generated content.
+    EarlyUsage,
 }
 
 async fn spawn_server(script: Script) -> (String, tokio::task::JoinHandle<()>) {
@@ -52,6 +54,14 @@ async fn spawn_server(script: Script) -> (String, tokio::task::JoinHandle<()>) {
 
 async fn respond(socket: &mut tokio::net::TcpStream, script: Script) {
     match script {
+        Script::EarlyUsage => {
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"usage\":{\"completion_tokens\":0}}\n\n").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            socket
+                .write_all((openai_events().join("\n\n") + "\n\n").as_bytes())
+                .await
+                .unwrap();
+        }
         Script::Sse { events, chunk_size } => {
             socket
                 .write_all(
@@ -414,6 +424,146 @@ fn one_success() -> Script {
         events: openai_events(),
         chunk_size: 1024,
     }
+}
+
+#[tokio::test]
+async fn concurrent_failure_is_retained_and_only_failed_requests_retry() {
+    for retries in [0, 1] {
+        let mut steps = vec![one_success(), rate_limited()];
+        if retries > 0 {
+            steps.push(one_success());
+        }
+        let (endpoint, server) = spawn_sequence(steps).await;
+        let (handle, _) = spawn_lane(
+            reqwest::Client::new(),
+            ProviderSpec::custom("partial", &endpoint, None, "m"),
+            "m".into(),
+            BenchConfig {
+                runs: 1,
+                warmup: 0,
+                concurrency: 2,
+                retries,
+                ..Default::default()
+            },
+        );
+        let lane = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        server.await.unwrap();
+        assert!(lane.successful());
+        assert_eq!(lane.measured_rounds(), 1);
+        assert_eq!(lane.measured_requests(), 2);
+        assert_eq!(lane.retry_attempts, retries as u64);
+        assert_eq!(lane.runs[0].requests.len(), 2);
+        assert_eq!(
+            lane.runs[0]
+                .requests
+                .iter()
+                .map(|r| r.attempts.len())
+                .sum::<usize>(),
+            2 + retries
+        );
+        if retries == 0 {
+            assert_eq!(lane.failed_rounds(), 1);
+            assert_eq!(lane.failure_rate(), Some(1.0));
+            assert_eq!(lane.request_failure_rate(), Some(0.5));
+            assert_eq!(lane.runs[0].tokens, 4, "successful sibling is retained");
+        } else {
+            assert_eq!(lane.failed_rounds(), 0);
+            assert_eq!(lane.request_failure_rate(), Some(0.0));
+            assert_eq!(lane.runs[0].tokens, 8);
+        }
+    }
+}
+
+#[tokio::test]
+async fn usage_only_event_does_not_start_ttft() {
+    let (endpoint, server) = spawn_server(Script::EarlyUsage).await;
+    let (handle, _) = spawn_lane(
+        reqwest::Client::new(),
+        ProviderSpec::custom("usage", &endpoint, None, "m"),
+        "m".into(),
+        BenchConfig {
+            runs: 1,
+            warmup: 0,
+            ..Default::default()
+        },
+    );
+    let lane = handle.await.unwrap();
+    server.await.unwrap();
+    assert!(lane.successful(), "{:?}", lane.error);
+    assert!(lane.mean_ttfb_ms() >= 140.0, "{}", lane.mean_ttfb_ms());
+}
+
+#[tokio::test]
+async fn truncated_malformed_and_error_streams_are_failures() {
+    for suffix in [
+        None,
+        Some("data: {\"error\":{\"message\":\"overloaded\"}}"),
+        Some("data: {broken"),
+    ] {
+        let mut events =
+            vec!["data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}".to_string()];
+        events.extend(suffix.map(str::to_string));
+        let (endpoint, server) = spawn_server(Script::Sse {
+            events,
+            chunk_size: 1024,
+        })
+        .await;
+        let (handle, _) = spawn_lane(
+            reqwest::Client::new(),
+            ProviderSpec::custom("broken", &endpoint, None, "m"),
+            "m".into(),
+            BenchConfig {
+                runs: 1,
+                warmup: 0,
+                ..Default::default()
+            },
+        );
+        let lane = handle.await.unwrap();
+        server.await.unwrap();
+        assert!(!lane.successful(), "{suffix:?}");
+        assert_eq!(lane.failed_requests(), 1);
+        assert_eq!(lane.failures[0].requests[0].attempts.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn a_fully_failed_prompt_remains_in_json_junit_and_the_prompt_gate() {
+    let (endpoint, server) = spawn_sequence(vec![one_success(), rate_limited()]).await;
+    let workload = llmrace::workload::parse("{\"id\":\"a\",\"prompt\":\"one\",\"expect\":\"Hello world!\"}\n{\"id\":\"b\",\"prompt\":\"two\",\"expect\":\"Hello world!\"}").unwrap();
+    let (handle, _) = spawn_lane(
+        reqwest::Client::new(),
+        ProviderSpec::custom("partial", &endpoint, None, "m"),
+        "m".into(),
+        BenchConfig {
+            runs: 2,
+            warmup: 0,
+            workload,
+            ..Default::default()
+        },
+    );
+    let lane = handle.await.unwrap();
+    server.await.unwrap();
+    let rows = lane.prompt_rows();
+    let failed = rows.iter().find(|row| row.id == "b").unwrap();
+    assert_eq!(failed.rounds, 0);
+    assert_eq!(failed.failed_rounds, 1);
+    assert_eq!(failed.task_pass, Some((0, 1)));
+    let xml = llmrace::report::junit_xml(std::slice::from_ref(&lane));
+    assert!(xml.contains("tests=\"2\" failures=\"1\""), "{xml}");
+    let json: serde_json::Value = serde_json::from_str(&llmrace::report::json_report(
+        std::slice::from_ref(&lane),
+        "p",
+        2,
+        256,
+    ))
+    .unwrap();
+    assert_eq!(json["providers"][0]["failures"][0]["prompt_id"], "b");
+    let baseline = llmrace::regression::BaselineReport::from_json_str(r#"{"providers":[{"provider":"partial","model":"m","prompts":[{"id":"b","task_pass_rate":1.0}]}]}"#).unwrap();
+    let verdict = llmrace::regression::evaluate(&[lane], &baseline, 15.0).verdict_json(15.0, true);
+    assert_eq!(verdict["failures"][0]["prompt_id"], "b");
 }
 
 #[tokio::test]
