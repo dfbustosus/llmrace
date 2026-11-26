@@ -9,7 +9,7 @@
 //! - [`sqlite`]: optional SQLite history backend (feature `sqlite`)
 //! - [`suite`]: multi-race benchmark suite orchestration
 //! - [`stats`]: descriptive statistics with t-based confidence intervals
-//! - [`bench`]: the benchmark engine and lane summaries
+//! - [`mod@bench`]: the benchmark engine and lane summaries
 //! - [`config`]: named profiles from `llmrace.toml`
 //! - [`cost`]: per-model pricing and cost estimation
 //! - [`report`]: markdown / JSON / CSV exports
