@@ -29,7 +29,9 @@ jobs:
       - name: Verify fuzz tooling
         run: cargo fuzz --version
       - name: Short fuzz burst
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=120 -rss_limit_mb=2048
+        # The prebuilt cargo-fuzz binary may embed a musl default target;
+        # AddressSanitizer needs the installed, dynamically linked GNU target.
+        run: cargo fuzz run ${{ matrix.target }} --target x86_64-unknown-linux-gnu -- -max_total_time=120 -rss_limit_mb=2048
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v7
