@@ -65,8 +65,10 @@ impl Weights {
                 .trim()
                 .parse()
                 .map_err(|_| Error::Config(format!("invalid weight '{value}' in '{part}'")))?;
-            if value < 0.0 {
-                return Err(Error::Config(format!("negative weight in '{part}'")));
+            if !value.is_finite() || value < 0.0 {
+                return Err(Error::Config(format!(
+                    "weight must be finite and nonnegative in '{part}'"
+                )));
             }
             match key.trim() {
                 "ttfb" => w.ttfb = value,
