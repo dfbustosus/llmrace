@@ -22,6 +22,16 @@ pub fn sarif(
     regression: Option<(&RegressionReport, f64, bool)>,
     max_ttfb: Option<f64>,
 ) -> String {
+    sarif_with_policy(summaries, regression, max_ttfb, false)
+}
+
+/// SARIF output with the same explicit inconclusive policy as the CLI gate.
+pub fn sarif_with_policy(
+    summaries: &[LaneSummary],
+    regression: Option<(&RegressionReport, f64, bool)>,
+    max_ttfb: Option<f64>,
+    fail_on_inconclusive: bool,
+) -> String {
     let mut results: Vec<Value> = Vec::new();
 
     if let Some((report, threshold, require_significance)) = regression {
@@ -34,6 +44,16 @@ pub fn sarif(
         }
         for comparison in &report.comparisons {
             for metric in &comparison.metrics {
+                if fail_on_inconclusive && metric.inconclusive(require_significance) {
+                    results.push(result(
+                        "llmrace/inconclusive",
+                        &format!(
+                            "{} ({}): {} breached its threshold without a usable significance test",
+                            comparison.name, comparison.current_model, metric.label
+                        ),
+                        logical(&comparison.name, metric.prompt_id.as_deref()),
+                    ));
+                }
                 if !metric.fails_the_gate(require_significance) {
                     continue;
                 }
@@ -73,8 +93,8 @@ pub fn sarif(
         }
     }
 
-    if crate::gates::all_lanes_failed(summaries) {
-        for lane in summaries {
+    {
+        for lane in summaries.iter().filter(|s| !s.successful()) {
             results.push(result(
                 "llmrace/lane-failure",
                 &format!(
@@ -100,6 +120,7 @@ pub fn sarif(
                     "version": env!("CARGO_PKG_VERSION"),
                     "informationUri": "https://github.com/dfbustosus/llmrace",
                     "rules": [
+                        {"id": "llmrace/inconclusive", "name": "Inconclusive", "shortDescription": {"text": "A breached metric lacks usable significance evidence"}},
                         {
                             "id": "llmrace/regression",
                             "name": "MetricRegression",
