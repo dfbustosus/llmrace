@@ -144,9 +144,8 @@ impl Sample {
 
     /// 95% confidence interval for the mean, `(low, high)`.
     ///
-    /// Uses the Student t distribution with interpolation over a hardcoded
-    /// critical-value table for `df <= 30` and the normal approximation
-    /// (`z = 1.96`) beyond. Returns `None` for fewer than two observations.
+    /// Uses the Student t distribution for every sample size. Returns
+    /// `None` for fewer than two observations.
     #[must_use]
     pub fn t_ci95(&self) -> Option<(f64, f64)> {
         let n = self.values.len();
@@ -207,39 +206,17 @@ pub fn fmt_ms(v: f64) -> String {
     }
 }
 
-/// Two-sided 95% critical values of the Student t distribution by degrees of freedom.
-const T_TABLE_95: &[(usize, f64)] = &[
-    (1, 12.706),
-    (2, 4.303),
-    (3, 3.182),
-    (4, 2.776),
-    (5, 2.571),
-    (6, 2.447),
-    (7, 2.365),
-    (8, 2.306),
-    (9, 2.262),
-    (10, 2.228),
-    (15, 2.131),
-    (20, 2.086),
-    (25, 2.060),
-    (30, 2.042),
-];
-
 fn t_critical_95(df: usize) -> f64 {
-    if df >= 30 {
-        return 1.96;
+    let (mut low, mut high) = (0.0, 16.0);
+    for _ in 0..48 {
+        let middle = (low + high) / 2.0;
+        if t_two_sided_p(middle, df as f64) > 0.05 {
+            low = middle;
+        } else {
+            high = middle;
+        }
     }
-    if let Some((_, v)) = T_TABLE_95.iter().find(|(k, _)| *k == df) {
-        return *v;
-    }
-    let Some((lo_df, lo_t)) = T_TABLE_95.iter().rev().find(|(k, _)| *k < df) else {
-        return 1.96;
-    };
-    let Some((hi_df, hi_t)) = T_TABLE_95.iter().find(|(k, _)| *k > df) else {
-        return 1.96;
-    };
-    let w = (df - lo_df) as f64 / (hi_df - lo_df) as f64;
-    lo_t + w * (hi_t - lo_t)
+    (low + high) / 2.0
 }
 
 /// Welch's t statistic and degrees of freedom for two independent samples
@@ -377,7 +354,7 @@ fn ln_gamma(x: f64) -> f64 {
     ];
     if x < 0.5 {
         // reflection formula
-        std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * ln_gamma(1.0 - x))
+        std::f64::consts::PI.ln() - (std::f64::consts::PI * x).sin().ln() - ln_gamma(1.0 - x)
     } else {
         let x = x - 1.0;
         let mut ag = G[0];
