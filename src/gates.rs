@@ -1,6 +1,6 @@
 //! CI quality gates over race results.
 //!
-//! [`crate::run`] consumes these from the CLI; exposing them in the
+//! The binary's `run` module consumes these from the CLI; exposing them in the
 //! library lets CI pipelines and embedders apply the same checks to any
 //! `LaneSummary` set.
 
