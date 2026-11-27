@@ -30,7 +30,7 @@ pub(crate) struct Cli {
     #[arg(
         short,
         long,
-        default_value = "Write one vivid paragraph about a lighthouse at dawn."
+        default_value = llmrace::race::DEFAULT_PROMPT
     )]
     prompt: String,
 
@@ -383,6 +383,9 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
     let code = dispatch(cli, custom_variants).await?;
     if code != 0 {
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
         std::process::exit(code);
     }
     Ok(())
@@ -433,7 +436,7 @@ async fn dispatch(
     if let Some(suite_path) = &cli.suite {
         let suite = llmrace::suite::load(std::path::Path::new(suite_path))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        return modes::run_suite(suite, &cli).await.map(|_| 0);
+        return modes::run_suite(suite, &cli).await;
     }
 
     if cli.init {
@@ -533,9 +536,12 @@ async fn dispatch(
             current: 200.0,
             delta_pct: 100.0,
         };
-        let client = reqwest::Client::new();
+        let client = llmrace::provider::benchmark_client(std::time::Duration::from_secs(10), 1)?;
         llmrace::notify::post_webhook(&client, url, &test_alert).await?;
-        println!("✓ test alert sent to {url} — check your Slack/Discord");
+        println!(
+            "✓ test alert sent to {} — check your Slack/Discord",
+            llmrace::util::redact_url(url)
+        );
         if cli.notify_desktop {
             llmrace::notify::desktop_notification(
                 "llmrace alert-test",
@@ -546,7 +552,7 @@ async fn dispatch(
     }
 
     if cli.recommend {
-        let records = load_history(&cli.storage)?;
+        let records = run::reports::load_history_entries(&cli.storage)?;
         let profiles = llmrace::recommend::build_profiles(&records);
         if cli.json {
             let payload: Vec<serde_json::Value> = profiles
@@ -620,22 +626,16 @@ impl Cli {
     }
 }
 
-/// Resolves the CLI into the plain data the race path needs.
-fn build_run_config(
-    cli: Cli,
-    custom_variants: std::collections::BTreeMap<String, String>,
-) -> Result<RunConfig> {
-    let selected = resolve_providers(&cli)?;
-
-    // pre-flight: fail fast on experimental providers missing credentials
-    // (better than starting the race and failing on the first request)
-    for spec in &selected {
+/// Pre-flight credential check for experimental providers (Bedrock, Vertex),
+/// shared by `--suite` and standard race builds.
+pub(crate) fn check_provider_credentials(selected: &[ProviderSpec]) -> Result<()> {
+    for spec in selected {
         if spec.experimental {
             match spec.wire {
                 llmrace::provider::Wire::Bedrock => {
                     if llmrace::provider::sigv4_credential_check().is_none() {
                         anyhow::bail!(
-                            "bedrock requires AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION"
+                            "bedrock requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (AWS_REGION defaults to us-east-1)"
                         );
                     }
                 }
@@ -651,6 +651,19 @@ fn build_run_config(
             }
         }
     }
+    Ok(())
+}
+
+/// Resolves the CLI into the plain data the race path needs.
+fn build_run_config(
+    cli: Cli,
+    custom_variants: std::collections::BTreeMap<String, String>,
+) -> Result<RunConfig> {
+    let selected = resolve_providers(&cli)?;
+
+    // pre-flight: fail fast on experimental providers missing credentials
+    // (better than starting the race and failing on the first request)
+    check_provider_credentials(&selected)?;
     let client = llmrace::provider::benchmark_client(
         std::time::Duration::from_secs(cli.timeout),
         cli.concurrency,
@@ -662,6 +675,9 @@ fn build_run_config(
     } else {
         cli.runs
     };
+    if cli.warmup.checked_add(runs.max(1)).is_none() {
+        anyhow::bail!("round count overflow: warmup + runs exceeds maximum");
+    }
     let workload = match &cli.workload {
         Some(path) => llmrace::workload::load(std::path::Path::new(path))
             .map_err(|e| anyhow::anyhow!("{e}"))?,
@@ -743,24 +759,6 @@ fn build_run_config(
         every_secs: cli.every,
         alert_rounds: cli.alert_rounds.max(1),
     })
-}
-
-#[cfg(feature = "sqlite")]
-pub(crate) fn sqlite_path() -> std::path::PathBuf {
-    llmrace::history::history_path().with_extension("sqlite3")
-}
-
-pub(crate) fn load_history(storage: &str) -> Result<Vec<llmrace::history::HistoryRecord>> {
-    match storage {
-        "jsonl" => Ok(llmrace::history::load(&llmrace::history::history_path())),
-        #[cfg(feature = "sqlite")]
-        "sqlite" => {
-            let conn =
-                llmrace::sqlite::open(&sqlite_path()).with_context(|| "opening sqlite history")?;
-            Ok(llmrace::sqlite::load(&conn).with_context(|| "reading sqlite history")?)
-        }
-        other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
-    }
 }
 
 pub(crate) fn report_sibling(out: &str, ext: &str) -> String {
