@@ -9,7 +9,7 @@
 use crate::error::Error;
 
 /// Credentials for signing one request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AwsCredentials {
     /// Access key ID (`AWS_ACCESS_KEY_ID`).
     pub access_key_id: String,
@@ -17,6 +17,19 @@ pub struct AwsCredentials {
     pub secret_access_key: String,
     /// Optional session token (`AWS_SESSION_TOKEN`).
     pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for AwsCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AwsCredentials")
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"[REDACTED]")
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Reads credentials from the standard environment chain.
@@ -236,7 +249,7 @@ pub fn uri_encode(s: &str, encode_slash: bool) -> String {
 }
 
 /// A signed request's headers, ready to attach.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct SignedHeaders {
     /// `x-amz-date` value (`YYYYMMDDTHHMMSSZ`).
     pub amz_date: String,
@@ -246,6 +259,20 @@ pub struct SignedHeaders {
     pub authorization: String,
     /// Session token header, when session credentials are used.
     pub session_token: Option<String>,
+}
+
+impl std::fmt::Debug for SignedHeaders {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignedHeaders")
+            .field("amz_date", &self.amz_date)
+            .field("content_sha256", &self.content_sha256)
+            .field("authorization", &"[REDACTED]")
+            .field(
+                "session_token",
+                &self.session_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 /// Computes the SigV4 signed headers for a Bedrock request.
@@ -265,7 +292,7 @@ pub fn sign(
     amz_date: &str,
 ) -> SignedHeaders {
     let content_sha256 = sha256_hex(body);
-    let date_stamp = &amz_date[..8];
+    let date_stamp = amz_date.get(..8).unwrap_or(amz_date);
 
     // canonical headers: host, x-amz-content-sha256, x-amz-date [, x-amz-security-token]
     let mut signed_header_names = "host;x-amz-content-sha256;x-amz-date".to_string();
@@ -437,5 +464,49 @@ mod tests {
             .authorization
             .contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token"));
         assert_eq!(signed.session_token.as_deref(), Some("TOKEN"));
+    }
+
+    #[test]
+    fn debug_redacts_secrets_and_authorization() {
+        let creds = AwsCredentials {
+            access_key_id: "AKIDPUBLIC".into(),
+            secret_access_key: "SUPER_SECRET_KEY".into(),
+            session_token: Some("SUPER_SECRET_TOKEN".into()),
+        };
+        let creds_dbg = format!("{creds:?}");
+        assert!(creds_dbg.contains("AKIDPUBLIC"));
+        assert!(creds_dbg.contains("[REDACTED]"));
+        assert!(!creds_dbg.contains("SUPER_SECRET_KEY"));
+        assert!(!creds_dbg.contains("SUPER_SECRET_TOKEN"));
+
+        let signed = sign(
+            &creds,
+            "us-east-1",
+            "h",
+            "POST",
+            "/",
+            "",
+            b"{}",
+            "20150830T123600Z",
+        );
+        let signed_dbg = format!("{signed:?}");
+        assert!(signed_dbg.contains("20150830T123600Z"));
+        assert!(signed_dbg.contains("[REDACTED]"));
+        assert!(!signed_dbg.contains("Signature="));
+        assert!(!signed_dbg.contains("SUPER_SECRET_TOKEN"));
+    }
+
+    #[test]
+    fn sign_handles_short_and_non_ascii_amz_date_without_panicking() {
+        let creds = AwsCredentials {
+            access_key_id: "AKID".into(),
+            secret_access_key: "secret".into(),
+            session_token: None,
+        };
+        for bad_date in ["", "2025", "2025\u{1F600}12345"] {
+            let signed = sign(&creds, "us-east-1", "h", "POST", "/", "", b"{}", bad_date);
+            assert_eq!(signed.amz_date, bad_date);
+            assert!(signed.authorization.contains("Signature="));
+        }
     }
 }
