@@ -1,7 +1,7 @@
 # Use llmrace as a pre-commit gate in any repository:
 #
 #   - repo: https://github.com/dfbustosus/llmrace
-#     rev: v1.36.0
+#     rev: v1.40.0
 #     hooks:
 #       - id: llmrace-gate
 #         args:
