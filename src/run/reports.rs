@@ -4,6 +4,48 @@ use super::config::RunConfig;
 use anyhow::{Context, Result};
 use llmrace::bench::LaneSummary;
 use llmrace::report;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Atomically writes `bytes` to `path` via a sibling temporary file and rename.
+///
+/// Creates missing parent directories, writes and flushes `.llmrace-<pid>-<seq>.tmp`
+/// in the same directory, then renames it into place. Removes the temporary file
+/// if writing, flushing, or renaming fails.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating directory {}", parent.display()))?;
+        }
+    }
+    let seq = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_name = format!(".llmrace-{}-{seq}.tmp", std::process::id());
+    let tmp_path = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.join(tmp_name),
+        _ => PathBuf::from(tmp_name),
+    };
+    let write_res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        Ok(())
+    })();
+    if let Err(err) = write_res {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err).with_context(|| format!("writing {}", path.display()));
+    }
+    if let Err(err) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err).with_context(|| format!("writing {}", path.display()));
+    }
+    Ok(())
+}
 
 /// Writes the markdown/JSON/CSV/HTML reports requested by the config.
 pub(super) fn write_reports(
@@ -28,8 +70,8 @@ pub(super) fn write_reports(
     }
     if cfg.winner {
         let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
-        let scored = llmrace::score::score_lanes(summaries, &weights);
-        let block = llmrace::score::podium(&scored, &weights);
+        let groups = llmrace::score::score_groups(summaries, &weights);
+        let block = llmrace::score::podiums(&groups, &weights);
         if !block.is_empty() {
             md.push_str("\n## Podium\n");
             md.push_str(&block);
@@ -49,7 +91,7 @@ pub(super) fn write_reports(
     let out_ext = if cfg.out == "-" {
         None
     } else {
-        std::path::Path::new(&cfg.out)
+        Path::new(&cfg.out)
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
@@ -66,7 +108,7 @@ pub(super) fn write_reports(
             }
             _ => cfg.out.clone(),
         };
-        std::fs::write(&md_path, &md).with_context(|| format!("writing {md_path}"))?;
+        write_atomic(Path::new(&md_path), md.as_bytes())?;
         cfg.status(format!("\u{1f4c4} markdown report saved to {md_path}"));
     }
 
@@ -100,13 +142,13 @@ pub(super) fn write_reports(
             );
         }
         let path = crate::report_sibling(&cfg.out, "json");
-        std::fs::write(&path, j).with_context(|| format!("writing {path}"))?;
+        write_atomic(Path::new(&path), j.as_bytes())?;
         cfg.status(format!("\u{1f4ca} json report saved to {path}"));
     }
     if cfg.csv || out_ext.as_deref() == Some("csv") {
         let c = report::csv(summaries);
         let path = crate::report_sibling(&cfg.out, "csv");
-        std::fs::write(&path, c).with_context(|| format!("writing {path}"))?;
+        write_atomic(Path::new(&path), c.as_bytes())?;
         cfg.status(format!("\u{1f4c8} csv report saved to {path}"));
     }
     if cfg.junit || out_ext.as_deref() == Some("xml") {
@@ -117,7 +159,7 @@ pub(super) fn write_reports(
             cfg.fail_on_inconclusive,
         );
         let path = crate::report_sibling(&cfg.out, "xml");
-        std::fs::write(&path, x).with_context(|| format!("writing {path}"))?;
+        write_atomic(Path::new(&path), x.as_bytes())?;
         cfg.status(format!("\u{1f9ea} junit report saved to {path}"));
     }
     if cfg.sarif || out_ext.as_deref() == Some("sarif") {
@@ -128,29 +170,29 @@ pub(super) fn write_reports(
             cfg.fail_on_inconclusive,
         );
         let path = crate::report_sibling(&cfg.out, "sarif");
-        std::fs::write(&path, s).with_context(|| format!("writing {path}"))?;
+        write_atomic(Path::new(&path), s.as_bytes())?;
         cfg.status(format!("\u{1f6e1} sarif report saved to {path}"));
     }
     if cfg.html || out_ext.as_deref() == Some("html") {
-        let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
-        let scored = if cfg.winner {
-            llmrace::score::score_lanes(summaries, &weights)
+        let groups = if cfg.winner {
+            let weights = llmrace::score::applied_weights(summaries, &cfg.weights);
+            llmrace::score::score_groups(summaries, &weights)
         } else {
             Vec::new()
         };
-        let mut h = report::html_report(
+        let mut h = report::html_report_grouped(
             summaries,
             &cfg.prompt,
             actual_runs,
             cfg.bench.max_tokens,
-            &scored,
+            &groups,
         );
         if let Some(inline) = report::sampling_inline(&cfg.bench.sampling) {
             let escaped = llmrace::util::html_escape(&inline);
             h = h.replacen("</code> ·", &format!("</code> · {escaped} ·"), 1);
         }
         let path = crate::report_sibling(&cfg.out, "html");
-        std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
+        write_atomic(Path::new(&path), h.as_bytes())?;
         cfg.status(format!("\u{1f310} html report saved to {path}"));
     }
     Ok(())
@@ -160,14 +202,15 @@ pub(super) fn write_reports(
 /// file, per configuration.
 pub(super) async fn export_metrics(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<()> {
     if let Some(gateway) = &cfg.push_gateway {
+        let redacted = llmrace::util::redact_url(gateway);
         llmrace::prom::push(&cfg.client, gateway, summaries)
             .await
-            .with_context(|| format!("pushing metrics to {gateway}"))?;
-        cfg.status(format!("\u{1f4e1} metrics pushed to {gateway}"));
+            .with_context(|| format!("pushing metrics to {redacted}"))?;
+        cfg.status(format!("\u{1f4e1} metrics pushed to {redacted}"));
     }
     if let Some(path) = &cfg.prom_output {
         let body = llmrace::prom::render_metrics(summaries);
-        std::fs::write(path, body)
+        write_atomic(Path::new(path), body.as_bytes())
             .with_context(|| format!("writing Prometheus metrics to {path}"))?;
         cfg.status(format!("\u{1f4e1} Prometheus metrics saved to {path}"));
     }
@@ -199,6 +242,53 @@ fn race_experiment_variants(cfg: &RunConfig) -> Vec<(String, String)> {
         .collect()
 }
 
+#[cfg(feature = "sqlite")]
+fn sqlite_path() -> PathBuf {
+    llmrace::history::history_path().with_extension("sqlite3")
+}
+
+/// Persists history records using the selected storage backend (`jsonl` or `sqlite`)
+/// and returns the destination path.
+pub(crate) fn record_history_entries(
+    storage: &str,
+    records: &[llmrace::history::HistoryRecord],
+) -> Result<PathBuf> {
+    match storage {
+        "jsonl" => {
+            let path = llmrace::history::history_path();
+            llmrace::history::append(&path, records)
+                .with_context(|| format!("recording history to {}", path.display()))?;
+            Ok(path)
+        }
+        #[cfg(feature = "sqlite")]
+        "sqlite" => {
+            let path = sqlite_path();
+            let conn = llmrace::sqlite::open(&path).with_context(|| "opening sqlite history")?;
+            llmrace::sqlite::save(&conn, records).with_context(|| "writing sqlite history")?;
+            Ok(path)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        "sqlite" => anyhow::bail!("sqlite backend requires rebuilding with --features sqlite"),
+        other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
+    }
+}
+
+/// Loads history records from the selected storage backend (`jsonl` or `sqlite`).
+pub(crate) fn load_history_entries(storage: &str) -> Result<Vec<llmrace::history::HistoryRecord>> {
+    match storage {
+        "jsonl" => Ok(llmrace::history::load(&llmrace::history::history_path())),
+        #[cfg(feature = "sqlite")]
+        "sqlite" => {
+            let conn =
+                llmrace::sqlite::open(&sqlite_path()).with_context(|| "opening sqlite history")?;
+            Ok(llmrace::sqlite::load(&conn).with_context(|| "reading sqlite history")?)
+        }
+        #[cfg(not(feature = "sqlite"))]
+        "sqlite" => anyhow::bail!("sqlite backend requires rebuilding with --features sqlite"),
+        other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
+    }
+}
+
 /// Appends lanes to the persistent history (jsonl or sqlite backend).
 pub(super) fn record_history(summaries: &[LaneSummary], cfg: &RunConfig) -> Result<()> {
     let now = std::time::SystemTime::now()
@@ -214,30 +304,12 @@ pub(super) fn record_history(summaries: &[LaneSummary], cfg: &RunConfig) -> Resu
             record
         })
         .collect();
-    match cfg.storage.as_str() {
-        "jsonl" => {
-            let path = llmrace::history::history_path();
-            llmrace::history::append(&path, &records)
-                .with_context(|| format!("recording history to {}", path.display()))?;
-            cfg.status(format!(
-                "\u{1f5c2} recorded {} lane(s) to {}",
-                records.len(),
-                path.display()
-            ));
-        }
-        #[cfg(feature = "sqlite")]
-        "sqlite" => {
-            let path = crate::sqlite_path();
-            let conn = llmrace::sqlite::open(&path).with_context(|| "opening sqlite history")?;
-            llmrace::sqlite::save(&conn, &records).with_context(|| "writing sqlite history")?;
-            cfg.status(format!(
-                "\u{1f5c2} recorded {} lane(s) to {}",
-                records.len(),
-                path.display()
-            ));
-        }
-        other => anyhow::bail!("unknown storage backend '{other}' (expected jsonl or sqlite)"),
-    }
+    let path = record_history_entries(&cfg.storage, &records)?;
+    cfg.status(format!(
+        "\u{1f5c2} recorded {} lane(s) to {}",
+        records.len(),
+        path.display()
+    ));
     Ok(())
 }
 
@@ -308,4 +380,58 @@ pub(super) fn regression_gate(
         cfg.status("\u{2705} threshold breached but no regression is statistically significant — treating as noise (--require-significance)");
     }
     !regression.gate_failed_with_policy(cfg.require_significance, cfg.fail_on_inconclusive)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_atomic_creates_parents_replaces_and_leaves_no_temp_files() {
+        let dir =
+            std::env::temp_dir().join(format!("llmrace-write-atomic-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("nested").join("report.md");
+
+        write_atomic(&path, b"first").expect("initial atomic write");
+        assert_eq!(std::fs::read(&path).expect("read first"), b"first");
+
+        write_atomic(&path, b"second").expect("overwrite atomic write");
+        assert_eq!(std::fs::read(&path).expect("read second"), b"second");
+
+        let leftover_tmp: Vec<_> = std::fs::read_dir(dir.join("nested"))
+            .expect("read nested dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftover_tmp.is_empty(),
+            "leftover tmp files: {leftover_tmp:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn storage_backend_rejects_unknown_and_explains_missing_sqlite_feature() {
+        let err = load_history_entries("postgres").expect_err("unknown backend must fail");
+        assert!(err.to_string().contains("unknown storage backend"), "{err}");
+
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let err = load_history_entries("sqlite").expect_err("sqlite without feature must fail");
+            assert!(
+                err.to_string()
+                    .contains("sqlite backend requires rebuilding with --features sqlite"),
+                "{err}"
+            );
+            let err =
+                record_history_entries("sqlite", &[]).expect_err("sqlite write without feature");
+            assert!(
+                err.to_string()
+                    .contains("sqlite backend requires rebuilding with --features sqlite"),
+                "{err}"
+            );
+        }
+    }
 }
