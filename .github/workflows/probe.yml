@@ -59,9 +59,14 @@ jobs:
           tool: llmrace
 
       - name: Record region metadata
-        run: |
-          echo "region=$(curl -sf https://ipinfo.io/region || echo unknown)" >> "$GITHUB_OUTPUT"
         id: meta
+        run: |
+          set -euo pipefail
+          raw="$(curl -sf --max-time 5 https://ipinfo.io/region || true)"
+          region="$(printf '%s' "$raw" | tr -cd 'A-Za-z0-9._-')"
+          region="${region:0:64}"
+          region="${region:-unknown}"
+          echo "region=$region" >> "$GITHUB_OUTPUT"
 
       - name: Race providers
         env:
@@ -69,11 +74,35 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
+          PROVIDERS: ${{ inputs.providers || 'groq openai' }}
+          RUNS: ${{ inputs.runs || 3 }}
+          REGION: ${{ steps.meta.outputs.region }}
         run: |
-          llmrace ${{ inputs.providers || 'groq openai' }} \
-            -n "${{ inputs.runs || 3 }}" --warmup 1 \
-            --region "${{ steps.meta.outputs.region }}" \
-            --json --out "probe-${{ steps.meta.outputs.region }}.json"
+          set -euo pipefail
+          provider_pattern='^[A-Za-z0-9_.,=/: -]+$'
+          if [[ ! "$PROVIDERS" =~ $provider_pattern ]]; then
+            echo "Invalid providers input" >&2
+            exit 1
+          fi
+          read -r -a provider_args <<< "$PROVIDERS"
+          if [[ "${#provider_args[@]}" -eq 0 ]]; then
+            echo "No providers specified" >&2
+            exit 1
+          fi
+          for provider in "${provider_args[@]}"; do
+            if [[ "$provider" == -* ]]; then
+              echo "Invalid provider token: $provider" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$RUNS" =~ ^[0-9]+$ ]]; then
+            echo "Invalid runs input" >&2
+            exit 1
+          fi
+          llmrace "${provider_args[@]}" \
+            -n "$RUNS" --warmup 1 \
+            --region "$REGION" \
+            --json --out "probe-${REGION}.json"
 
       - name: Upload probe report
         uses: actions/upload-artifact@v7
