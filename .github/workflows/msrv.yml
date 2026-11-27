@@ -10,6 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   msrv:
     name: MSRV ${{ matrix.toolchain }} (${{ matrix.features || 'default' }})
