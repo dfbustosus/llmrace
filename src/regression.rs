@@ -7,11 +7,24 @@
 use crate::bench::LaneSummary;
 use serde::Deserialize;
 
+const LABEL_MEAN_LATENCY: &str = "mean latency";
+const LABEL_P95_LATENCY: &str = "p95 latency";
+const LABEL_TTFB: &str = "ttfb";
+const LABEL_TOKENS_PER_SEC: &str = "tokens/s";
+const LABEL_FAILURE_RATE: &str = "failure rate";
+const LABEL_GOODPUT: &str = "goodput";
+const LABEL_COST_PER_RUN: &str = "cost/run";
+const LABEL_TASK_SUCCESS: &str = "task success";
+const LABEL_AVAILABILITY: &str = "availability";
+const LABEL_CONFIGURATION: &str = "configuration";
+
 /// Threshold-aware comparison result for one provider.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderComparison {
     /// Provider id.
     pub name: String,
+    /// Prompt-variant label for sweep comparisons; `None` for plain races.
+    pub variant: Option<String>,
     /// Model recorded in the baseline.
     pub baseline_model: String,
     /// Model benchmarked now.
@@ -61,12 +74,12 @@ impl MetricComparison {
             None => {
                 matches!(
                     self.label,
-                    "failure rate"
-                        | "goodput"
-                        | "cost/run"
-                        | "task success"
-                        | "availability"
-                        | "configuration"
+                    LABEL_FAILURE_RATE
+                        | LABEL_GOODPUT
+                        | LABEL_COST_PER_RUN
+                        | LABEL_TASK_SUCCESS
+                        | LABEL_AVAILABILITY
+                        | LABEL_CONFIGURATION
                 )
             }
         }
@@ -283,8 +296,17 @@ impl RegressionReport {
         out.push_str("| Provider | Metric | Prompt | Baseline | Current | Δ | p |\n");
         out.push_str("|---|---|---|---:|---:|---:|---:|\n");
         for comparison in &self.comparisons {
+            let provider = match &comparison.variant {
+                Some(v) => format!("{} ({v})", comparison.name),
+                None => comparison.name.clone(),
+            };
+            let provider = crate::util::md_escape_cell(&provider);
             for metric in &comparison.metrics {
-                let prompt = metric.prompt_id.as_deref().unwrap_or("—");
+                let prompt = metric
+                    .prompt_id
+                    .as_deref()
+                    .map(crate::util::md_escape_cell)
+                    .unwrap_or_else(|| "—".to_string());
                 let p = match metric.p_value {
                     Some(p) => format!("{p:.3}"),
                     None => "—".to_string(),
@@ -295,12 +317,8 @@ impl RegressionReport {
                     ""
                 };
                 out.push_str(&format!(
-                    "| {} | {} | {prompt} | {:.1} | {:.1} | {:+.1}%{mark} | {p} |\n",
-                    comparison.name,
-                    metric.label,
-                    metric.baseline,
-                    metric.current,
-                    metric.delta_pct
+                    "| {provider} | {} | {prompt} | {:.1} | {:.1} | {:+.1}%{mark} | {p} |\n",
+                    metric.label, metric.baseline, metric.current, metric.delta_pct
                 ));
             }
         }
@@ -624,7 +642,7 @@ pub fn compare_baselines(
             if current.successful == Some(false) {
                 report
                     .comparisons
-                    .push(unavailable(current, "availability"));
+                    .push(unavailable(current, LABEL_AVAILABILITY));
             }
             continue;
         };
@@ -632,149 +650,26 @@ pub fn compare_baselines(
         if current.successful == Some(false) {
             report
                 .comparisons
-                .push(unavailable(current, "availability"));
+                .push(unavailable_pair(base, current, LABEL_AVAILABILITY));
+            continue;
+        }
+        if base.successful == Some(false) {
+            report
+                .comparisons
+                .push(unavailable_pair(base, current, LABEL_AVAILABILITY));
             continue;
         }
         if matches!((base.concurrency, current.concurrency), (Some(a), Some(b)) if a != b) {
             report
                 .comparisons
-                .push(unavailable(current, "configuration"));
+                .push(unavailable_pair(base, current, LABEL_CONFIGURATION));
             continue;
         }
-        let mut metrics = vec![
-            latency_metric(
-                "mean latency",
-                base.mean_total_ms,
-                current.mean_total_ms,
-                max_regression_pct,
-                metric_p_value(&base.runs, &current.runs, |r| r.total_ms),
-            ),
-            latency_metric(
-                "p95 latency",
-                base.p95_total_ms,
-                current.p95_total_ms,
-                max_regression_pct,
-                None, // p95 is derived, not per-run
-            ),
-            latency_metric(
-                "ttfb",
-                base.mean_ttfb_ms,
-                current.mean_ttfb_ms,
-                max_regression_pct,
-                metric_p_value(&base.runs, &current.runs, |r| r.ttfb_ms),
-            ),
-            throughput_metric(
-                "tokens/s",
-                base.mean_tokens_per_sec,
-                current.mean_tokens_per_sec,
-                max_regression_pct,
-                metric_p_value(&base.runs, &current.runs, |r| r.tokens_per_sec),
-            ),
-        ];
-        // Older baselines omit these. A missing baseline value is not a
-        // zero, so the gate skips the metric instead of inventing a change.
-        if let (Some(base_rate), Some(current_rate)) = (base.failure_rate, current.failure_rate) {
-            metrics.push(failure_rate_metric(
-                base_rate,
-                current_rate,
-                max_regression_pct,
-            ));
-        }
-        if let (Some(base_goodput), Some(current_goodput)) =
-            (base.goodput_tokens_per_sec, current.goodput_tokens_per_sec)
-        {
-            metrics.push(throughput_metric(
-                "goodput",
-                base_goodput,
-                current_goodput,
-                max_regression_pct,
-                None,
-            ));
-        }
-        if let (Some(base_cost), Some(current_cost)) =
-            (base.cost_per_run_usd, current.cost_per_run_usd)
-        {
-            metrics.push(latency_metric(
-                "cost/run",
-                base_cost,
-                current_cost,
-                max_regression_pct,
-                None,
-            ));
-        }
-        if let (Some(base_task), Some(current_task)) = (base.task_pass_rate, current.task_pass_rate)
-        {
-            metrics.push(task_pass_metric(
-                base_task,
-                current_task,
-                max_regression_pct,
-            ));
-        }
-        for base_prompt in &base.prompts {
-            let Some(base_rate) = base_prompt.task_pass_rate else {
-                continue;
-            };
-            let Some(current_rate) = current
-                .prompts
-                .iter()
-                .find(|prompt| prompt.id == base_prompt.id)
-                .and_then(|prompt| prompt.task_pass_rate)
-            else {
-                continue;
-            };
-            metrics.push(prompt_task_metric(
-                &base_prompt.id,
-                base_rate,
-                current_rate,
-                max_regression_pct,
-            ));
-        }
-        for base_prompt in &base.prompts {
-            let Some(current_prompt) = current
-                .prompts
-                .iter()
-                .find(|prompt| prompt.id == base_prompt.id)
-            else {
-                metrics.push(prompt_unavailable(&base_prompt.id));
-                continue;
-            };
-            if current_prompt.rounds == Some(0) {
-                metrics.push(prompt_unavailable(&base_prompt.id));
-                continue;
-            }
-            let base_runs = runs_for_prompt(&base.runs, &base_prompt.id);
-            let current_runs = runs_for_prompt(&current.runs, &base_prompt.id);
-            if let (Some(base_ms), Some(current_ms)) =
-                (base_prompt.mean_total_ms, current_prompt.mean_total_ms)
-            {
-                metrics.push(with_prompt(
-                    latency_metric(
-                        "mean latency",
-                        base_ms,
-                        current_ms,
-                        max_regression_pct,
-                        metric_p_value(&base_runs, &current_runs, |run| run.total_ms),
-                    ),
-                    &base_prompt.id,
-                ));
-            }
-            if let (Some(base_ms), Some(current_ms)) =
-                (base_prompt.mean_ttfb_ms, current_prompt.mean_ttfb_ms)
-            {
-                metrics.push(with_prompt(
-                    latency_metric(
-                        "ttfb",
-                        base_ms,
-                        current_ms,
-                        max_regression_pct,
-                        metric_p_value(&base_runs, &current_runs, |run| run.ttfb_ms),
-                    ),
-                    &base_prompt.id,
-                ));
-            }
-        }
+        let mut metrics = compare_lane_metrics(base, current, max_regression_pct);
+        metrics.extend(compare_prompt_metrics(base, current, max_regression_pct));
         report.comparisons.push(ProviderComparison {
             name: current.provider.clone(),
+            variant: current.variant.clone().or_else(|| base.variant.clone()),
             baseline_model: base.model.clone(),
             current_model: current.model.clone(),
             metrics,
@@ -796,15 +691,163 @@ pub fn compare_baselines(
         if !compared.contains(&index) {
             report
                 .comparisons
-                .push(unavailable(missing, "availability"));
+                .push(unavailable(missing, LABEL_AVAILABILITY));
         }
     }
     report
 }
 
+fn compare_lane_metrics(
+    base: &BaselineProvider,
+    current: &BaselineProvider,
+    max_regression_pct: f64,
+) -> Vec<MetricComparison> {
+    let mut metrics = vec![
+        latency_metric(
+            LABEL_MEAN_LATENCY,
+            base.mean_total_ms,
+            current.mean_total_ms,
+            max_regression_pct,
+            metric_welch(&base.runs, &current.runs, |r| r.total_ms),
+        ),
+        latency_metric(
+            LABEL_P95_LATENCY,
+            base.p95_total_ms,
+            current.p95_total_ms,
+            max_regression_pct,
+            None, // p95 is derived, not per-run
+        ),
+        latency_metric(
+            LABEL_TTFB,
+            base.mean_ttfb_ms,
+            current.mean_ttfb_ms,
+            max_regression_pct,
+            metric_welch(&base.runs, &current.runs, |r| r.ttfb_ms),
+        ),
+        throughput_metric(
+            LABEL_TOKENS_PER_SEC,
+            base.mean_tokens_per_sec,
+            current.mean_tokens_per_sec,
+            max_regression_pct,
+            metric_welch(&base.runs, &current.runs, |r| r.tokens_per_sec),
+        ),
+    ];
+    // Older baselines omit these. A missing baseline value is not a
+    // zero, so the gate skips the metric instead of inventing a change.
+    if let (Some(base_rate), Some(current_rate)) = (base.failure_rate, current.failure_rate) {
+        metrics.push(failure_rate_metric(
+            base_rate,
+            current_rate,
+            max_regression_pct,
+        ));
+    }
+    if let (Some(base_goodput), Some(current_goodput)) =
+        (base.goodput_tokens_per_sec, current.goodput_tokens_per_sec)
+    {
+        metrics.push(throughput_metric(
+            LABEL_GOODPUT,
+            base_goodput,
+            current_goodput,
+            max_regression_pct,
+            None,
+        ));
+    }
+    if let (Some(base_cost), Some(current_cost)) = (base.cost_per_run_usd, current.cost_per_run_usd)
+    {
+        metrics.push(latency_metric(
+            LABEL_COST_PER_RUN,
+            base_cost,
+            current_cost,
+            max_regression_pct,
+            None,
+        ));
+    }
+    if let (Some(base_task), Some(current_task)) = (base.task_pass_rate, current.task_pass_rate) {
+        metrics.push(task_pass_metric(
+            base_task,
+            current_task,
+            max_regression_pct,
+        ));
+    }
+    metrics
+}
+
+fn compare_prompt_metrics(
+    base: &BaselineProvider,
+    current: &BaselineProvider,
+    max_regression_pct: f64,
+) -> Vec<MetricComparison> {
+    let mut metrics = Vec::new();
+    for base_prompt in &base.prompts {
+        let Some(base_rate) = base_prompt.task_pass_rate else {
+            continue;
+        };
+        let Some(current_rate) = current
+            .prompts
+            .iter()
+            .find(|prompt| prompt.id == base_prompt.id)
+            .and_then(|prompt| prompt.task_pass_rate)
+        else {
+            continue;
+        };
+        metrics.push(prompt_task_metric(
+            &base_prompt.id,
+            base_rate,
+            current_rate,
+            max_regression_pct,
+        ));
+    }
+    for base_prompt in &base.prompts {
+        let Some(current_prompt) = current
+            .prompts
+            .iter()
+            .find(|prompt| prompt.id == base_prompt.id)
+        else {
+            metrics.push(prompt_unavailable(&base_prompt.id));
+            continue;
+        };
+        if current_prompt.rounds == Some(0) {
+            metrics.push(prompt_unavailable(&base_prompt.id));
+            continue;
+        }
+        let base_runs = runs_for_prompt(&base.runs, &base_prompt.id);
+        let current_runs = runs_for_prompt(&current.runs, &base_prompt.id);
+        if let (Some(base_ms), Some(current_ms)) =
+            (base_prompt.mean_total_ms, current_prompt.mean_total_ms)
+        {
+            metrics.push(with_prompt(
+                latency_metric(
+                    LABEL_MEAN_LATENCY,
+                    base_ms,
+                    current_ms,
+                    max_regression_pct,
+                    metric_welch(&base_runs, &current_runs, |run| run.total_ms),
+                ),
+                &base_prompt.id,
+            ));
+        }
+        if let (Some(base_ms), Some(current_ms)) =
+            (base_prompt.mean_ttfb_ms, current_prompt.mean_ttfb_ms)
+        {
+            metrics.push(with_prompt(
+                latency_metric(
+                    LABEL_TTFB,
+                    base_ms,
+                    current_ms,
+                    max_regression_pct,
+                    metric_welch(&base_runs, &current_runs, |run| run.ttfb_ms),
+                ),
+                &base_prompt.id,
+            ));
+        }
+    }
+    metrics
+}
+
 fn unavailable(lane: &BaselineProvider, label: &'static str) -> ProviderComparison {
     ProviderComparison {
         name: lane.provider.clone(),
+        variant: lane.variant.clone(),
         baseline_model: lane.model.clone(),
         current_model: lane.model.clone(),
         metrics: vec![MetricComparison {
@@ -819,9 +862,31 @@ fn unavailable(lane: &BaselineProvider, label: &'static str) -> ProviderComparis
     }
 }
 
+fn unavailable_pair(
+    base: &BaselineProvider,
+    current: &BaselineProvider,
+    label: &'static str,
+) -> ProviderComparison {
+    ProviderComparison {
+        name: current.provider.clone(),
+        variant: current.variant.clone().or_else(|| base.variant.clone()),
+        baseline_model: base.model.clone(),
+        current_model: current.model.clone(),
+        metrics: vec![MetricComparison {
+            label,
+            baseline: 1.0,
+            current: 0.0,
+            delta_pct: -100.0,
+            regressed: true,
+            p_value: None,
+            prompt_id: None,
+        }],
+    }
+}
+
 fn prompt_unavailable(id: &str) -> MetricComparison {
     MetricComparison {
-        label: "availability",
+        label: LABEL_AVAILABILITY,
         baseline: 1.0,
         current: 0.0,
         delta_pct: -100.0,
@@ -831,25 +896,43 @@ fn prompt_unavailable(id: &str) -> MetricComparison {
     }
 }
 
+/// Filters a Welch `(t, p)` result so that a regressed metric only receives
+/// `p < 0.05` when `t` has the sign matching a regression in that direction:
+/// `t < 0` for higher-is-worse (`base < current`), `t > 0` for lower-is-worse
+/// (`base > current`). Non-regressed metrics preserve their two-sided `p`.
+fn directional_p(welch: Option<(f64, f64)>, regressed: bool, higher_is_worse: bool) -> Option<f64> {
+    let (t, p) = welch?;
+    if !regressed {
+        return Some(p);
+    }
+    let matches_regression = if higher_is_worse { t < 0.0 } else { t > 0.0 };
+    if matches_regression {
+        Some(p)
+    } else {
+        Some(1.0)
+    }
+}
+
 fn latency_metric(
     label: &'static str,
     baseline: f64,
     current: f64,
     threshold: f64,
-    p_value: Option<f64>,
+    welch: Option<(f64, f64)>,
 ) -> MetricComparison {
     let delta_pct = if baseline.abs() < f64::EPSILON {
         0.0
     } else {
         (current - baseline) / baseline * 100.0
     };
+    let regressed = delta_pct > threshold;
     MetricComparison {
         label,
         baseline,
         current,
         delta_pct,
-        regressed: delta_pct > threshold,
-        p_value,
+        regressed,
+        p_value: directional_p(welch, regressed, true),
         prompt_id: None,
     }
 }
@@ -875,7 +958,7 @@ fn prompt_task_metric_inner(
 ) -> MetricComparison {
     let points = (current - baseline) * 100.0;
     MetricComparison {
-        label: "task success",
+        label: LABEL_TASK_SUCCESS,
         baseline,
         current,
         delta_pct: points,
@@ -888,7 +971,7 @@ fn prompt_task_metric_inner(
 fn failure_rate_metric(baseline: f64, current: f64, threshold: f64) -> MetricComparison {
     let points = (current - baseline) * 100.0;
     MetricComparison {
-        label: "failure rate",
+        label: LABEL_FAILURE_RATE,
         baseline,
         current,
         delta_pct: points,
@@ -903,20 +986,21 @@ fn throughput_metric(
     baseline: f64,
     current: f64,
     threshold: f64,
-    p_value: Option<f64>,
+    welch: Option<(f64, f64)>,
 ) -> MetricComparison {
     let delta_pct = if baseline.abs() < f64::EPSILON {
         0.0
     } else {
         (current - baseline) / baseline * 100.0
     };
+    let regressed = delta_pct < -threshold;
     MetricComparison {
         label,
         baseline,
         current,
         delta_pct,
-        regressed: delta_pct < -threshold,
-        p_value,
+        regressed,
+        p_value: directional_p(welch, regressed, false),
         prompt_id: None,
     }
 }
@@ -935,18 +1019,91 @@ fn runs_for_prompt(runs: &[BaselineRun], id: &str) -> Vec<BaselineRun> {
         .collect()
 }
 
-/// Welch p-value for a metric across two per-run series, when both sides
-/// carry at least two samples.
-fn metric_p_value(
+/// Welch `(t, two_sided_p)` for a metric across two per-run series, when both
+/// sides carry at least two samples.
+fn metric_welch(
     base_runs: &[BaselineRun],
     current_runs: &[BaselineRun],
     pick: fn(&BaselineRun) -> f64,
-) -> Option<f64> {
+) -> Option<(f64, f64)> {
     if base_runs.len() < 2 || current_runs.len() < 2 {
         return None;
     }
     let a: Vec<f64> = base_runs.iter().map(pick).collect();
     let b: Vec<f64> = current_runs.iter().map(pick).collect();
     let (t, df) = crate::stats::welch_t(&a, &b)?;
-    Some(crate::stats::t_two_sided_p(t, df))
+    Some((t, crate::stats::t_two_sided_p(t, df)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opposite_sign_welch_t_does_not_count_as_significant_regression() {
+        // Summary claims latency rose 100 -> 200 (+100%), yet per-run samples
+        // actually got significantly faster (300 -> 100, t > 0).
+        let base = BaselineReport::from_json_str(
+            r#"{"providers":[{
+                "provider":"mock","model":"m",
+                "mean_total_ms":100.0,"p95_total_ms":100.0,"mean_ttfb_ms":10.0,"mean_tokens_per_sec":100.0,
+                "runs":[
+                    {"total_ms":299.0,"ttfb_ms":10.0,"tokens_per_sec":50.0},
+                    {"total_ms":300.0,"ttfb_ms":10.0,"tokens_per_sec":51.0},
+                    {"total_ms":301.0,"ttfb_ms":10.0,"tokens_per_sec":49.0}
+                ]
+            }]}"#,
+        )
+        .expect("base");
+        let cur = BaselineReport::from_json_str(
+            r#"{"providers":[{
+                "provider":"mock","model":"m",
+                "mean_total_ms":200.0,"p95_total_ms":100.0,"mean_ttfb_ms":10.0,"mean_tokens_per_sec":50.0,
+                "runs":[
+                    {"total_ms":99.0,"ttfb_ms":10.0,"tokens_per_sec":150.0},
+                    {"total_ms":100.0,"ttfb_ms":10.0,"tokens_per_sec":151.0},
+                    {"total_ms":101.0,"ttfb_ms":10.0,"tokens_per_sec":149.0}
+                ]
+            }]}"#,
+        )
+        .expect("cur");
+        let report = compare_baselines(&cur, &base, 15.0);
+        assert!(report.any_regressed());
+        assert!(
+            !report.any_regressed_significant(),
+            "opposite-sign Welch t must not fail significance gate: {:?}",
+            report.comparisons
+        );
+    }
+
+    #[test]
+    fn failed_baseline_lane_reports_availability_instead_of_comparing_zero() {
+        let base = BaselineReport::from_json_str(
+            r#"{"providers":[{"provider":"mock","model":"m","successful":false,"mean_total_ms":0.0}]}"#,
+        )
+        .expect("base");
+        let cur = BaselineReport::from_json_str(
+            r#"{"providers":[{"provider":"mock","model":"m","successful":true,"mean_total_ms":100.0,"p95_total_ms":110.0,"mean_ttfb_ms":10.0,"mean_tokens_per_sec":80.0}]}"#,
+        )
+        .expect("cur");
+        let report = compare_baselines(&cur, &base, 15.0);
+        assert!(report.gate_failed(true));
+        assert_eq!(report.comparisons[0].metrics[0].label, LABEL_AVAILABILITY);
+    }
+
+    #[test]
+    fn variant_is_preserved_and_markdown_escapes_untrusted_cells() {
+        let base = BaselineReport::from_json_str(
+            r#"{"providers":[{"provider":"p|evil","variant":"short|v1","model":"m","mean_total_ms":100.0,"p95_total_ms":110.0,"mean_ttfb_ms":10.0,"mean_tokens_per_sec":80.0}]}"#,
+        )
+        .expect("base");
+        let cur = BaselineReport::from_json_str(
+            r#"{"providers":[{"provider":"p|evil","variant":"short|v1","model":"m","mean_total_ms":100.0,"p95_total_ms":110.0,"mean_ttfb_ms":10.0,"mean_tokens_per_sec":80.0}]}"#,
+        )
+        .expect("cur");
+        let report = compare_baselines(&cur, &base, 15.0);
+        assert_eq!(report.comparisons[0].variant.as_deref(), Some("short|v1"));
+        let md = report.markdown_section(15.0, false);
+        assert!(md.contains("p\\|evil (short\\|v1)"), "{md}");
+    }
 }
