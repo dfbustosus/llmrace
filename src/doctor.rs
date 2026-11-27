@@ -76,7 +76,7 @@ async fn probe(client: &reqwest::Client, endpoint: &str) -> Result<(), String> {
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await
-        .map_err(|e| crate::util::truncate(&e.to_string(), 90))?;
+        .map_err(|e| crate::util::truncate(&e.without_url().to_string(), 90))?;
     let _ = resp.status();
     Ok(())
 }
@@ -100,7 +100,9 @@ pub async fn check_ollama(client: &reqwest::Client) -> Check {
         .await;
     match resp {
         Ok(r) if r.status().is_success() => {
-            let body = r.text().await.unwrap_or_default();
+            let body = crate::util::read_body_capped(r, 64 * 1024)
+                .await
+                .unwrap_or_default();
             let models = body.matches("\"name\"").count();
             Check {
                 name: "ollama".into(),
@@ -118,7 +120,7 @@ pub async fn check_ollama(client: &reqwest::Client) -> Check {
             status: Status::Warn,
             detail: format!(
                 "not running ({})",
-                crate::util::truncate(&e.to_string(), 60)
+                crate::util::truncate(&e.without_url().to_string(), 60)
             ),
         },
     }
@@ -139,8 +141,7 @@ pub async fn check_version(client: &reqwest::Client) -> Check {
         .await;
     match resp {
         Ok(r) if r.status().is_success() => {
-            let latest = r
-                .text()
+            let latest = crate::util::read_body_capped(r, 64 * 1024)
                 .await
                 .ok()
                 .and_then(|body| {
