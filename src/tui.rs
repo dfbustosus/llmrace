@@ -3,19 +3,20 @@
 use crate::bench::LaneUpdate;
 use crate::provider;
 use ratatui::{
-    crossterm::event::{self, Event, KeyCode},
+    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Sparkline},
     Frame,
 };
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const REDRAW_TICK: Duration = Duration::from_millis(250);
 const SPARK_POINTS: usize = 40;
 
-static RESTORE_GUARD: OnceLock<()> = OnceLock::new();
+static RESTORE_ARMED: AtomicBool = AtomicBool::new(false);
 
 /// Matches a lane against a (provider, variant, model) key; a `None` model
 /// in the key matches any lane of that provider and variant (legacy updates).
@@ -25,17 +26,23 @@ fn lane_matches(lane: &Lane, provider: &str, variant: Option<&str>, model: Optio
         && model.is_none_or(|m| lane.model == m)
 }
 
+fn is_quit_key(key: KeyEvent, allow_enter: bool) -> bool {
+    matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+        || (allow_enter && key.code == KeyCode::Enter)
+        || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+}
+
 fn restore_once() {
-    if RESTORE_GUARD.set(()).is_err() {
-        return;
+    if RESTORE_ARMED.swap(false, Ordering::AcqRel) {
+        ratatui::restore();
     }
-    ratatui::restore();
 }
 
 struct TerminalGuard;
 
 impl TerminalGuard {
     fn install() -> Self {
+        RESTORE_ARMED.store(true, Ordering::Release);
         TerminalGuard
     }
 }
@@ -163,7 +170,7 @@ impl Tui {
                 lane.server_ms = u.server_ms.or(lane.server_ms);
                 lane.ratelimit = u.ratelimit.clone().or_else(|| lane.ratelimit.clone());
                 if let Some(e) = u.error {
-                    lane.error = Some(e);
+                    lane.error = Some(crate::util::sanitize_control_chars(&e));
                 } else {
                     // A completed lane clears transient round errors seen
                     // earlier in the race (the lane ultimately succeeded).
@@ -176,12 +183,13 @@ impl Tui {
             } else {
                 // Transient state (streaming or retrying): show and clear
                 // round errors as they come.
-                lane.error = u.error.clone();
+                lane.error = u.error.as_deref().map(crate::util::sanitize_control_chars);
                 lane.tokens = u.tokens;
                 lane.elapsed_ms = u.elapsed_ms;
                 lane.ttfb_ms = u.ttfb_ms.or(lane.ttfb_ms);
                 if let Some(tok) = &u.last_token {
-                    lane.preview.push_str(tok);
+                    let clean = crate::util::sanitize_control_chars(tok);
+                    lane.preview.push_str(&clean);
                     let chars: Vec<char> = lane.preview.chars().collect();
                     if chars.len() > 40 {
                         lane.preview = chars[chars.len() - 40..].iter().collect();
@@ -190,6 +198,33 @@ impl Tui {
             }
         }
         self.state.all_done = self.state.lanes.iter().all(|l| l.finished);
+    }
+
+    /// Drains all pending updates, returning `(received_any, disconnected)`.
+    ///
+    /// When all senders drop early (e.g. cancellation or worker panic), any
+    /// remaining unfinished lanes are marked finished and `all_done` is set so
+    /// the UI never waits indefinitely.
+    fn drain_updates(&mut self, updates: &std::sync::mpsc::Receiver<LaneUpdate>) -> (bool, bool) {
+        let mut received = false;
+        loop {
+            match updates.try_recv() {
+                Ok(u) => {
+                    self.update(u);
+                    received = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return (received, false),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    for lane in &mut self.state.lanes {
+                        if !lane.finished {
+                            lane.finished = true;
+                        }
+                    }
+                    self.state.all_done = true;
+                    return (received, true);
+                }
+            }
+        }
     }
 
     fn sample_rates(&mut self) {
@@ -209,6 +244,12 @@ impl Tui {
         }
     }
 
+    /// Returns `true` once every lane in the TUI has finished.
+    #[must_use]
+    pub fn is_all_done(&self) -> bool {
+        self.state.all_done
+    }
+
     /// Runs the event loop until the user quits or all lanes finish.
     ///
     /// The screen is only redrawn when new updates arrived or a 250 ms tick
@@ -216,23 +257,19 @@ impl Tui {
     pub fn run(mut self, updates: std::sync::mpsc::Receiver<LaneUpdate>) -> anyhow::Result<Self> {
         let mut terminal = ratatui::init();
         let _guard = TerminalGuard::install();
-        let mut last_draw = Instant::now() - REDRAW_TICK;
+        let mut last_draw: Option<Instant> = None;
         loop {
-            let mut received = false;
-            while let Ok(u) = updates.try_recv() {
-                self.update(u);
-                received = true;
-            }
+            let (received, disconnected) = self.drain_updates(&updates);
 
-            if received || last_draw.elapsed() >= REDRAW_TICK {
+            if received || disconnected || last_draw.is_none_or(|t| t.elapsed() >= REDRAW_TICK) {
                 self.sample_rates();
                 terminal.draw(|f| self.render(f))?;
-                last_draw = Instant::now();
+                last_draw = Some(Instant::now());
             }
 
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
-                    if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+                    if is_quit_key(key, false) {
                         return Ok(self);
                     }
                 }
@@ -242,10 +279,7 @@ impl Tui {
                 loop {
                     if event::poll(Duration::from_millis(200))? {
                         if let Event::Key(key) = event::read()? {
-                            if matches!(
-                                key.code,
-                                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter
-                            ) {
+                            if is_quit_key(key, true) {
                                 return Ok(self);
                             }
                         }
@@ -432,5 +466,96 @@ impl Tui {
             ),
         ]));
         f.render_widget(footer, chunks[2]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_update(provider: &str, finished: bool) -> LaneUpdate {
+        LaneUpdate {
+            provider: Arc::from(provider),
+            variant: None,
+            model: Some(Arc::from("m1")),
+            tokens: 12,
+            elapsed_ms: 42.0,
+            ttfb_ms: Some(10.0),
+            finished,
+            error: None,
+            server_ms: None,
+            last_token: None,
+            ratelimit: None,
+        }
+    }
+
+    #[test]
+    fn disconnected_channel_marks_unfinished_lanes_done() {
+        let mut tui = Tui::new(
+            vec![
+                (Arc::from("a"), None, "m1".into()),
+                (Arc::from("b"), None, "m1".into()),
+            ],
+            "hi".into(),
+            1,
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(sample_update("a", true));
+        drop(tx);
+
+        let (received, disconnected) = tui.drain_updates(&rx);
+        assert!(received);
+        assert!(disconnected);
+        assert!(tui.state.all_done);
+        assert_eq!(tui.lane_progress("a", None, Some("m1")), Some((0, true)));
+        assert_eq!(tui.lane_progress("b", None, Some("m1")), Some((0, true)));
+    }
+
+    #[test]
+    fn update_sanitizes_control_chars_in_tokens_and_errors() {
+        let mut tui = Tui::new(vec![(Arc::from("a"), None, "m1".into())], "hi".into(), 1);
+
+        let mut u = sample_update("a", false);
+        u.last_token = Some("hi\x1b[31m\nworld\x07\t!".into());
+        u.error = Some("bad\x1b]0;title\x07\r\nerr".into());
+        tui.update(u);
+
+        let lane = &tui.state.lanes[0];
+        assert!(!lane.preview.chars().any(char::is_control));
+        assert_eq!(lane.preview, "hi[31m world !");
+        assert_eq!(lane.error.as_deref(), Some("bad]0;title  err"));
+
+        let mut fin = sample_update("a", true);
+        fin.error = Some("fatal\x1b[2J\x07boom".into());
+        tui.update(fin);
+        assert_eq!(tui.state.lanes[0].error.as_deref(), Some("fatal[2Jboom"));
+    }
+
+    #[test]
+    fn quit_key_handles_ctrl_c_q_esc_and_optional_enter() {
+        assert!(is_quit_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            false
+        ));
+        assert!(!is_quit_key(
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            false
+        ));
+        assert!(is_quit_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            false
+        ));
+        assert!(is_quit_key(
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            false
+        ));
+        assert!(!is_quit_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            false
+        ));
+        assert!(is_quit_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            true
+        ));
     }
 }
