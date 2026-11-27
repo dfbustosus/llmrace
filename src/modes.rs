@@ -11,7 +11,7 @@ pub(crate) fn init() -> Result<()> {
     if path.exists() {
         anyhow::bail!("llmrace.toml already exists — edit it or remove it first");
     }
-    std::fs::write(path, include_str!("../examples/llmrace.toml"))
+    crate::run::reports::write_atomic(path, include_str!("../examples/llmrace.toml").as_bytes())
         .with_context(|| "writing llmrace.toml")?;
     println!("Created llmrace.toml with example profiles (fast, overnight, saturation, repro, ci)");
     println!("Edit it, then run: llmrace --profile fast");
@@ -121,7 +121,7 @@ pub(crate) fn list(json: bool) -> Result<()> {
 
 /// `llmrace --dashboard [--out file.html]`
 pub(crate) fn dashboard(days: u64, out: &str, storage: &str) -> Result<()> {
-    let records = crate::load_history(storage)?;
+    let records = crate::run::reports::load_history_entries(storage)?;
     let now = unix_now();
     let html = llmrace::dashboard::render_html(&records, days, now);
     let path = if out == "llmrace-report.md" {
@@ -129,14 +129,14 @@ pub(crate) fn dashboard(days: u64, out: &str, storage: &str) -> Result<()> {
     } else {
         std::path::PathBuf::from(out)
     };
-    std::fs::write(&path, html).with_context(|| format!("writing {}", path.display()))?;
+    crate::run::reports::write_atomic(&path, html.as_bytes())?;
     println!("\u{1f5a5} dashboard written to {}", path.display());
     Ok(())
 }
 
 /// `llmrace --trend [--days N] [providers…]`
 pub(crate) fn trend(days: u64, providers: &[String], storage: &str) -> Result<()> {
-    let records = crate::load_history(storage)?;
+    let records = crate::run::reports::load_history_entries(storage)?;
     let trends = llmrace::history::build_trends(&records, days, unix_now(), providers);
     print!("{}", llmrace::history::render_trend_table(&trends, days));
     Ok(())
@@ -173,8 +173,8 @@ pub(crate) fn merge(paths: &[String], json: bool, out: &str) -> Result<()> {
             "merged": lanes,
         });
         let path = crate::report_sibling(out, "json");
-        std::fs::write(&path, serde_json::to_string_pretty(&merged)?)
-            .with_context(|| format!("writing {path}"))?;
+        let serialized = serde_json::to_string_pretty(&merged)?;
+        crate::run::reports::write_atomic(std::path::Path::new(&path), serialized.as_bytes())?;
         println!("\u{1f30d} merged report saved to {path}");
     }
     Ok(())
@@ -205,11 +205,33 @@ pub(crate) async fn models(providers: Vec<llmrace::provider::ProviderSpec>) -> R
     Ok(())
 }
 
-/// `llmrace --suite <file>`: run each suite entry sequentially.
+/// Sanitizes a suite entry name into a safe filename slug without path
+/// separators or leading dots/hyphens.
+fn sanitize_suite_slug(name: &str, idx: usize) -> String {
+    let replaced: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = replaced.trim_start_matches(['.', '-']);
+    if trimmed.is_empty() {
+        format!("suite-{}", idx + 1)
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// `llmrace --suite <file>`: run each suite entry sequentially and return the
+/// process exit code.
 pub(crate) async fn run_suite(
     suite: llmrace::suite::SuiteFile,
     cli: &crate::Cli,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     let mut results: Vec<llmrace::suite::SuiteResult> = Vec::new();
 
     // Shared race configuration, built once by the same builder the race
@@ -224,7 +246,45 @@ pub(crate) async fn run_suite(
     }
     let base = crate::build_run_config(base_cli, Default::default())?;
 
-    for (idx, entry) in suite.suites.iter().enumerate() {
+    // Validate every suite entry up front before executing any requests.
+    let mut resolved_specs: Vec<Vec<llmrace::provider::ProviderSpec>> =
+        Vec::with_capacity(suite.suites.len());
+    for entry in &suite.suites {
+        if entry.max_tokens == 0 {
+            anyhow::bail!("suite entry '{}': max_tokens must be positive", entry.name);
+        }
+        let runs = entry.runs.max(1);
+        if entry.warmup.checked_add(runs).is_none() {
+            anyhow::bail!("suite entry '{}': round count overflow", entry.name);
+        }
+        let providers: Vec<String> = if !cli.providers.is_empty() {
+            cli.providers.clone()
+        } else {
+            entry.providers.clone()
+        };
+        let mut specs: Vec<llmrace::provider::ProviderSpec> = Vec::with_capacity(providers.len());
+        for name in &providers {
+            let Some(spec) = llmrace::provider::ProviderSpec::parse(name) else {
+                anyhow::bail!("unknown provider '{name}' (try --list)");
+            };
+            specs.push(spec);
+        }
+        if specs.is_empty() {
+            anyhow::bail!("suite entry '{}' has no providers", entry.name);
+        }
+        crate::check_provider_credentials(&specs)?;
+        resolved_specs.push(specs);
+    }
+
+    let signal_guard = crate::run::SignalGuard::install(
+        "\u{23f9} interrupt received — finishing in-flight suite entry, then writing reports…",
+    );
+    let stop = signal_guard.flag();
+
+    for ((idx, entry), specs) in suite.suites.iter().enumerate().zip(resolved_specs) {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) && idx > 0 {
+            break;
+        }
         println!(
             "\n▸ suite {}/{} — {} ({})",
             idx + 1,
@@ -256,33 +316,15 @@ pub(crate) async fn run_suite(
             prompt.clone()
         };
 
-        // resolve providers (positional args override the file)
-        let providers: Vec<String> = if !cli.providers.is_empty() {
-            cli.providers.clone()
-        } else {
-            entry.providers.clone()
-        };
-
-        // resolve provider specs
-        let mut specs: Vec<llmrace::provider::ProviderSpec> = Vec::new();
-        for name in &providers {
-            let Some(spec) = llmrace::provider::ProviderSpec::parse(name) else {
-                anyhow::bail!("unknown provider '{name}' (try --list)");
-            };
-            specs.push(spec);
-        }
-        if specs.is_empty() {
-            anyhow::bail!("suite entry '{}' has no providers", entry.name);
-        }
-
         // per-suite output file so each race's reports are preserved:
-        // race.md becomes race-<suite-name>.md
+        // race.md becomes race-<sanitized-suite-name>.md
         let suite_out = {
             let stem = cli
                 .out
                 .strip_suffix(".md")
                 .unwrap_or(cli.out.trim_end_matches('.'));
-            format!("{stem}-{}.md", entry.name.replace(' ', "-"))
+            let slug = sanitize_suite_slug(&entry.name, idx);
+            format!("{stem}-{slug}.md")
         };
 
         // one builder for the whole RunConfig: the suite only overrides
@@ -315,9 +357,8 @@ pub(crate) async fn run_suite(
         cfg.out = suite_out;
 
         // run headless, collect results
-        let (exit, lane_summaries) = crate::run::run_race(cfg).await?;
-        // run_race returns an exit code; for the suite we want the summaries.
-        // The simplest correct approach: read the JSON report it wrote.
+        let (exit, lane_summaries) =
+            crate::run::run_race_with_stop(cfg, std::sync::Arc::clone(&stop)).await?;
         let failed = exit != 0;
         results.push(llmrace::suite::SuiteResult {
             name: entry.name.clone(),
@@ -326,6 +367,7 @@ pub(crate) async fn run_suite(
             failed,
         });
     }
+    drop(signal_guard);
 
     // combined report
     let report = llmrace::suite::combined_report(&results);
@@ -334,11 +376,29 @@ pub(crate) async fn run_suite(
     } else {
         format!("{}-suite.md", cli.out)
     };
-    std::fs::write(&path, report).with_context(|| format!("writing {path}"))?;
+    crate::run::reports::write_atomic(std::path::Path::new(&path), report.as_bytes())?;
     println!("\n📄 suite report saved to {path}");
 
     if results.iter().any(|r| r.failed) {
-        std::process::exit(1);
+        return Ok(1);
     }
-    Ok(())
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_suite_slug;
+
+    #[test]
+    fn sanitize_suite_slug_blocks_path_traversal_and_falls_back() {
+        assert_eq!(sanitize_suite_slug("../../etc/passwd", 0), "etc-passwd");
+        assert_eq!(sanitize_suite_slug("..", 0), "suite-1");
+        assert_eq!(sanitize_suite_slug("...---", 2), "suite-3");
+        assert_eq!(sanitize_suite_slug("latency short", 0), "latency-short");
+        assert_eq!(
+            sanitize_suite_slug(".hidden/sub\\name", 1),
+            "hidden-sub-name"
+        );
+        assert_eq!(sanitize_suite_slug("fast_v1.2", 0), "fast_v1.2");
+    }
 }
