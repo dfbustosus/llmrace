@@ -108,7 +108,7 @@ pub struct CompletionRequest<'a> {
 }
 
 /// How a built wire request authenticates.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum RequestAuth {
     /// No key required (local daemons, mock).
     None,
@@ -116,6 +116,22 @@ enum RequestAuth {
     Bearer(String),
     /// Extra headers carrying the key (e.g. `x-api-key`, `x-goog-api-key`).
     Headers(Vec<(&'static str, String)>),
+}
+
+impl std::fmt::Debug for RequestAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestAuth::None => f.write_str("None"),
+            RequestAuth::Bearer(_) => f.write_str("Bearer(<redacted>)"),
+            RequestAuth::Headers(headers) => {
+                let mut list = f.debug_list();
+                for (name, _) in headers {
+                    list.entry(&(name, "<redacted>"));
+                }
+                list.finish()
+            }
+        }
+    }
 }
 
 /// A wire-specific request, ready to send: URL, JSON body and auth.
@@ -266,7 +282,7 @@ fn apply_json_output(body: &mut serde_json::Value, wire: Wire, json_output: &Jso
         (Wire::OpenAiCompat | Wire::Cohere, JsonOutput::Object) => {
             body["response_format"] = json!({"type": "json_object"});
         }
-        (Wire::OpenAiCompat | Wire::Cohere, JsonOutput::Schema(schema)) => {
+        (Wire::OpenAiCompat, JsonOutput::Schema(schema)) => {
             body["response_format"] = json!({
                 "type": "json_schema",
                 "json_schema": {
@@ -274,6 +290,12 @@ fn apply_json_output(body: &mut serde_json::Value, wire: Wire, json_output: &Jso
                     "schema": schema,
                     "strict": true,
                 },
+            });
+        }
+        (Wire::Cohere, JsonOutput::Schema(schema)) => {
+            body["response_format"] = json!({
+                "type": "json_object",
+                "schema": schema,
             });
         }
         (Wire::OpenAiResponses, JsonOutput::Object) => {
@@ -306,12 +328,19 @@ fn attach_tool(body: &mut serde_json::Value, wire: Wire, tool: &crate::tools::To
     }
 }
 
+fn is_claude_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.contains("claude") || lower.contains("anthropic")
+}
+
 /// Writes sampling controls in each wire's native shape.
 ///
 /// OpenAI reasoning models (gpt-5, o-series) reject `temperature`,
 /// `top_p` and `seed`; those fields are omitted so a mixed race can still
 /// pin sampling for the classic models beside them. The system prompt is
-/// still sent — those models accept it.
+/// still sent — those models accept it. Anthropic (and Claude on Bedrock)
+/// reject sending both `temperature` and `top_p` together, so `top_p` is
+/// omitted when `temperature` is set.
 fn apply_sampling(body: &mut serde_json::Value, wire: Wire, model: &str, sampling: &Sampling) {
     if sampling.is_unset() {
         return;
@@ -353,8 +382,10 @@ fn apply_sampling(body: &mut serde_json::Value, wire: Wire, model: &str, samplin
             if let Some(t) = sampling.temperature {
                 body["temperature"] = json!(t);
             }
-            if let Some(p) = sampling.top_p {
-                body["top_p"] = json!(p);
+            if sampling.temperature.is_none() {
+                if let Some(p) = sampling.top_p {
+                    body["top_p"] = json!(p);
+                }
             }
             if let Some(sys) = sampling.system.as_deref() {
                 body["system"] = json!(sys);
@@ -387,8 +418,10 @@ fn apply_sampling(body: &mut serde_json::Value, wire: Wire, model: &str, samplin
             if let Some(t) = sampling.temperature {
                 body["inferenceConfig"]["temperature"] = json!(t);
             }
-            if let Some(p) = sampling.top_p {
-                body["inferenceConfig"]["topP"] = json!(p);
+            if !(sampling.temperature.is_some() && is_claude_model(model)) {
+                if let Some(p) = sampling.top_p {
+                    body["inferenceConfig"]["topP"] = json!(p);
+                }
             }
             if let Some(sys) = sampling.system.as_deref() {
                 body["system"] = json!([{"text": sys}]);
@@ -406,6 +439,70 @@ fn prepend_system_message(body: &mut serde_json::Value, system: Option<&str>) {
     }
 }
 
+const MAX_RETRY_AFTER_SECS: u64 = 30;
+const MAX_RETRY_AFTER_SECS_F64: f64 = 30.0;
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+const MAX_MODELS_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+fn is_sensitive_header(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization" | "x-api-key" | "x-goog-api-key" | "api-key" | "x-amz-security-token"
+    )
+}
+
+fn header_value(name: &str, value: &str) -> Result<reqwest::header::HeaderValue> {
+    let mut hv = reqwest::header::HeaderValue::from_str(value)
+        .map_err(|_| Error::Config(format!("invalid header value for {name}")))?;
+    if is_sensitive_header(name) {
+        hv.set_sensitive(true);
+    }
+    Ok(hv)
+}
+
+fn apply_auth(
+    mut request: reqwest::RequestBuilder,
+    auth: &RequestAuth,
+) -> Result<reqwest::RequestBuilder> {
+    match auth {
+        RequestAuth::None => {}
+        RequestAuth::Bearer(key) => {
+            let hv = header_value("authorization", &format!("Bearer {key}"))?;
+            request = request.header(reqwest::header::AUTHORIZATION, hv);
+        }
+        RequestAuth::Headers(headers) => {
+            for (name, value) in headers {
+                let hv = header_value(name, value)?;
+                request = request.header(*name, hv);
+            }
+        }
+    }
+    Ok(request)
+}
+
+/// Formats a `reqwest::Error` without leaking URLs (which may contain query
+/// tokens) and with a `"request timed out: "` prefix when `e.is_timeout()` so
+/// [`crate::bench::FailureClass::of`] reliably classifies timeouts.
+pub(super) fn format_reqwest_error(prefix: Option<&str>, e: reqwest::Error) -> String {
+    let timeout = e.is_timeout();
+    let clean = e.without_url();
+    match (prefix, timeout) {
+        (Some(p), true) => format!("{p}: request timed out: {clean}"),
+        (Some(p), false) => format!("{p}: {clean}"),
+        (None, true) => format!("request timed out: {clean}"),
+        (None, false) => clean.to_string(),
+    }
+}
+
+fn openai_auth(spec: &ProviderSpec, key: Option<String>) -> RequestAuth {
+    match (spec.auth, key) {
+        (AuthKind::ApiKeyHeader, Some(k)) => RequestAuth::Headers(vec![("api-key", k)]),
+        (AuthKind::ApiKeyHeader, None) => RequestAuth::None,
+        (AuthKind::Bearer, Some(k)) => RequestAuth::Bearer(k),
+        (AuthKind::Bearer, None) => RequestAuth::None,
+    }
+}
+
 /// Builds the request for the given wire protocol; pure, no I/O.
 fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Result<WireRequest> {
     let body = build_body(spec, req);
@@ -419,23 +516,17 @@ fn build_wire_request(spec: &ProviderSpec, req: &CompletionRequest<'_>) -> Resul
         });
     }
     let key = spec.api_key()?;
-    let auth = match (spec.wire, spec.auth) {
-        (Wire::Mock, _) => RequestAuth::None,
-        (Wire::OpenAiCompat, AuthKind::ApiKeyHeader)
-        | (Wire::OpenAiResponses, AuthKind::ApiKeyHeader) => {
-            RequestAuth::Headers(vec![("api-key", key.unwrap_or_default())])
-        }
-        (Wire::Anthropic, _) => RequestAuth::Headers(vec![
+    let auth = match spec.wire {
+        Wire::Mock => RequestAuth::None,
+        Wire::OpenAiCompat | Wire::OpenAiResponses => openai_auth(spec, key),
+        Wire::Anthropic => RequestAuth::Headers(vec![
             ("x-api-key", key.clone().unwrap_or_default()),
             ("anthropic-version", "2023-06-01".to_string()),
         ]),
-        (Wire::Gemini, _) => {
+        Wire::Gemini => {
             RequestAuth::Headers(vec![("x-goog-api-key", key.clone().unwrap_or_default())])
         }
-        _ => match key {
-            Some(k) => RequestAuth::Bearer(k),
-            None => RequestAuth::None,
-        },
+        _ => bearer_or_none(key),
     };
     Ok(WireRequest { url, body, auth })
 }
@@ -446,26 +537,20 @@ async fn send_wire_request(
     spec: &ProviderSpec,
     wire_req: WireRequest,
 ) -> Result<EventStream> {
-    if wire_req.url.starts_with("https://bedrock-runtime.") {
+    if spec.wire == Wire::Bedrock {
         return send_bedrock(client, spec, wire_req).await;
     }
     if spec.wire == Wire::Vertex {
         return send_vertex(client, spec, wire_req).await;
     }
-    let mut request = client.post(&wire_req.url).json(&wire_req.body);
-    match &wire_req.auth {
-        RequestAuth::None => {}
-        RequestAuth::Bearer(key) => request = request.bearer_auth(key),
-        RequestAuth::Headers(headers) => {
-            for (name, value) in headers {
-                request = request.header(*name, value);
-            }
-        }
-    }
+    let request = apply_auth(
+        client.post(&wire_req.url).json(&wire_req.body),
+        &wire_req.auth,
+    )?;
     let resp = request
         .send()
         .await
-        .map_err(|e| Error::Stream(e.to_string()))?;
+        .map_err(|e| Error::Stream(format_reqwest_error(None, e)))?;
     let resp = check_status(spec, resp).await?;
     Ok(EventStream::Http(SseStream::new(resp, spec.wire)))
 }
@@ -502,6 +587,28 @@ pub async fn stream_completion(
     send_wire_request(client, spec, build_wire_request(spec, req)?).await
 }
 
+/// URL derivation via `Url::join` — proper RFC 3986 semantics instead of
+/// string surgery, so custom endpoints with query strings, ports or trailing
+/// paths resolve correctly.
+fn models_url_for_spec(spec: &ProviderSpec, suffix: &str, replace_last: bool) -> Result<String> {
+    let base = reqwest::Url::parse(&spec.endpoint)
+        .map_err(|e| Error::Config(format!("invalid endpoint for {}: {e}", spec.id)))?;
+    let mut url = base.clone();
+    if replace_last {
+        // ".../chat/completions" -> ".../chat" -> join("models") -> ".../models"
+        let mut segments = base.path_segments().map(Iterator::collect::<Vec<_>>);
+        if let Some(segs) = segments.as_mut() {
+            if segs.last() == Some(&"completions") {
+                segs.pop();
+            }
+            url.set_path(&segs.join("/"));
+        }
+    }
+    url.join(suffix)
+        .map(|u| u.to_string())
+        .map_err(|e| Error::Config(format!("cannot join models path for {}: {e}", spec.id)))
+}
+
 /// Lists the models a provider currently offers, via its models endpoint.
 ///
 /// OpenAI-compatible providers answer `GET …/models` with
@@ -516,93 +623,77 @@ pub async fn list_models(client: &reqwest::Client, spec: &ProviderSpec) -> Resul
             spec.id
         )));
     }
-    let key = spec.api_key()?;
-    // URL derivation via Url::join — proper RFC 3986 semantics instead of
-    // string surgery, so custom endpoints with query strings, ports or
-    // trailing paths resolve correctly.
-    let models_url = |suffix: &str, replace_last: bool| -> Result<String> {
-        let base = reqwest::Url::parse(&spec.endpoint)
-            .map_err(|e| Error::Config(format!("invalid endpoint for {}: {e}", spec.id)))?;
-        let mut url = base.clone();
-        if replace_last {
-            // ".../chat/completions" -> ".../chat/models"
-            let mut segments = base.path_segments().map(Iterator::collect::<Vec<_>>);
-            if let Some(segs) = segments.as_mut() {
-                if segs.last() == Some(&"completions") || segs.last() == Some(&"messages") {
-                    segs.pop();
-                }
-                url.set_path(&segs.join("/"));
-            }
-        }
-        url.join(suffix)
-            .map(|u| u.to_string())
-            .map_err(|e| Error::Config(format!("cannot join models path for {}: {e}", spec.id)))
-    };
-    let (url, auth) = match spec.wire {
-        Wire::OpenAiCompat => (models_url("models", true)?, bearer_or_none(key)),
-        Wire::OpenAiResponses => (models_url("models", false)?, bearer_or_none(key)),
-        Wire::Anthropic => (
-            models_url("models", true)?,
-            RequestAuth::Headers(vec![
-                ("x-api-key", key.clone().unwrap_or_default()),
-                ("anthropic-version", "2023-06-01".to_string()),
-            ]),
-        ),
-        Wire::Gemini => (
-            spec.endpoint
-                .split("/models")
-                .next()
-                .unwrap_or(spec.endpoint.as_ref())
-                .trim_end_matches('/')
-                .to_string()
-                + "/models",
-            RequestAuth::Headers(vec![("x-goog-api-key", key.clone().unwrap_or_default())]),
-        ),
-        Wire::Cohere => (
-            spec.endpoint.trim_end_matches("/chat").to_string() + "/models",
-            bearer_or_none(key),
-        ),
-        Wire::Vertex => {
-            // vertex models list reuses the Gemini path with an OAuth token
-            let region =
-                std::env::var("GOOGLE_CLOUD_REGION").unwrap_or_else(|_| "us-central1".to_string());
-            (
-                format!("https://{region}-aiplatform.googleapis.com/v1/publishers/google/models"),
-                RequestAuth::None, // OAuth at request time
-            )
-        }
-        // Bedrock lists models via the ListFoundationModels control-plane
-        // API, signed like every other Bedrock call.
-        Wire::Bedrock => {
-            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-            (
-                format!("https://bedrock.{region}.amazonaws.com/foundation-models"),
-                RequestAuth::None, // signed below
-            )
-        }
-        Wire::Mock => unreachable!("handled above"),
-    };
     if spec.wire == Wire::Bedrock {
+        let region = super::spec::safe_env_segment("AWS_REGION", "us-east-1");
+        let url = format!("https://bedrock.{region}.amazonaws.com/foundation-models");
         return list_bedrock_models(client, spec, &url).await;
     }
-    let mut request = client.get(&url);
-    match &auth {
-        RequestAuth::None => {}
-        RequestAuth::Bearer(k) => request = request.bearer_auth(k),
-        RequestAuth::Headers(headers) => {
-            for (name, value) in headers {
-                request = request.header(*name, value);
-            }
+    let (url, auth) = match spec.wire {
+        Wire::Vertex => {
+            // Vertex models list uses the regional publisher endpoint with an OAuth bearer token.
+            let region = super::spec::safe_env_segment("GOOGLE_CLOUD_REGION", "us-central1");
+            let token = vertex_bearer_token(client).await?;
+            (
+                format!("https://{region}-aiplatform.googleapis.com/v1/publishers/google/models"),
+                RequestAuth::Bearer(token),
+            )
         }
-    }
+        Wire::OpenAiCompat => {
+            let key = spec.api_key()?;
+            (
+                models_url_for_spec(spec, "models", true)?,
+                openai_auth(spec, key),
+            )
+        }
+        Wire::OpenAiResponses => {
+            let key = spec.api_key()?;
+            (
+                models_url_for_spec(spec, "models", false)?,
+                openai_auth(spec, key),
+            )
+        }
+        Wire::Anthropic => {
+            let key = spec.api_key()?;
+            (
+                models_url_for_spec(spec, "models", false)?,
+                RequestAuth::Headers(vec![
+                    ("x-api-key", key.clone().unwrap_or_default()),
+                    ("anthropic-version", "2023-06-01".to_string()),
+                ]),
+            )
+        }
+        Wire::Gemini => {
+            let key = spec.api_key()?;
+            (
+                spec.endpoint
+                    .split("/models")
+                    .next()
+                    .unwrap_or(spec.endpoint.as_ref())
+                    .trim_end_matches('/')
+                    .to_string()
+                    + "/models",
+                RequestAuth::Headers(vec![("x-goog-api-key", key.clone().unwrap_or_default())]),
+            )
+        }
+        Wire::Cohere => {
+            let key = spec.api_key()?;
+            (
+                spec.endpoint.trim_end_matches("/chat").to_string() + "/models",
+                bearer_or_none(key),
+            )
+        }
+        Wire::Bedrock | Wire::Mock => unreachable!("handled above"),
+    };
+    let request = apply_auth(client.get(&url), &auth)?;
     let resp = request
         .send()
         .await
-        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+        .map_err(|e| Error::Stream(format_reqwest_error(Some(&spec.id), e)))?;
     let resp = check_status(spec, resp).await?;
-    let body: Value = resp
-        .json()
+    let raw = crate::util::read_body_capped(resp, MAX_MODELS_BODY_BYTES)
         .await
+        .map_err(|e| Error::Stream(format_reqwest_error(Some(&spec.id), e)))?;
+    let body: Value = serde_json::from_str(&raw)
         .map_err(|e| Error::Stream(format!("{}: invalid models response: {e}", spec.id)))?;
     let mut ids: Vec<String> = Vec::new();
     if let Some(data) = body.get("data").and_then(Value::as_array) {
@@ -682,14 +773,18 @@ fn requires_completion_tokens(model: &str) -> bool {
     m.starts_with("gpt-5") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4")
 }
 
-fn parse_retry_after(value: &reqwest::header::HeaderValue) -> Option<std::time::Duration> {
+pub(super) fn parse_retry_after(
+    value: &reqwest::header::HeaderValue,
+) -> Option<std::time::Duration> {
     let text = value.to_str().ok()?.trim();
     if let Ok(secs) = text.parse::<u64>() {
-        return Some(std::time::Duration::from_secs(secs));
+        return Some(std::time::Duration::from_secs(
+            secs.min(MAX_RETRY_AFTER_SECS),
+        ));
     }
     let secs: f64 = text.parse().ok()?;
     if secs.is_finite() && secs >= 0.0 {
-        Some(std::time::Duration::from_secs_f64(secs))
+        std::time::Duration::try_from_secs_f64(secs.min(MAX_RETRY_AFTER_SECS_F64)).ok()
     } else {
         None
     }
@@ -704,7 +799,9 @@ async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<re
         .headers()
         .get(reqwest::header::RETRY_AFTER)
         .and_then(parse_retry_after);
-    let body = resp.text().await.unwrap_or_default();
+    let body = crate::util::read_body_capped(resp, MAX_ERROR_BODY_BYTES)
+        .await
+        .unwrap_or_default();
     let mut body = crate::util::truncate(&body, 300);
     if *spec.id == *"ollama" && status.as_u16() == 404 && body.contains("not found") {
         body.push_str(
@@ -729,51 +826,85 @@ async fn check_status(spec: &ProviderSpec, resp: reqwest::Response) -> Result<re
     })
 }
 
+fn signed_host(url: &reqwest::Url) -> String {
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    }
+}
+
+/// Builds a SigV4-signed Bedrock HTTP request (shared by streaming and model discovery).
+fn sign_bedrock_request(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: reqwest::Url,
+    body: Vec<u8>,
+    accept: &'static str,
+) -> Result<reqwest::RequestBuilder> {
+    use super::sigv4;
+
+    let creds = sigv4::credentials_from_env().ok_or_else(sigv4::missing_credentials_error)?;
+    let region = super::spec::safe_env_segment("AWS_REGION", "us-east-1");
+    let host = signed_host(&url);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let signed = sigv4::sign(
+        &creds,
+        &region,
+        &host,
+        method.as_str(),
+        url.path(),
+        url.query().unwrap_or(""),
+        &body,
+        &sigv4::amz_date(now),
+    );
+    let mut request = client
+        .request(method, url)
+        .header("x-amz-date", &signed.amz_date)
+        .header("x-amz-content-sha256", &signed.content_sha256)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            header_value("authorization", &signed.authorization)?,
+        )
+        .header("accept", accept);
+    if !body.is_empty() {
+        request = request
+            .header("content-type", "application/json")
+            .body(body);
+    }
+    if let Some(token) = &signed.session_token {
+        request = request.header(
+            "x-amz-security-token",
+            header_value("x-amz-security-token", token)?,
+        );
+    }
+    Ok(request)
+}
+
 /// Sends a SigV4-signed Bedrock request and returns the event-stream.
 async fn send_bedrock(
     client: &reqwest::Client,
     spec: &ProviderSpec,
     wire_req: WireRequest,
 ) -> Result<EventStream> {
-    use super::sigv4;
-
-    let creds = sigv4::credentials_from_env().ok_or_else(sigv4::missing_credentials_error)?;
-    let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
     let url = reqwest::Url::parse(&wire_req.url)
         .map_err(|e| Error::Config(format!("invalid bedrock endpoint: {e}")))?;
-    let host = url.host_str().unwrap_or_default().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     let body = serde_json::to_vec(&wire_req.body)
         .map_err(|e| Error::Config(format!("bedrock body encode: {e}")))?;
-    let signed = sigv4::sign(
-        &creds,
-        &region,
-        &host,
-        "POST",
-        url.path(),
-        "",
-        &body,
-        &sigv4::amz_date(now),
-    );
-
-    let mut request = client
-        .post(url)
-        .header("x-amz-date", &signed.amz_date)
-        .header("x-amz-content-sha256", &signed.content_sha256)
-        .header("authorization", &signed.authorization)
-        .header("content-type", "application/json")
-        .header("accept", "application/vnd.amazon.eventstream")
-        .body(body);
-    if let Some(token) = &signed.session_token {
-        request = request.header("x-amz-security-token", token);
-    }
+    let request = sign_bedrock_request(
+        client,
+        reqwest::Method::POST,
+        url,
+        body,
+        "application/vnd.amazon.eventstream",
+    )?;
     let resp = request
         .send()
         .await
-        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+        .map_err(|e| Error::Stream(format_reqwest_error(Some(&spec.id), e)))?;
     let resp = check_status(spec, resp).await?;
     Ok(EventStream::Bedrock(BedrockStream::new(resp)))
 }
@@ -784,45 +915,26 @@ async fn list_bedrock_models(
     spec: &ProviderSpec,
     url: &str,
 ) -> Result<Vec<String>> {
-    use super::sigv4;
     use serde_json::Value;
 
-    let creds = sigv4::credentials_from_env().ok_or_else(sigv4::missing_credentials_error)?;
-    let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
     let parsed = reqwest::Url::parse(url)
         .map_err(|e| Error::Config(format!("invalid bedrock models url: {e}")))?;
-    let host = parsed.host_str().unwrap_or_default().to_string();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let signed = sigv4::sign(
-        &creds,
-        &region,
-        &host,
-        "GET",
-        parsed.path(),
-        parsed.query().unwrap_or(""),
-        b"",
-        &sigv4::amz_date(now),
-    );
-    let mut request = client
-        .get(parsed)
-        .header("x-amz-date", &signed.amz_date)
-        .header("x-amz-content-sha256", &signed.content_sha256)
-        .header("authorization", &signed.authorization)
-        .header("accept", "application/json");
-    if let Some(token) = &signed.session_token {
-        request = request.header("x-amz-security-token", token);
-    }
+    let request = sign_bedrock_request(
+        client,
+        reqwest::Method::GET,
+        parsed,
+        Vec::new(),
+        "application/json",
+    )?;
     let resp = request
         .send()
         .await
-        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+        .map_err(|e| Error::Stream(format_reqwest_error(Some(&spec.id), e)))?;
     let resp = check_status(spec, resp).await?;
-    let body: Value = resp
-        .json()
+    let raw = crate::util::read_body_capped(resp, MAX_MODELS_BODY_BYTES)
         .await
+        .map_err(|e| Error::Stream(format_reqwest_error(Some(&spec.id), e)))?;
+    let body: Value = serde_json::from_str(&raw)
         .map_err(|e| Error::Stream(format!("{}: invalid models response: {e}", spec.id)))?;
     let mut ids: Vec<String> = Vec::new();
     if let Some(models) = body.get("modelSummaries").and_then(Value::as_array) {
@@ -837,27 +949,32 @@ async fn list_bedrock_models(
     Ok(ids)
 }
 
+async fn vertex_bearer_token(client: &reqwest::Client) -> Result<String> {
+    let account = super::gcp_oauth::load_service_account_async().await?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    super::gcp_oauth::token(client, &account, now).await
+}
+
 /// Fetches an OAuth2 token and sends the Vertex request (Gemini SSE wire).
 async fn send_vertex(
     client: &reqwest::Client,
     spec: &ProviderSpec,
     wire_req: WireRequest,
 ) -> Result<EventStream> {
-    let account = super::gcp_oauth::load_service_account()?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let token = super::gcp_oauth::token(client, &account, now).await?;
-    let resp = client
-        .post(&wire_req.url)
-        .bearer_auth(&token)
-        .json(&wire_req.body)
+    let token = vertex_bearer_token(client).await?;
+    let request = apply_auth(
+        client.post(&wire_req.url).json(&wire_req.body),
+        &RequestAuth::Bearer(token),
+    )?;
+    let resp = request
         .send()
         .await
-        .map_err(|e| Error::Stream(format!("{}: {e}", spec.id)))?;
+        .map_err(|e| Error::Stream(format_reqwest_error(Some(&spec.id), e)))?;
     let resp = check_status(spec, resp).await?;
-    Ok(EventStream::Http(SseStream::new(resp, Wire::Gemini)))
+    Ok(EventStream::Http(SseStream::new(resp, spec.wire)))
 }
 
 #[cfg(test)]
@@ -922,14 +1039,25 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_uses_top_level_system_and_ignores_seed() {
+    fn anthropic_uses_top_level_system_ignores_seed_and_omits_top_p_with_temperature() {
         let spec = ProviderSpec::anthropic();
         let body = build_body(&spec, &req("claude-3-5-haiku-latest", pinned()));
         assert_eq!(body["temperature"].as_f64(), Some(0.0));
-        assert_eq!(body["top_p"].as_f64(), Some(1.0));
+        assert!(
+            body.get("top_p").is_none(),
+            "Anthropic rejects temperature + top_p together: {body}"
+        );
         assert!(body.get("seed").is_none(), "{body}");
         assert_eq!(body["system"], "Be brief.");
         assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
+
+        let top_p_only = Sampling {
+            top_p: Some(0.9),
+            ..Sampling::default()
+        };
+        let body = build_body(&spec, &req("claude-3-5-haiku-latest", top_p_only));
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["top_p"].as_f64(), Some(0.9));
     }
 
     #[test]
@@ -964,7 +1092,10 @@ mod tests {
         );
         assert_eq!(body["inferenceConfig"]["maxTokens"], 8);
         assert_eq!(body["inferenceConfig"]["temperature"].as_f64(), Some(0.0));
-        assert_eq!(body["inferenceConfig"]["topP"].as_f64(), Some(1.0));
+        assert!(
+            body["inferenceConfig"].get("topP").is_none(),
+            "Bedrock Claude omits topP when temperature is set: {body}"
+        );
         assert!(body.get("seed").is_none(), "{body}");
         assert_eq!(body["system"][0]["text"], "Be brief.");
         assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
@@ -972,6 +1103,11 @@ mod tests {
         assert!(url.contains("/converse-stream"), "{url}");
         assert!(url.contains("%3A"), "{url}");
         assert!(!url.contains("invoke-with-response-stream"), "{url}");
+
+        // Non-Claude Bedrock models still receive both temperature and topP.
+        let llama = build_body(&spec, &req("meta.llama3-70b-instruct-v1:0", pinned()));
+        assert_eq!(llama["inferenceConfig"]["temperature"].as_f64(), Some(0.0));
+        assert_eq!(llama["inferenceConfig"]["topP"].as_f64(), Some(1.0));
     }
 
     #[test]
@@ -1151,7 +1287,89 @@ mod tests {
             parse_retry_after(&frac),
             Some(std::time::Duration::from_secs_f64(1.5))
         );
+        let two_five = reqwest::header::HeaderValue::from_static("2.5");
+        assert_eq!(
+            parse_retry_after(&two_five),
+            Some(std::time::Duration::from_secs_f64(2.5))
+        );
         let date = reqwest::header::HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT");
         assert!(parse_retry_after(&date).is_none());
+    }
+
+    #[test]
+    fn retry_after_handles_hostile_and_overflow_values_without_panic() {
+        let huge_float = reqwest::header::HeaderValue::from_static("1e300");
+        assert_eq!(
+            parse_retry_after(&huge_float),
+            Some(std::time::Duration::from_secs(30))
+        );
+        let nan = reqwest::header::HeaderValue::from_static("NaN");
+        assert!(parse_retry_after(&nan).is_none());
+        let neg = reqwest::header::HeaderValue::from_static("-1");
+        assert!(parse_retry_after(&neg).is_none());
+        let max_u64 = reqwest::header::HeaderValue::from_str(&u64::MAX.to_string()).expect("hv");
+        assert_eq!(
+            parse_retry_after(&max_u64),
+            Some(std::time::Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn cohere_json_schema_uses_json_object_with_top_level_schema() {
+        let schema = json!({"type": "object", "required": ["city"]});
+        let sampling = Sampling {
+            json_output: Some(JsonOutput::Schema(schema)),
+            ..Sampling::default()
+        };
+        let body = build_body(&ProviderSpec::cohere(), &req("command-a-03-2025", sampling));
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(body["response_format"]["schema"]["required"][0], "city");
+        assert!(
+            body["response_format"].get("json_schema").is_none(),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn request_auth_debug_redacts_secrets() {
+        let bearer = RequestAuth::Bearer("sk-super-secret-123".into());
+        let rendered = format!("{bearer:?}");
+        assert!(!rendered.contains("sk-super-secret-123"), "{rendered}");
+        assert!(rendered.contains("redacted"), "{rendered}");
+
+        let headers = RequestAuth::Headers(vec![("x-api-key", "ant-secret-456".into())]);
+        let rendered = format!("{headers:?}");
+        assert!(!rendered.contains("ant-secret-456"), "{rendered}");
+        assert!(rendered.contains("x-api-key"), "{rendered}");
+    }
+
+    #[test]
+    fn models_url_resolves_anthropic_openai_and_responses() {
+        assert_eq!(
+            models_url_for_spec(&ProviderSpec::anthropic(), "models", false).expect("anthropic"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            models_url_for_spec(&ProviderSpec::openai(), "models", true).expect("openai"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            models_url_for_spec(&ProviderSpec::openai_responses(), "models", false)
+                .expect("responses"),
+            "https://api.openai.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn signed_host_includes_non_default_port_only() {
+        let default_https =
+            reqwest::Url::parse("https://bedrock-runtime.us-east-1.amazonaws.com/x").expect("url");
+        assert_eq!(
+            signed_host(&default_https),
+            "bedrock-runtime.us-east-1.amazonaws.com"
+        );
+        let custom_port =
+            reqwest::Url::parse("http://127.0.0.1:8443/model/m/converse-stream").expect("url");
+        assert_eq!(signed_host(&custom_port), "127.0.0.1:8443");
     }
 }
