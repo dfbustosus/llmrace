@@ -13,8 +13,8 @@ use crate::stats::Sample;
 pub struct ProviderProfile {
     /// Estimated monthly cost at the given daily request volume, USD.
     pub monthly_cost_usd: Option<f64>,
-    /// Value for money: tokens per second per dollar per million tokens.
-    /// Higher = more output per unit cost.
+    /// Value for money: median tokens per second divided by cost per run in USD
+    /// (`tok/s per $/run`). Higher = more output per unit cost.
     pub value_for_money: Option<f64>,
     /// Provider id.
     pub name: String,
@@ -110,7 +110,11 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
                 .filter(|r| r.failure_rate != Some(1.0))
                 .map(|r| r.mean_ttfb_ms)
                 .collect();
-            let tps: Vec<f64> = races.iter().map(|r| r.mean_tokens_per_sec).collect();
+            let tps: Vec<f64> = races
+                .iter()
+                .filter(|r| r.failure_rate != Some(1.0))
+                .map(|r| r.mean_tokens_per_sec)
+                .collect();
             let goodputs: Vec<f64> = races
                 .iter()
                 .filter_map(|r| r.goodput_tokens_per_sec)
@@ -120,11 +124,14 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
             let recorded_costs: Vec<f64> =
                 races.iter().filter_map(|r| r.cost_per_run_usd).collect();
             let sample = Sample::from_values(latencies.clone());
-            let estimated = crate::cost::pricing(&name, &latest.model).map(|(_pin, pout)| {
-                let avg_tokens = tps.iter().sum::<f64>() / tps.len() as f64
-                    * (latencies.iter().sum::<f64>() / latencies.len() as f64 / 1000.0);
-                avg_tokens * pout / 1_000_000.0
-            });
+            let estimated = (!tps.is_empty() && !latencies.is_empty())
+                .then(|| crate::cost::pricing(&name, &latest.model))
+                .flatten()
+                .map(|(_pin, pout)| {
+                    let avg_tokens = tps.iter().sum::<f64>() / tps.len() as f64
+                        * (latencies.iter().sum::<f64>() / latencies.len() as f64 / 1000.0);
+                    avg_tokens * pout / 1_000_000.0
+                });
             // A recorded bill beats the token estimate. History written
             // before cost was stored still uses the estimate.
             let cost = if recorded_costs.is_empty() {
@@ -135,8 +142,8 @@ pub fn build_profiles(records: &[HistoryRecord]) -> Vec<ProviderProfile> {
             let monthly_cost = cost.map(|per_run| per_run * 1000.0 * 30.0);
             let median_tps = Sample::from_values(tps.clone()).median();
             let vfm = cost.map(|per_run| {
-                if per_run > 0.0 {
-                    median_tps / (per_run * 1_000_000.0)
+                if per_run > 0.0 && per_run.is_finite() {
+                    median_tps / per_run
                 } else {
                     0.0
                 }
@@ -176,21 +183,19 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
     let mut out = String::from("🧭 llmrace provider recommendation\n\n");
 
     // best on each axis
-    if let Some(fastest) = profiles.iter().min_by(|a, b| {
-        a.median_latency_ms
-            .partial_cmp(&b.median_latency_ms)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }) {
+    if let Some(fastest) = profiles
+        .iter()
+        .min_by(|a, b| a.median_latency_ms.total_cmp(&b.median_latency_ms))
+    {
         out.push_str(&format!(
             "  ⚡ Fastest:  {} — {:.0} ms median latency ({})\n",
             fastest.name, fastest.median_latency_ms, fastest.current_model
         ));
     }
-    if let Some(throughput) = profiles.iter().max_by(|a, b| {
-        a.rank_throughput()
-            .partial_cmp(&b.rank_throughput())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }) {
+    if let Some(throughput) = profiles
+        .iter()
+        .max_by(|a, b| a.rank_throughput().total_cmp(&b.rank_throughput()))
+    {
         let label = if throughput.median_goodput.is_some() {
             "goodput"
         } else {
@@ -204,16 +209,12 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
         ));
     }
     if let (Some(raw), Some(good)) = (
-        profiles.iter().max_by(|a, b| {
-            a.median_tokens_per_sec
-                .partial_cmp(&b.median_tokens_per_sec)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
-        profiles.iter().max_by(|a, b| {
-            a.rank_throughput()
-                .partial_cmp(&b.rank_throughput())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
+        profiles
+            .iter()
+            .max_by(|a, b| a.median_tokens_per_sec.total_cmp(&b.median_tokens_per_sec)),
+        profiles
+            .iter()
+            .max_by(|a, b| a.rank_throughput().total_cmp(&b.rank_throughput())),
     ) {
         if raw.name != good.name {
             if let Some(rate) = raw.median_failure_rate {
@@ -227,16 +228,13 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
         }
     }
     if let (Some(fast), Some(careful)) = (
-        profiles.iter().max_by(|a, b| {
-            a.rank_throughput()
-                .partial_cmp(&b.rank_throughput())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
+        profiles
+            .iter()
+            .max_by(|a, b| a.rank_throughput().total_cmp(&b.rank_throughput())),
         profiles.iter().max_by(|a, b| {
             a.median_task_pass
                 .unwrap_or(0.0)
-                .partial_cmp(&b.median_task_pass.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&b.median_task_pass.unwrap_or(0.0))
         }),
     ) {
         if fast.name != careful.name {
@@ -252,11 +250,11 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
             }
         }
     }
-    if let Some(stable) = profiles.iter().filter(|p| p.races >= 3).min_by(|a, b| {
-        a.latency_cv
-            .partial_cmp(&b.latency_cv)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }) {
+    if let Some(stable) = profiles
+        .iter()
+        .filter(|p| p.races >= 3)
+        .min_by(|a, b| a.latency_cv.total_cmp(&b.latency_cv))
+    {
         out.push_str(&format!(
             "  🎯 Most stable:  {} — {:.1}% latency variance across {} races\n",
             stable.name,
@@ -267,7 +265,7 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
     if let Some(cheapest) = profiles
         .iter()
         .filter_map(|p| p.cost_per_run_usd.map(|c| (p, c)))
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
     {
         out.push_str(&format!(
             "  💰 Cheapest:  {} — ~${:.5}/run\n",
@@ -277,18 +275,11 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
 
     out.push_str("\nProvider profiles:\n");
     let mut sorted = profiles.to_vec();
-    sorted.sort_by(|a, b| {
-        a.median_latency_ms
-            .partial_cmp(&b.median_latency_ms)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    sorted.sort_by(|a, b| a.median_latency_ms.total_cmp(&b.median_latency_ms));
     for p in &sorted {
         out.push_str(&format!("  {}\n", p.headline()));
         if let Some(vfm) = p.value_for_money {
-            out.push_str(&format!(
-                "    value: {:.0} tok/s per $/M\n",
-                vfm * 1_000_000.0
-            ));
+            out.push_str(&format!("    value: {vfm:.0} tok/s per $/run\n"));
         }
         if let Some(cost) = p.cost_per_run_usd {
             out.push_str(&format!("    cost: ~${cost:.5}/run"));
@@ -301,11 +292,7 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
 
     // overall recommendation: goodput, with latency called out separately
     let mut by_goodput = profiles.to_vec();
-    by_goodput.sort_by(|a, b| {
-        b.rank_throughput()
-            .partial_cmp(&a.rank_throughput())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    by_goodput.sort_by(|a, b| b.rank_throughput().total_cmp(&a.rank_throughput()));
     if let Some(best) = sorted.first() {
         out.push_str(&format!(
             "\n▸ For latency-sensitive workloads: use {}.\n",
@@ -340,4 +327,45 @@ pub fn render_recommendation(profiles: &[ProviderProfile]) -> String {
         "\n> Based on recorded history; run `llmrace --record` to add more data points.\n",
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::{LaneSummary, RunMetrics};
+
+    #[test]
+    fn tps_excludes_total_failure_records_and_vfm_matches_unit() {
+        let mut ok = crate::history::record_from_summary(
+            &LaneSummary {
+                name: "a".into(),
+                model: "m".into(),
+                concurrency: 1,
+                runs: vec![RunMetrics {
+                    total_ms: 1100.0,
+                    ttfb_ms: 100.0,
+                    tokens: 100,
+                    ..RunMetrics::default()
+                }],
+                ..LaneSummary::default()
+            },
+            10,
+        );
+        ok.timestamp_unix = 200;
+        ok.cost_per_run_usd = Some(0.01);
+        ok.failure_rate = Some(0.0);
+
+        let mut failed = ok.clone();
+        failed.timestamp_unix = 100;
+        failed.mean_tokens_per_sec = 0.0;
+        failed.failure_rate = Some(1.0);
+
+        let profiles = build_profiles(&[ok, failed]);
+        assert_eq!(profiles.len(), 1);
+        assert!((profiles[0].median_tokens_per_sec - 100.0).abs() < 1e-6);
+        assert!((profiles[0].value_for_money.expect("vfm") - 10_000.0).abs() < 1e-6);
+
+        let rendered = render_recommendation(&profiles);
+        assert!(rendered.contains("10000 tok/s per $/run"), "{rendered}");
+    }
 }
