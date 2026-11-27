@@ -157,9 +157,9 @@ pub enum WarmupMode {
     /// first workload item.
     #[default]
     SamePrompt,
-    /// A minimal probe (`"ping"`, `max_tokens: 1`, no system prompt):
-    /// warms the connection without priming the prefix cache for any
-    /// workload prompt.
+    /// A minimal probe (`"ping"`, `max_tokens: 16`, stripping `system`,
+    /// `json_output`, `messages`, `tools`, `tool`, and `expect`): warms the
+    /// connection without priming the prefix cache for any workload prompt.
     ConnectionProbe,
 }
 
