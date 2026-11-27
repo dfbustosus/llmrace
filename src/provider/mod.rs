@@ -41,6 +41,7 @@ pub fn benchmark_client(
     let timeout = timeout.max(std::time::Duration::from_secs(1));
     let pool = concurrency.clamp(1, 64);
     reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10).min(timeout))
         .timeout(timeout)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
