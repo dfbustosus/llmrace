@@ -1,14 +1,14 @@
 # Truly static llmrace: a 100% musl binary on FROM scratch (~6 MB total).
 #
 # Build (CI does this on release tags; locally pass the version):
-#   docker build --build-arg VERSION=1.3.1 --build-arg TARGET=x86_64-unknown-linux-musl \
+#   docker build --build-arg VERSION=1.40.0 --build-arg TARGET=x86_64-unknown-linux-musl \
 #     -f docker/Dockerfile.scratch -t llmrace-scratch .
 #
 # Run:
 #   docker run --rm -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace:scratch openai -n 5
 
 FROM alpine:3.20 AS unpack
-ARG VERSION=1.3.1
+ARG VERSION=1.40.0
 ARG TARGET=x86_64-unknown-linux-musl
 WORKDIR /tmp
 RUN apk add --no-cache curl ca-certificates \
@@ -18,13 +18,15 @@ RUN apk add --no-cache curl ca-certificates \
       -o "$archive" \
  && curl -fsSL "https://github.com/dfbustosus/llmrace/releases/download/v${VERSION}/${archive}.sha256" -o "${archive}.sha256" \
  && sha256sum -c "${archive}.sha256" \
- && mkdir -p /out && tar xzf "$archive" -C /tmp \
+ && mkdir -p /out /report && tar xzf "$archive" -C /tmp \
  && cp "/tmp/llmrace-v${VERSION}-${TARGET}/bin/llmrace" /out/llmrace \
  && test "$(/out/llmrace --version)" = "llmrace ${VERSION}"
 
 FROM scratch
 COPY --from=unpack /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=unpack /out/llmrace /usr/local/bin/llmrace
+COPY --from=unpack --chown=65532:65532 /report /report
 # reports land in /report — mount a volume to keep them
 WORKDIR /report
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/llmrace"]
