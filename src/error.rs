@@ -51,7 +51,7 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::Http { status, .. } => {
-                matches!(*status, 408 | 409 | 425 | 429 | 500 | 502 | 503 | 504)
+                matches!(*status, 408 | 409 | 425 | 429 | 500 | 502..=599)
             }
             Error::Stream(_) => true,
             Error::Config(_) | Error::Protocol(_) | Error::Io(_) => false,
@@ -84,10 +84,12 @@ mod tests {
 
     #[test]
     fn permanent_client_errors_are_not_retried() {
-        for status in [400, 401, 403, 404, 422] {
+        for status in [400, 401, 403, 404, 422, 501] {
             assert!(!http(status).is_retryable(), "{status}");
         }
-        for status in [408, 409, 425, 429, 500, 502, 503, 504] {
+        for status in [
+            408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529, 599,
+        ] {
             assert!(http(status).is_retryable(), "{status}");
         }
         assert!(Error::Stream("connection reset".into()).is_retryable());
