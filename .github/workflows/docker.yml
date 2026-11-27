@@ -86,6 +86,8 @@ jobs:
             variant: scratch
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: docker/setup-qemu-action@v3
 
