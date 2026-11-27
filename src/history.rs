@@ -106,19 +106,20 @@ pub fn history_path() -> PathBuf {
 /// ```
 pub fn append(path: &std::path::Path, records: &[HistoryRecord]) -> std::io::Result<()> {
     use std::io::Write;
-    if let Some(dir) = path.parent() {
+    if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
+    }
+    let mut batch = String::new();
+    for r in records {
+        let line = serde_json::to_string(r).map_err(io_other)?;
+        batch.push_str(&line);
+        batch.push('\n');
     }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
-    for r in records {
-        let mut line = serde_json::to_string(r).map_err(io_other)?;
-        line.push('\n');
-        file.write_all(line.as_bytes())?;
-    }
-    Ok(())
+    file.write_all(batch.as_bytes())
 }
 
 /// Loads records from `path`, skipping blank or corrupt lines.
@@ -202,7 +203,7 @@ pub fn build_trends(
     now_unix: u64,
     filter: &[String],
 ) -> Vec<ProviderTrend> {
-    let cutoff = now_unix.saturating_sub(days * 86_400);
+    let cutoff = now_unix.saturating_sub(days.saturating_mul(86_400));
     let mut names: Vec<String> = Vec::new();
     for r in records.iter().filter(|r| r.timestamp_unix >= cutoff) {
         if !names.contains(&r.provider) {
@@ -334,5 +335,53 @@ pub fn record_from_summary(s: &crate::bench::LaneSummary, timestamp_unix: u64) -
         cost_per_run_usd: s.cost_per_run_usd(),
         task_pass_rate: s.task_rate(),
         request_sha256: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn sample(ts: u64) -> HistoryRecord {
+        HistoryRecord {
+            timestamp_unix: ts,
+            provider: "mock".into(),
+            model: "m1".into(),
+            variant: None,
+            concurrency: 1,
+            mean_total_ms: 100.0,
+            p95_total_ms: 110.0,
+            mean_ttfb_ms: 10.0,
+            mean_tokens_per_sec: 50.0,
+            itl_p95_ms: None,
+            reasoning_tokens: None,
+            thinking_ms_estimate: None,
+            failure_rate: None,
+            goodput_tokens_per_sec: None,
+            retry_attempts: 0,
+            cost_per_run_usd: None,
+            task_pass_rate: None,
+            request_sha256: None,
+        }
+    }
+
+    #[test]
+    fn build_trends_handles_large_days_without_overflow() {
+        let records = vec![sample(10), sample(20)];
+        let trends = build_trends(&records, u64::MAX, 100, &[]);
+        assert_eq!(trends.len(), 1);
+    }
+
+    #[test]
+    fn append_writes_batch_and_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("llmrace-history-test-{}", std::process::id()));
+        let path = dir.join("batch.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let records = vec![sample(1), sample(2)];
+        append(&path, &records).unwrap();
+        assert_eq!(load(&path), records);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
