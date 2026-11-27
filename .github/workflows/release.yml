@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -59,20 +59,26 @@ jobs:
         run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Package (unix)
         if: matrix.archive == 'tar.gz'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
         run: |
-          dir="llmrace-${{ github.ref_name }}-${{ matrix.target }}"
+          dir="llmrace-${RELEASE_TAG}-${TARGET}"
           mkdir -p "$dir/bin"
-          cp "target/${{ matrix.target }}/release/llmrace" "$dir/bin/"
+          cp "target/${TARGET}/release/llmrace" "$dir/bin/"
           cp README.md LICENSE-MIT LICENSE-APACHE "$dir/"
           tar czf "$dir.tar.gz" "$dir"
           shasum -a 256 "$dir.tar.gz" > "$dir.tar.gz.sha256"
       - name: Package (windows)
         if: matrix.archive == 'zip'
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
         run: |
-          dir="llmrace-${{ github.ref_name }}-${{ matrix.target }}"
+          dir="llmrace-${RELEASE_TAG}-${TARGET}"
           mkdir -p "$dir/bin"
-          cp "target/${{ matrix.target }}/release/llmrace.exe" "$dir/bin/"
+          cp "target/${TARGET}/release/llmrace.exe" "$dir/bin/"
           cp README.md LICENSE-MIT LICENSE-APACHE "$dir/"
           7z a "$dir.zip" "$dir"
           sha256sum "$dir.zip" > "$dir.zip.sha256"
@@ -85,6 +91,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -111,7 +119,7 @@ jobs:
       - name: Verify version is not already published
         id: published
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')"
           if curl -sf -A "llmrace-ci" "https://crates.io/api/v1/crates/llmrace/$version" > /dev/null; then
             echo "llmrace v$version is already on crates.io — skipping publish"
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -121,10 +129,14 @@ jobs:
           fi
       - name: Packaging dry-run
         if: steps.published.outputs.skip != 'true'
-        run: cargo publish --locked --dry-run --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked --dry-run
       - name: Publish
         if: steps.published.outputs.skip != 'true'
-        run: cargo publish --locked --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
 
   pypi:
     name: Publish wheels to PyPI
@@ -153,7 +165,8 @@ jobs:
         if: steps.gate.outputs.upload == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release download "${{ github.ref_name }}" --pattern 'llmrace-*' --dir dist-assets
+          TAG: ${{ github.ref_name }}
+        run: gh release download "$TAG" --pattern 'llmrace-*' --dir dist-assets
       - name: Build and upload wheels
         if: steps.gate.outputs.upload == 'true'
         env:
@@ -168,5 +181,6 @@ jobs:
             esac
             python3 python/make_wheel.py "$version" "$archive" dist/
           done
-          python -m pip install --quiet twine
-          twine upload dist/*.whl
+          python -m pip install --quiet twine==6.1.0
+          python -m twine check dist/*.whl
+          python -m twine upload dist/*.whl
