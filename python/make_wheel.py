@@ -80,9 +80,9 @@ llmrace openai groq --workload prompts.jsonl --winner
   from your own test suite with scoped per-race pricing.
 
 Single static binary. No telemetry. 18 cloud providers plus local
-Ollama and any OpenAI-compatible endpoint. Also on Homebrew
-(`brew install dfbustosus/tap/llmrace`), crates.io, Docker and as a
-GitHub Action.
+Ollama, LM Studio, llama.cpp and any OpenAI-compatible endpoint. Also
+on Homebrew (`brew install dfbustosus/tap/llmrace`), crates.io, Docker
+and as a GitHub Action.
 
 Links: [GitHub](https://github.com/dfbustosus/llmrace) ·
 [Changelog](https://github.com/dfbustosus/llmrace/blob/main/CHANGELOG.md) ·
