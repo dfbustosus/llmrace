@@ -20,8 +20,13 @@
 //! assert_eq!(outcome.summaries.len(), 2);
 //! assert!(outcome.markdown().contains("llmrace report"));
 //! let baseline = llmrace::regression::BaselineReport::from_json_str(&outcome.json()).unwrap();
-//! let policy = GatePolicy { max_regression_pct: 10000.0, require_significance: false };
-//! assert!(!outcome.gate(&baseline, policy).gate_failed(false));
+//! let policy = GatePolicy {
+//!     max_regression_pct: 10000.0,
+//!     require_significance: false,
+//!     ..GatePolicy::default()
+//! };
+//! let report = outcome.gate(&baseline, policy);
+//! assert!(!report.gate_failed_with_policy(policy.require_significance, policy.fail_on_inconclusive));
 //! # });
 //! # }
 //! ```
@@ -55,15 +60,20 @@
 //! # }
 //! ```
 
-use crate::bench::{spawn_lane_stoppable, BenchConfig, LaneSummary, LaneUpdate};
+use crate::bench::engine::spawn_lane_with_sender;
+use crate::bench::{BenchConfig, LaneSummary, LaneUpdate, WarmupMode};
 use crate::error::{Error, Result};
 use crate::provider::{benchmark_client, split_model_override, ProviderSpec, Sampling};
 use crate::regression::{BaselineReport, RegressionReport};
 use crate::score::Weights;
 use crate::workload::WorkloadPrompt;
-use std::sync::atomic::AtomicBool;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
+
+/// Default prompt used when callers do not supply a custom prompt or workload.
+pub const DEFAULT_PROMPT: &str = "Write one vivid paragraph about a lighthouse at dawn.";
 
 /// How strictly [`RaceOutcome::gate`] fails.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,16 +83,33 @@ pub struct GatePolicy {
     /// Latency and throughput breaches fail only when statistically
     /// significant (Welch p < 0.05 on per-run data).
     pub require_significance: bool,
+    /// Fail the gate when a breached metric lacks a usable significance test
+    /// (inconclusive evidence under [`Self::require_significance`]).
+    pub fail_on_inconclusive: bool,
 }
 
-impl GatePolicy {
-    /// The CI default: 15% and significance required.
-    #[must_use]
-    pub fn ci_default() -> Self {
+impl Default for GatePolicy {
+    fn default() -> Self {
         Self {
             max_regression_pct: 15.0,
             require_significance: true,
+            fail_on_inconclusive: false,
         }
+    }
+}
+
+impl GatePolicy {
+    /// The CI default: 15%, significance required, inconclusive breaches warn only.
+    #[must_use]
+    pub fn ci_default() -> Self {
+        Self::default()
+    }
+
+    /// Returns `true` when `report` fails under this policy, honoring both
+    /// [`Self::require_significance`] and [`Self::fail_on_inconclusive`].
+    #[must_use]
+    pub fn failed(&self, report: &RegressionReport) -> bool {
+        report.gate_failed_with_policy(self.require_significance, self.fail_on_inconclusive)
     }
 }
 
@@ -145,6 +172,14 @@ impl Race {
     #[must_use]
     pub fn warmup(mut self, warmup: usize) -> Self {
         self.bench.warmup = warmup;
+        self
+    }
+
+    /// What warmup rounds send: [`WarmupMode::SamePrompt`] or
+    /// [`WarmupMode::ConnectionProbe`].
+    #[must_use]
+    pub fn warmup_mode(mut self, mode: WarmupMode) -> Self {
+        self.bench.warmup_mode = mode;
         self
     }
 
@@ -238,7 +273,7 @@ impl Race {
     /// A lane that panics or cannot start becomes a lane error; the other
     /// lanes still finish.
     pub async fn run(self) -> Result<RaceOutcome> {
-        self.spawn()?.finish().await
+        self.spawn_inner(false)?.finish().await
     }
 
     /// Starts the race without awaiting it: live progress plus a stop
@@ -247,6 +282,10 @@ impl Race {
     /// Progress arrives on a plain `std::sync::mpsc` receiver, so a GUI or
     /// logger thread needs no async runtime of its own.
     pub fn spawn(self) -> Result<RaceHandle> {
+        self.spawn_inner(true)
+    }
+
+    fn spawn_inner(self, with_progress: bool) -> Result<RaceHandle> {
         if self.providers.is_empty() {
             return Err(Error::Config("a race needs at least one provider".into()));
         }
@@ -266,28 +305,24 @@ impl Race {
             self.bench.concurrency,
         )?;
         let stop = Arc::new(AtomicBool::new(false));
-        let (merged_tx, merged_rx) = mpsc::channel::<LaneUpdate>();
-        let mut lanes = Vec::with_capacity(self.providers.len());
+        let (merged_tx, merged_rx) = if with_progress {
+            let (tx, rx) = mpsc::channel::<LaneUpdate>();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let mut handles = VecDeque::with_capacity(self.providers.len());
         for spec in &self.providers {
             let model = resolve_model(&self.models, &spec.id, &spec.default_model);
-            let (handle, rx) = spawn_lane_stoppable(
+            let handle = spawn_lane_with_sender(
                 client.clone(),
                 spec.clone(),
-                model,
+                model.clone(),
                 self.bench.clone(),
                 Arc::clone(&stop),
+                merged_tx.clone(),
             );
-            lanes.push(handle);
-            let tx = merged_tx.clone();
-            // blocking recv on a std mpsc channel — never on an async
-            // worker, so this also works on a current-thread runtime
-            tokio::task::spawn_blocking(move || {
-                while let Ok(update) = rx.recv() {
-                    if tx.send(update).is_err() {
-                        break;
-                    }
-                }
-            });
+            handles.push_back((spec.id.to_string(), model, handle));
         }
         drop(merged_tx);
         let request = crate::report::request_sha256(
@@ -299,8 +334,8 @@ impl Race {
         );
         Ok(RaceHandle {
             stop,
-            progress: Some(merged_rx),
-            lanes,
+            progress: merged_rx,
+            handles,
             bench: self.bench,
             weights: self.weights,
             winner: self.winner,
@@ -312,15 +347,29 @@ impl Race {
 
 /// A running race: live per-lane progress, a stop handle, and the outcome
 /// once every lane has finished or stopped.
+///
+/// Dropping a `RaceHandle` before [`Self::finish`] signals all lanes to stop
+/// and aborts any remaining lane tasks.
 pub struct RaceHandle {
     stop: Arc<AtomicBool>,
     progress: Option<mpsc::Receiver<LaneUpdate>>,
-    lanes: Vec<tokio::task::JoinHandle<LaneSummary>>,
+    handles: VecDeque<(String, String, tokio::task::JoinHandle<LaneSummary>)>,
     bench: BenchConfig,
     weights: Weights,
     winner: bool,
     region: Option<String>,
     request: String,
+}
+
+impl Drop for RaceHandle {
+    fn drop(&mut self) {
+        if !self.handles.is_empty() {
+            self.stop.store(true, Ordering::Relaxed);
+            for (_, _, handle) in self.handles.drain(..) {
+                handle.abort();
+            }
+        }
+    }
 }
 
 impl RaceHandle {
@@ -333,29 +382,44 @@ impl RaceHandle {
     /// Signals every lane to stop after its in-flight round. Completed
     /// rounds stay in the outcome; warmup rounds always finish.
     pub fn stop(&self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
     }
 
     /// Waits for every lane and returns the outcome.
+    ///
+    /// A lane task that panics or is cancelled becomes a failed [`LaneSummary`]
+    /// so sibling lanes still finish and are preserved in the outcome.
     pub async fn finish(mut self) -> Result<RaceOutcome> {
         // A caller using run()/finish() without taking progress must not
         // accumulate an unread, unbounded queue of token updates.
         drop(self.progress.take());
-        let mut summaries = Vec::with_capacity(self.lanes.len());
-        for handle in self.lanes {
-            summaries.push(
-                handle
-                    .await
-                    .map_err(|e| Error::Stream(format!("lane task failed: {e}")))?,
-            );
+        let mut summaries = Vec::with_capacity(self.handles.len());
+        while let Some(entry) = self.handles.front_mut() {
+            let res = (&mut entry.2).await;
+            if let Some((name, model, _)) = self.handles.pop_front() {
+                match res {
+                    Ok(summary) => summaries.push(summary),
+                    Err(e) => summaries.push(LaneSummary {
+                        name,
+                        model,
+                        error: Some(format!("lane task failed: {e}")),
+                        prompt: self.bench.prompt.clone(),
+                        concurrency: self.bench.concurrency,
+                        variant: self.bench.variant.as_ref().map(|v| v.to_string()),
+                        tool_task: Some(self.bench.tool_task.clone()),
+                        price_book: self.bench.price_book.clone(),
+                        ..LaneSummary::default()
+                    }),
+                }
+            }
         }
         Ok(RaceOutcome {
             summaries,
-            request_sha256: self.request,
-            bench: self.bench,
+            request_sha256: std::mem::take(&mut self.request),
+            bench: std::mem::take(&mut self.bench),
             weights: self.weights,
             winner: self.winner,
-            region: self.region,
+            region: self.region.take(),
         })
     }
 }
@@ -391,8 +455,9 @@ impl RaceOutcome {
         if !self.winner {
             return String::new();
         }
-        let scored = crate::score::score_lanes(&self.summaries, &self.weights);
-        crate::score::podium(&scored, &self.weights)
+        let applied = crate::score::applied_weights(&self.summaries, &self.weights);
+        let groups = crate::score::score_groups(&self.summaries, &applied);
+        crate::score::podiums(&groups, &applied)
     }
 
     /// The markdown report the CLI writes, podium included when scored.
@@ -448,8 +513,11 @@ impl RaceOutcome {
 
     /// Compares this race against a baseline report.
     ///
-    /// `gate_failed(policy.require_significance)` on the returned report is
-    /// the process exit code the CLI would produce for the same race.
+    /// Evaluating
+    /// [`RegressionReport::gate_failed_with_policy`](crate::regression::RegressionReport::gate_failed_with_policy)
+    /// with `(policy.require_significance, policy.fail_on_inconclusive)` (or
+    /// [`GatePolicy::failed`]) on the returned report matches the process exit
+    /// code the CLI produces for the same race.
     #[must_use]
     pub fn gate(&self, baseline: &BaselineReport, policy: GatePolicy) -> RegressionReport {
         crate::regression::evaluate_experiment(
@@ -479,4 +547,170 @@ pub fn resolve_model(overrides: &[String], provider_id: &str, default_model: &st
     global
         .map(str::to_string)
         .unwrap_or_else(|| default_model.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::RunMetrics;
+
+    #[test]
+    fn gate_policy_defaults_and_inconclusive_evaluation() {
+        let def = GatePolicy::default();
+        assert_eq!(def, GatePolicy::ci_default());
+        assert!(!def.fail_on_inconclusive);
+        assert!(def.require_significance);
+        assert_eq!(def.max_regression_pct, 15.0);
+
+        let inconclusive = RegressionReport {
+            comparisons: vec![crate::regression::ProviderComparison {
+                name: "mock".into(),
+                variant: None,
+                baseline_model: "m".into(),
+                current_model: "m".into(),
+                metrics: vec![crate::regression::MetricComparison {
+                    label: "p95 latency",
+                    baseline: 100.0,
+                    current: 150.0,
+                    delta_pct: 50.0,
+                    regressed: true,
+                    p_value: None,
+                    prompt_id: None,
+                }],
+            }],
+            ..RegressionReport::default()
+        };
+        assert!(!def.failed(&inconclusive));
+        let strict = GatePolicy {
+            fail_on_inconclusive: true,
+            ..def
+        };
+        assert!(strict.failed(&inconclusive));
+    }
+
+    #[test]
+    fn podium_uses_applied_weights_on_taskless_race() {
+        let lane = |name: &str, ttfb: f64| LaneSummary {
+            name: name.into(),
+            model: "m".into(),
+            runs: vec![RunMetrics {
+                total_ms: 200.0,
+                ttfb_ms: ttfb,
+                tokens: 50,
+                ..RunMetrics::default()
+            }],
+            concurrency: 1,
+            ..LaneSummary::default()
+        };
+        let outcome = RaceOutcome {
+            summaries: vec![lane("a", 40.0), lane("b", 80.0)],
+            request_sha256: String::new(),
+            bench: BenchConfig::default(),
+            weights: Weights::default(),
+            winner: true,
+            region: None,
+        };
+        let podium = outcome.podium();
+        assert!(podium.contains("podium"), "{podium}");
+        assert!(
+            !podium.contains("task 40"),
+            "taskless race must not print task weight: {podium}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_converts_panicked_lane_into_failed_summary() {
+        let ok_lane = tokio::spawn(async {
+            LaneSummary {
+                name: "healthy".into(),
+                model: "m1".into(),
+                runs: vec![RunMetrics {
+                    total_ms: 100.0,
+                    ttfb_ms: 20.0,
+                    tokens: 20,
+                    ..RunMetrics::default()
+                }],
+                concurrency: 1,
+                ..LaneSummary::default()
+            }
+        });
+        let panicked_lane: tokio::task::JoinHandle<LaneSummary> =
+            tokio::spawn(async { panic!("simulated lane panic") });
+        let mut handles = VecDeque::new();
+        handles.push_back(("panicked".to_string(), "m0".to_string(), panicked_lane));
+        handles.push_back(("healthy".to_string(), "m1".to_string(), ok_lane));
+
+        let handle = RaceHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            progress: None,
+            handles,
+            bench: BenchConfig::default(),
+            weights: Weights::default(),
+            winner: false,
+            region: None,
+            request: String::new(),
+        };
+
+        let outcome = handle
+            .finish()
+            .await
+            .expect("finish must not short-circuit");
+        assert_eq!(outcome.summaries.len(), 2);
+        assert!(!outcome.summaries[0].successful());
+        assert_eq!(outcome.summaries[0].name, "panicked");
+        assert!(outcome.summaries[0]
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("lane task failed")));
+        assert!(outcome.summaries[1].successful());
+        assert_eq!(outcome.summaries[1].name, "healthy");
+    }
+
+    #[tokio::test]
+    async fn dropping_race_handle_sets_stop_and_aborts_tasks() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let started_tx = Arc::clone(&started);
+        let flag = Arc::clone(&dropped);
+        let task = tokio::spawn(async move {
+            let _guard = DropFlag(flag);
+            started_tx.notify_one();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            LaneSummary::default()
+        });
+        started.notified().await;
+        let mut handles = VecDeque::new();
+        handles.push_back(("slow".to_string(), "m".to_string(), task));
+
+        let handle = RaceHandle {
+            stop: Arc::clone(&stop),
+            progress: None,
+            handles,
+            bench: BenchConfig::default(),
+            weights: Weights::default(),
+            winner: false,
+            region: None,
+            request: String::new(),
+        };
+        drop(handle);
+        assert!(stop.load(Ordering::Relaxed));
+        tokio::task::yield_now().await;
+        assert!(dropped.load(Ordering::SeqCst), "aborted task must drop");
+    }
+
+    #[test]
+    fn warmup_mode_builder_sets_bench_config() {
+        let race = Race::new([ProviderSpec::mock()])
+            .prompt(DEFAULT_PROMPT)
+            .warmup_mode(WarmupMode::ConnectionProbe);
+        assert_eq!(race.bench.warmup_mode, WarmupMode::ConnectionProbe);
+        assert_eq!(race.bench.prompt, DEFAULT_PROMPT);
+    }
 }
