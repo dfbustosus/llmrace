@@ -87,7 +87,7 @@ pub fn set_overrides(pairs: Vec<(String, f64, f64)>) {
 
 /// Installs price overrides, including cache rates.
 pub fn set_rate_overrides(pairs: Vec<(String, TokenRates)>) {
-    let mut map = overrides().write().expect("price overrides lock");
+    let mut map = overrides().write().unwrap_or_else(|e| e.into_inner());
     for (key, rates) in pairs {
         map.insert(key, rates);
     }
@@ -302,15 +302,29 @@ pub fn pricing(provider: &str, model: &str) -> Option<(f64, f64)> {
 #[must_use]
 pub fn token_rates(provider: &str, model: &str) -> Option<TokenRates> {
     let key = format!("{}/{}", provider, model.to_ascii_lowercase());
-    if let Ok(map) = overrides().read() {
-        if let Some(rates) = map.get(&key) {
-            return Some(*rates);
-        }
+    let map = overrides().read().unwrap_or_else(|e| e.into_inner());
+    if let Some(rates) = map.get(&key) {
+        return Some(*rates);
     }
+    drop(map);
     builtin_rates(&key)
 }
 
 fn builtin_rates(key: &str) -> Option<TokenRates> {
+    if let Some(rates) = lookup_builtin(key) {
+        return Some(rates);
+    }
+    let lower = key.to_ascii_lowercase();
+    if let Some(model) = lower.strip_prefix("openai-responses/") {
+        return lookup_builtin(&format!("openai/{model}"));
+    }
+    if let Some(model) = lower.strip_prefix("vertex/") {
+        return lookup_builtin(&format!("gemini/{model}"));
+    }
+    None
+}
+
+fn lookup_builtin(key: &str) -> Option<TokenRates> {
     // Input and output are the standard public list prices, USD per million
     // tokens, read 2026-11-20. OpenAI rates are the standard short-context
     // column on https://developers.openai.com/api/docs/pricing (cached input
@@ -353,6 +367,9 @@ fn builtin_rates(key: &str) -> Option<TokenRates> {
         ),
         ("openai/gpt-5.4-nano", 0.20, 1.25, CacheSchedule::Read(0.02)),
         ("openai/gpt-4.1-nano", 0.10, 0.40, CacheSchedule::None),
+        ("openai/o3", 2.00, 8.00, CacheSchedule::Read(0.50)),
+        ("openai/o3-mini", 1.10, 4.40, CacheSchedule::Read(0.55)),
+        ("openai/o4-mini", 1.10, 4.40, CacheSchedule::Read(0.275)),
         (
             "anthropic/claude-3-5-haiku-latest",
             0.80,
@@ -444,6 +461,18 @@ fn builtin_rates(key: &str) -> Option<TokenRates> {
             CacheSchedule::Anthropic,
         ),
         (
+            "anthropic/claude-opus-4-5",
+            5.00,
+            25.00,
+            CacheSchedule::Anthropic,
+        ),
+        (
+            "anthropic/claude-opus-4-6",
+            5.00,
+            25.00,
+            CacheSchedule::Anthropic,
+        ),
+        (
             "groq/llama-3.3-70b-versatile",
             0.59,
             0.79,
@@ -451,12 +480,17 @@ fn builtin_rates(key: &str) -> Option<TokenRates> {
         ),
         ("groq/llama-3.1-8b-instant", 0.05, 0.08, CacheSchedule::None),
         ("groq/mixtral-8x7b-32768", 0.24, 0.24, CacheSchedule::None),
-        ("deepseek/deepseek-chat", 0.27, 1.10, CacheSchedule::None),
+        (
+            "deepseek/deepseek-chat",
+            0.27,
+            1.10,
+            CacheSchedule::Read(0.07),
+        ),
         (
             "deepseek/deepseek-reasoner",
             0.55,
             2.19,
-            CacheSchedule::None,
+            CacheSchedule::Read(0.14),
         ),
         (
             "mistral/mistral-small-latest",
@@ -669,5 +703,68 @@ pub fn format_usd(v: f64) -> String {
         format!("${:.6}", v)
     } else {
         format!("${:.3}", v)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_responses_and_vertex_fall_back_to_parent_tables() {
+        assert_eq!(
+            token_rates("openai-responses", "gpt-5"),
+            token_rates("openai", "gpt-5")
+        );
+        assert_eq!(
+            token_rates("openai-responses", "o3"),
+            token_rates("openai", "o3")
+        );
+        assert_eq!(
+            token_rates("vertex", "gemini-2.5-pro"),
+            token_rates("gemini", "gemini-2.5-pro")
+        );
+    }
+
+    #[test]
+    fn added_reasoning_opus_and_deepseek_cache_rows_exist() {
+        assert_eq!(
+            token_rates("openai", "o3").expect("o3").cache_read,
+            Some(0.50)
+        );
+        assert_eq!(
+            token_rates("openai", "o3-mini")
+                .expect("o3-mini")
+                .cache_read,
+            Some(0.55)
+        );
+        assert_eq!(
+            token_rates("openai", "o4-mini")
+                .expect("o4-mini")
+                .cache_read,
+            Some(0.275)
+        );
+        let opus45 = token_rates("anthropic", "claude-opus-4-5").expect("opus 4.5");
+        assert_eq!(
+            (opus45.input, opus45.output, opus45.cache_read),
+            (5.0, 25.0, Some(0.5))
+        );
+        let opus46 = token_rates("anthropic", "claude-opus-4-6").expect("opus 4.6");
+        assert_eq!(
+            (opus46.input, opus46.output, opus46.cache_read),
+            (5.0, 25.0, Some(0.5))
+        );
+        assert_eq!(
+            token_rates("deepseek", "deepseek-chat")
+                .expect("deepseek-chat")
+                .cache_read,
+            Some(0.07)
+        );
+        assert_eq!(
+            token_rates("deepseek", "deepseek-reasoner")
+                .expect("deepseek-reasoner")
+                .cache_read,
+            Some(0.14)
+        );
     }
 }
