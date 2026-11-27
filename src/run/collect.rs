@@ -5,19 +5,67 @@ use anyhow::Result;
 use llmrace::bench::BenchConfig;
 use llmrace::bench::LaneSummary;
 use llmrace::tui;
-use std::io::IsTerminal as _;
+use std::io::{IsTerminal as _, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Installs a single Ctrl-C listener for a top-level command and aborts it on
+/// drop so phased runs (`--ramp`, `--suite`) never leak per-phase signal tasks.
+///
+/// The first `SIGINT` sets the shared stop flag so in-flight rounds finish
+/// cleanly; a second `SIGINT` flushes stdout/stderr and exits with code 130.
+pub(crate) struct SignalGuard {
+    stop: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl SignalGuard {
+    /// Installs a new `SignalGuard` with a fresh stop flag.
+    pub(crate) fn install(message: &'static str) -> Self {
+        Self::with_flag(Arc::new(AtomicBool::new(false)), message)
+    }
+
+    /// Installs a `SignalGuard` sharing an existing stop flag.
+    pub(crate) fn with_flag(stop: Arc<AtomicBool>, message: &'static str) -> Self {
+        let flag = Arc::clone(&stop);
+        let task = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                flag.store(true, Ordering::Relaxed);
+                eprintln!("\n{message}");
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    eprintln!("\n\u{23f9} second interrupt received — aborting immediately");
+                    let _ = std::io::stdout().flush();
+                    let _ = std::io::stderr().flush();
+                    std::process::exit(130);
+                }
+            }
+        });
+        Self { stop, task }
+    }
+
+    /// Returns a clone of the shared stop flag.
+    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop)
+    }
+}
+
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 
 /// Spawns every lane (variants × providers) and collects the summaries.
 ///
 /// `bench_override` replaces the base `BenchConfig` (used by `--ramp` to
 /// race the same lanes at several concurrency levels); `headless_progress`
 /// prints per-lane progress lines instead of spawning a TUI (ramp phases).
+/// Signal handling is owned by the top-level caller via [`SignalGuard`].
 pub(super) async fn race_collect(
     cfg: &RunConfig,
     bench_override: Option<BenchConfig>,
     headless_progress: bool,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: Arc<AtomicBool>,
 ) -> Result<Vec<LaneSummary>> {
     let bench = bench_override.unwrap_or_else(|| cfg.bench.clone());
     let variants: Vec<Option<llmrace::variants::VariantDef>> = match &cfg.sweep {
@@ -44,6 +92,9 @@ pub(super) async fn race_collect(
         };
         for p in &cfg.providers {
             let model = resolve_model(&cfg.model_overrides, &p.id, &p.default_model);
+            let lane_name = p.id.to_string();
+            let lane_model = model.clone();
+            let lane_variant = variant.as_ref().map(|v| v.name.clone());
             let (handle, rx) = llmrace::bench::spawn_lane_stoppable(
                 cfg.client.clone(),
                 p.clone(),
@@ -53,9 +104,11 @@ pub(super) async fn race_collect(
                     variant: variant.as_ref().map(|v| Arc::from(v.name.as_str())),
                     ..bench.clone()
                 },
-                std::sync::Arc::clone(&stop),
+                Arc::clone(&stop),
             );
-            handles.push(async move { handle.await.map_err(anyhow::Error::from) });
+            handles.push((lane_name, lane_model, lane_variant, async move {
+                handle.await.map_err(anyhow::Error::from)
+            }));
             receivers.push(rx);
         }
     }
@@ -64,19 +117,9 @@ pub(super) async fn race_collect(
         if !cfg.no_tui && !headless_progress {
             eprintln!("note: stdout is not a terminal — running headless (pass --no-tui to silence this note)");
         }
-        // graceful interrupt: SIGINT stops new rounds; in-flight rounds
-        // finish and partial results still reach the reports
-        {
-            let stop = std::sync::Arc::clone(&stop);
-            tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
-                stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                eprintln!("\n\u{23f9} interrupt received — finishing in-flight rounds, then writing reports…");
-            });
-        }
         drop(receivers);
         let mut all = Vec::new();
-        for h in handles {
+        for (name, model, variant, h) in handles {
             match h.await {
                 Ok(s) => {
                     if headless_progress && !cfg.quiet {
@@ -84,7 +127,10 @@ pub(super) async fn race_collect(
                     }
                     all.push(s);
                 }
-                Err(e) => eprintln!("lane failed: {e}"),
+                Err(e) => {
+                    eprintln!("lane failed: {e}");
+                    all.push(failed_lane_summary(name, model, variant, e));
+                }
             }
         }
         Ok(all)
@@ -93,19 +139,38 @@ pub(super) async fn race_collect(
             Some(secs) => format!("\u{2264}{secs}s"),
             None => format!("{} rounds", bench.runs),
         };
-        collect_with_tui(lanes, handles, receivers, &cfg.prompt, &rounds_label).await
+        collect_with_tui(lanes, handles, receivers, &cfg.prompt, &rounds_label, stop).await
+    }
+}
+
+fn failed_lane_summary(
+    name: String,
+    model: String,
+    variant: Option<String>,
+    err: anyhow::Error,
+) -> LaneSummary {
+    LaneSummary {
+        name,
+        model,
+        variant,
+        error: Some(format!("lane task failed: {err}")),
+        ..LaneSummary::default()
     }
 }
 
 /// Collects lane results while the live TUI renders.
 pub(super) async fn collect_with_tui(
     lanes: Vec<(Arc<str>, Option<Arc<str>>, String)>,
-    handles: Vec<
+    handles: Vec<(
+        String,
+        String,
+        Option<String>,
         impl std::future::Future<Output = std::result::Result<LaneSummary, anyhow::Error>>,
-    >,
+    )>,
     receivers: Vec<std::sync::mpsc::Receiver<llmrace::bench::LaneUpdate>>,
     prompt: &str,
     rounds_label: &str,
+    stop: Arc<AtomicBool>,
 ) -> Result<Vec<LaneSummary>> {
     let merged = std::sync::mpsc::channel::<llmrace::bench::LaneUpdate>();
     for rx in receivers {
@@ -121,13 +186,28 @@ pub(super) async fn collect_with_tui(
     drop(merged.0);
     let tui = tui::Tui::with_rounds_label(lanes, prompt.to_string(), rounds_label.to_string());
     let rx_final = merged.1;
-    let tui_handle = tokio::task::spawn_blocking(move || tui.run(rx_final).map(|_| ()));
+    let tui_stop = Arc::clone(&stop);
+    let tui_handle = tokio::task::spawn_blocking(move || match tui.run(rx_final) {
+        Ok(finished) => {
+            if !finished.is_all_done() {
+                tui_stop.store(true, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tui_stop.store(true, Ordering::Relaxed);
+            Err(e)
+        }
+    });
 
     let mut all = Vec::new();
-    for h in handles {
+    for (name, model, variant, h) in handles {
         match h.await {
             Ok(s) => all.push(s),
-            Err(e) => eprintln!("lane failed: {e}"),
+            Err(e) => {
+                eprintln!("lane failed: {e}");
+                all.push(failed_lane_summary(name, model, variant, e));
+            }
         }
     }
     match tui_handle.await {
