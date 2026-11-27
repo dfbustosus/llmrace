@@ -29,34 +29,37 @@ pub fn render_metrics(summaries: &[LaneSummary]) -> String {
             u8::from(s.successful())
         ));
         if let Some(rate) = s.failure_rate() {
-            out.push_str(&format!("llmrace_failure_rate{{{labels}}} {rate:.6}\n"));
+            out.push_str(&format!(
+                "llmrace_failure_rate{{{labels}}} {}\n",
+                fmt_prom_float(rate, 6)
+            ));
         }
         if !s.successful() {
             continue;
         }
         out.push_str(&format!(
-            "llmrace_ttfb_ms{{{labels}}} {:.3}\n",
-            s.mean_ttfb_ms()
+            "llmrace_ttfb_ms{{{labels}}} {}\n",
+            fmt_prom_float(s.mean_ttfb_ms(), 3)
         ));
         out.push_str(&format!(
-            "llmrace_latency_mean_ms{{{labels}}} {:.3}\n",
-            s.mean_total_ms()
+            "llmrace_latency_mean_ms{{{labels}}} {}\n",
+            fmt_prom_float(s.mean_total_ms(), 3)
         ));
         out.push_str(&format!(
-            "llmrace_latency_median_ms{{{labels}}} {:.3}\n",
-            s.median_total_ms()
+            "llmrace_latency_median_ms{{{labels}}} {}\n",
+            fmt_prom_float(s.median_total_ms(), 3)
         ));
         out.push_str(&format!(
-            "llmrace_latency_p95_ms{{{labels}}} {:.3}\n",
-            s.p95_total_ms()
+            "llmrace_latency_p95_ms{{{labels}}} {}\n",
+            fmt_prom_float(s.p95_total_ms(), 3)
         ));
         out.push_str(&format!(
-            "llmrace_tokens_per_second{{{labels}}} {:.3}\n",
-            s.mean_tokens_per_sec()
+            "llmrace_tokens_per_second{{{labels}}} {}\n",
+            fmt_prom_float(s.mean_tokens_per_sec(), 3)
         ));
         out.push_str(&format!(
-            "llmrace_goodput_tokens_per_second{{{labels}}} {:.3}\n",
-            s.goodput_tokens_per_sec()
+            "llmrace_goodput_tokens_per_second{{{labels}}} {}\n",
+            fmt_prom_float(s.goodput_tokens_per_sec(), 3)
         ));
         out.push_str(&format!(
             "llmrace_retry_attempts{{{labels}}} {}\n",
@@ -64,8 +67,8 @@ pub fn render_metrics(summaries: &[LaneSummary]) -> String {
         ));
         if let Some(cost) = s.cost_per_run_usd() {
             out.push_str(&format!(
-                "llmrace_cost_per_run_usd{{{labels}}} {:.6}\n",
-                cost
+                "llmrace_cost_per_run_usd{{{labels}}} {}\n",
+                fmt_prom_float(cost, 6)
             ));
         }
         if let Some((valid, total)) = s.tool_validity() {
@@ -94,18 +97,36 @@ pub async fn push(
         .body(body)
         .send()
         .await
-        .map_err(|e| crate::error::Error::Stream(format!("pushgateway unreachable: {e}")))?;
+        .map_err(|e| {
+            crate::error::Error::Stream(format!("pushgateway unreachable: {}", e.without_url()))
+        })?;
     let status = resp.status();
     if status.is_success() {
         Ok(())
     } else {
-        let text = resp.text().await.unwrap_or_default();
+        let text = crate::util::read_body_capped(resp, 16 * 1024)
+            .await
+            .unwrap_or_default();
         Err(crate::error::Error::Http {
             provider: "pushgateway".into(),
             status: status.as_u16(),
-            body: text.chars().take(200).collect(),
+            body: crate::util::truncate(&text, 200),
             retry_after: None,
         })
+    }
+}
+
+fn fmt_prom_float(v: f64, decimals: usize) -> String {
+    if v.is_nan() {
+        "NaN".to_string()
+    } else if v.is_infinite() {
+        if v.is_sign_positive() {
+            "+Inf".to_string()
+        } else {
+            "-Inf".to_string()
+        }
+    } else {
+        format!("{v:.decimals$}")
     }
 }
 
@@ -113,4 +134,24 @@ fn escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+        .replace('\r', "\\r")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prom_float_formats_non_finite_values_per_exposition_spec() {
+        assert_eq!(fmt_prom_float(f64::INFINITY, 3), "+Inf");
+        assert_eq!(fmt_prom_float(f64::NEG_INFINITY, 3), "-Inf");
+        assert_eq!(fmt_prom_float(f64::NAN, 3), "NaN");
+        assert_eq!(fmt_prom_float(12.3456, 3), "12.346");
+        assert_eq!(fmt_prom_float(0.125, 6), "0.125000");
+    }
+
+    #[test]
+    fn escape_handles_quotes_backslashes_and_crlf() {
+        assert_eq!(escape("a\"b\\c\r\nd"), "a\\\"b\\\\c\\r\\nd");
+    }
 }
