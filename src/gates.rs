@@ -18,11 +18,19 @@ pub struct TtfbOffender {
 }
 
 /// Lanes whose mean TTFB exceeds `max_ms` (successful lanes only).
+///
+/// A non-finite or negative threshold fails closed: every successful lane is
+/// reported as an offender so invalid thresholds (`NaN`, `Inf`, `< 0`) cannot
+/// silently pass the gate.
 #[must_use]
 pub fn ttfb_offenders(summaries: &[LaneSummary], max_ms: f64) -> Vec<TtfbOffender> {
+    let invalid_threshold = !max_ms.is_finite() || max_ms < 0.0;
     summaries
         .iter()
-        .filter(|s| s.successful() && s.mean_ttfb_ms() > max_ms)
+        .filter(|s| {
+            s.successful()
+                && (invalid_threshold || !s.mean_ttfb_ms().is_finite() || s.mean_ttfb_ms() > max_ms)
+        })
         .map(|s| TtfbOffender {
             name: s.name.clone(),
             model: s.model.clone(),
@@ -44,6 +52,9 @@ pub fn all_lanes_failed(summaries: &[LaneSummary]) -> bool {
 /// (callers print them), pass line only when not quiet.
 #[must_use]
 pub fn render_ttfb_verdict(offenders: &[TtfbOffender], max_ms: f64, quiet: bool) -> Verdict {
+    if !max_ms.is_finite() || max_ms < 0.0 {
+        return Verdict::Fail(format!("✗ TTFB GATE FAILED (invalid threshold: {max_ms})"));
+    }
     if offenders.is_empty() {
         Verdict::Pass(if quiet {
             String::new()
@@ -83,6 +94,33 @@ impl Verdict {
     pub fn message(&self) -> &str {
         match self {
             Verdict::Pass(m) | Verdict::Fail(m) => m,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::RunMetrics;
+
+    #[test]
+    fn non_finite_or_negative_ttfb_threshold_fails_closed() {
+        let lane = LaneSummary {
+            name: "fast".into(),
+            model: "m".into(),
+            runs: vec![RunMetrics {
+                total_ms: 50.0,
+                ttfb_ms: 10.0,
+                tokens: 10,
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let offenders = ttfb_offenders(std::slice::from_ref(&lane), bad);
+            assert_eq!(offenders.len(), 1, "bad threshold {bad} must fail closed");
+            assert!(render_ttfb_verdict(&[], bad, false).failed());
+            assert!(render_ttfb_verdict(&offenders, bad, false).failed());
         }
     }
 }
