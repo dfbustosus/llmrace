@@ -152,12 +152,12 @@ fn parse_headers(mut section: &[u8]) -> Result<(String, String)> {
                 "event-stream: truncated header name".into(),
             ));
         }
-        let name = String::from_utf8_lossy(&section[1..1 + name_len]).to_string();
+        let name = &section[1..1 + name_len];
         let value_type = section[1 + name_len];
         let mut rest = &section[2 + name_len..];
         // Only byte arrays (6) and strings (7) are length-prefixed;
         // other value types have fixed sizes
-        let value = match value_type {
+        let value_bytes: Option<&[u8]> = match value_type {
             6 | 7 => {
                 if rest.len() < 2 {
                     return Err(Error::Protocol(
@@ -170,9 +170,9 @@ fn parse_headers(mut section: &[u8]) -> Result<(String, String)> {
                         "event-stream: truncated string value".into(),
                     ));
                 }
-                let v = String::from_utf8_lossy(&rest[2..2 + vlen]).to_string();
+                let v = &rest[2..2 + vlen];
                 rest = &rest[2 + vlen..];
-                v
+                Some(v)
             }
             8 => {
                 // timestamp: 8-byte big-endian; we don't use it
@@ -180,7 +180,7 @@ fn parse_headers(mut section: &[u8]) -> Result<(String, String)> {
                     return Err(Error::Protocol("event-stream: truncated timestamp".into()));
                 }
                 rest = &rest[8..];
-                String::new()
+                None
             }
             t => {
                 let size = match t {
@@ -202,12 +202,21 @@ fn parse_headers(mut section: &[u8]) -> Result<(String, String)> {
                     ));
                 }
                 rest = &rest[size..];
-                String::new()
+                None
             }
         };
-        match name.as_str() {
-            ":event-type" => event_type = value,
-            ":message-type" => message_type = value,
+        match name {
+            b":event-type" => {
+                event_type = value_bytes
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default();
+            }
+            b":message-type" => {
+                message_type = value_bytes
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default();
+            }
+            b":exception-type" | b":error-code" | b":error-message" => {}
             _ => {}
         }
         section = rest;
