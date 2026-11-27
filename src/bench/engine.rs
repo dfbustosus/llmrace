@@ -33,6 +33,41 @@ fn backoff(attempt: usize, retry_after: Option<Duration>) -> Duration {
     Duration::from_millis(millis)
 }
 
+const MAX_ANSWER_BYTES: usize = 1024 * 1024;
+const MAX_TOOL_ARGS_BYTES: usize = 1024 * 1024;
+const MAX_ITL_GAPS: usize = 65_536;
+
+fn push_capped(buf: &mut String, s: &str, max_bytes: usize) {
+    if buf.len() >= max_bytes {
+        return;
+    }
+    let remaining = max_bytes - buf.len();
+    if s.len() <= remaining {
+        buf.push_str(s);
+    } else {
+        let mut end = remaining;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        buf.push_str(&s[..end]);
+    }
+}
+
+async fn sleep_stoppable(dur: Duration, stop: &std::sync::atomic::AtomicBool) -> bool {
+    let end = tokio::time::Instant::now() + dur;
+    let step = Duration::from_millis(100);
+    loop {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= end {
+            return true;
+        }
+        tokio::time::sleep(step.min(end - now)).await;
+    }
+}
+
 /// Spawns a benchmark lane as an independent task.
 ///
 /// Returns the task handle yielding the final [`LaneSummary`] plus a receiver
@@ -72,8 +107,23 @@ pub fn spawn_lane_stoppable(
     mpsc::Receiver<LaneUpdate>,
 ) {
     let (tx, rx) = mpsc::channel();
+    let handle = spawn_lane_with_sender(client, spec, model, config, stop, Some(tx));
+    (handle, rx)
+}
+
+/// Shared lane spawner allowing callers (such as `Race::spawn` or the TUI)
+/// to pass a single shared `mpsc::Sender` directly — or `None` when no live
+/// progress consumer is attached — avoiding per-lane forwarder threads.
+pub(crate) fn spawn_lane_with_sender(
+    client: reqwest::Client,
+    spec: ProviderSpec,
+    model: String,
+    config: BenchConfig,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    tx: Option<mpsc::Sender<LaneUpdate>>,
+) -> tokio::task::JoinHandle<LaneSummary> {
     let model_label: Arc<str> = Arc::from(model.as_str());
-    let handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         let mut summary = LaneSummary {
             name: spec.id.to_string(),
             model: model.clone(),
@@ -87,10 +137,11 @@ pub fn spawn_lane_stoppable(
             tool_task: Some(config.tool_task.clone()),
             price_book: config.price_book.clone(),
         };
-        let total_rounds = config.warmup + config.runs;
+        let total_rounds = config.warmup.saturating_add(config.runs);
         let deadline = config
             .duration_secs
             .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs(secs));
+        let mut sent_finished = false;
         for round in 0..total_rounds {
             if stop.load(std::sync::atomic::Ordering::Relaxed) && round >= config.warmup {
                 break;
@@ -117,7 +168,8 @@ pub fn spawn_lane_stoppable(
                     text: prompt,
                     probe,
                 },
-                &tx,
+                &stop,
+                tx.as_ref(),
             )
             .await;
             match outcome {
@@ -132,19 +184,25 @@ pub fn spawn_lane_stoppable(
                     }
                 }
                 Err(e) => {
-                    let _ = tx.send(LaneUpdate {
-                        provider: Arc::clone(&spec.id),
-                        variant: config.variant.clone(),
-                        model: Some(Arc::clone(&model_label)),
-                        tokens: 0,
-                        elapsed_ms: 0.0,
-                        ttfb_ms: None,
-                        finished: round + 1 == total_rounds,
-                        error: Some(e.message.clone()),
-                        server_ms: None,
-                        last_token: None,
-                        ratelimit: None,
-                    });
+                    let is_last_failure = round + 1 == total_rounds && summary.runs.is_empty();
+                    if let Some(tx) = &tx {
+                        let _ = tx.send(LaneUpdate {
+                            provider: Arc::clone(&spec.id),
+                            variant: config.variant.clone(),
+                            model: Some(Arc::clone(&model_label)),
+                            tokens: 0,
+                            elapsed_ms: 0.0,
+                            ttfb_ms: None,
+                            finished: is_last_failure,
+                            error: Some(e.message.clone()),
+                            server_ms: None,
+                            last_token: None,
+                            ratelimit: None,
+                        });
+                        if is_last_failure {
+                            sent_finished = true;
+                        }
+                    }
                     if counted {
                         summary.retry_attempts +=
                             e.requests.iter().map(RequestOutcome::retries).sum::<u64>();
@@ -159,43 +217,48 @@ pub fn spawn_lane_stoppable(
                 .last()
                 .map(|failure| failure.message.clone())
                 .or_else(|| Some("no successful rounds".to_string()));
-            if summary.failures.is_empty() {
+            if !sent_finished {
+                if let Some(tx) = &tx {
+                    let _ = tx.send(LaneUpdate {
+                        provider: Arc::from(summary.name.as_str()),
+                        variant: config.variant.clone(),
+                        model: Some(Arc::clone(&model_label)),
+                        tokens: 0,
+                        elapsed_ms: 0.0,
+                        ttfb_ms: None,
+                        finished: true,
+                        error: summary.error.clone(),
+                        server_ms: None,
+                        last_token: None,
+                        ratelimit: None,
+                    });
+                }
+            }
+            return summary;
+        }
+        if !sent_finished {
+            if let Some(tx) = &tx {
                 let _ = tx.send(LaneUpdate {
                     provider: Arc::from(summary.name.as_str()),
                     variant: config.variant.clone(),
                     model: Some(Arc::clone(&model_label)),
-                    tokens: 0,
-                    elapsed_ms: 0.0,
-                    ttfb_ms: None,
+                    tokens: summary.mean_tokens() as u64,
+                    elapsed_ms: summary.mean_total_ms(),
+                    ttfb_ms: Some(summary.mean_ttfb_ms()),
                     finished: true,
-                    error: summary.error.clone(),
-                    server_ms: None,
+                    error: None,
+                    server_ms: summary.median_server_ms(),
                     last_token: None,
-                    ratelimit: None,
+                    ratelimit: summary
+                        .runs
+                        .iter()
+                        .rev()
+                        .find_map(|r| r.ratelimit_remaining.clone()),
                 });
             }
-            return summary;
         }
-        let _ = tx.send(LaneUpdate {
-            provider: Arc::from(summary.name.as_str()),
-            variant: config.variant.clone(),
-            model: Some(Arc::clone(&model_label)),
-            tokens: summary.mean_tokens() as u64,
-            elapsed_ms: summary.mean_total_ms(),
-            ttfb_ms: Some(summary.mean_ttfb_ms()),
-            finished: true,
-            error: None,
-            server_ms: summary.median_server_ms(),
-            last_token: None,
-            ratelimit: summary
-                .runs
-                .iter()
-                .rev()
-                .find_map(|r| r.ratelimit_remaining.clone()),
-        });
         summary
-    });
-    (handle, rx)
+    })
 }
 
 /// What one round sends: the workload prompt, or a warmup connection probe.
@@ -211,7 +274,8 @@ async fn run_round(
     model: &str,
     config: &BenchConfig,
     prompt: RoundPrompt<'_>,
-    progress: &mpsc::Sender<LaneUpdate>,
+    stop: &Arc<std::sync::atomic::AtomicBool>,
+    progress: Option<&mpsc::Sender<LaneUpdate>>,
 ) -> Result<RunMetrics, RoundFailure> {
     let started = Instant::now();
     let RoundPrompt {
@@ -228,9 +292,11 @@ async fn run_round(
             sampling.system = Some(system);
         }
         if probe {
-            // A connection probe carries no system prompt or workload
-            // prefix, so warmup cannot prime the prefix cache for a prompt.
+            // A connection probe carries no system prompt, JSON output
+            // constraint, or tool schemas, so warmup cannot prime the prefix
+            // cache or trigger HTTP 400s on minimal "ping" prompts.
             sampling.system = None;
+            sampling.json_output = None;
         }
         let job = RequestJob {
             client: client.clone(),
@@ -239,20 +305,42 @@ async fn run_round(
             model_label: Arc::clone(&model_label),
             prompt: prompt.to_string(),
             prompt_id: prompt_id.to_string(),
-            messages: item.map(|item| item.messages.clone()).unwrap_or_default(),
-            expect: item.and_then(|item| item.expect.clone()),
+            messages: if probe {
+                Vec::new()
+            } else {
+                item.map(|item| item.messages.clone()).unwrap_or_default()
+            },
+            expect: if probe {
+                None
+            } else {
+                item.and_then(|item| item.expect.clone())
+            },
             expect_match: item.map(|item| item.expect_match).unwrap_or_default(),
-            max_tokens: if probe { 1 } else { config.max_tokens },
+            max_tokens: if probe { 16 } else { config.max_tokens },
             timeout: Duration::from_secs(config.timeout_secs),
-            tools: config.tools || item.is_some_and(|item| item.tool.is_some()),
+            tools: if probe {
+                false
+            } else {
+                config.tools || item.is_some_and(|item| item.tool.is_some())
+            },
             tool_task: config.tool_task.clone(),
-            tool: item.and_then(|item| item.tool.clone()),
+            tool: if probe {
+                None
+            } else {
+                item.and_then(|item| item.tool.clone())
+            },
             variant_label: config.variant.clone(),
             sampling,
         };
-        let progress = progress.clone();
+        let progress = progress.cloned();
+        let stop = Arc::clone(stop);
         let retries = config.retries;
-        tasks.spawn(async move { (index, request_with_retries(job, retries, &progress).await) });
+        tasks.spawn(async move {
+            (
+                index,
+                request_with_retries(job, retries, &stop, progress.as_ref()).await,
+            )
+        });
     }
 
     let mut requests = Vec::new();
@@ -378,7 +466,8 @@ fn attempt_failure(error: &Error, prompt_id: &str, elapsed_ms: f64, attempts: u3
 async fn request_with_retries(
     job: RequestJob,
     retries: usize,
-    progress: &mpsc::Sender<LaneUpdate>,
+    stop: &std::sync::atomic::AtomicBool,
+    progress: Option<&mpsc::Sender<LaneUpdate>>,
 ) -> RequestOutcome {
     let started = Instant::now();
     let mut attempts = Vec::new();
@@ -394,7 +483,9 @@ async fn request_with_retries(
                 break;
             }
             Err(error) => {
-                let retry = attempts.len() < retries && error.is_retryable();
+                let retry = attempts.len() < retries
+                    && error.is_retryable()
+                    && !stop.load(std::sync::atomic::Ordering::Relaxed);
                 let mut failure = attempt_failure(
                     &error,
                     &job.prompt_id,
@@ -406,23 +497,27 @@ async fn request_with_retries(
                 if !retry {
                     break;
                 }
-                let _ = progress.send(LaneUpdate {
-                    provider: Arc::clone(&job.spec.id),
-                    variant: job.variant_label.clone(),
-                    model: Some(Arc::clone(&job.model_label)),
-                    tokens: 0,
-                    elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
-                    ttfb_ms: None,
-                    finished: false,
-                    error: Some(format!(
-                        "request failed, retrying ({} left): {error}",
-                        retries + 1 - attempts.len()
-                    )),
-                    server_ms: None,
-                    last_token: None,
-                    ratelimit: None,
-                });
-                tokio::time::sleep(backoff(attempts.len(), error.retry_after())).await;
+                if let Some(tx) = progress {
+                    let _ = tx.send(LaneUpdate {
+                        provider: Arc::clone(&job.spec.id),
+                        variant: job.variant_label.clone(),
+                        model: Some(Arc::clone(&job.model_label)),
+                        tokens: 0,
+                        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                        ttfb_ms: None,
+                        finished: false,
+                        error: Some(format!(
+                            "request failed, retrying ({} left): {error}",
+                            retries + 1 - attempts.len()
+                        )),
+                        server_ms: None,
+                        last_token: None,
+                        ratelimit: None,
+                    });
+                }
+                if !sleep_stoppable(backoff(attempts.len(), error.retry_after()), stop).await {
+                    break;
+                }
             }
         }
     }
@@ -457,7 +552,7 @@ struct RequestJob {
 /// Streams one completion, measuring TTFB, token gaps and usage.
 async fn single_request(
     job: RequestJob,
-    progress: &mpsc::Sender<LaneUpdate>,
+    progress: Option<&mpsc::Sender<LaneUpdate>>,
 ) -> crate::error::Result<RunMetrics> {
     let RequestJob {
         client,
@@ -515,10 +610,12 @@ async fn single_request(
     let mut stutters = 0u64;
     let mut arg_fragments: u64 = 0;
 
+    let sleep = tokio::time::sleep_until(deadline);
+    tokio::pin!(sleep);
     loop {
         let next = tokio::select! {
             biased;
-            _ = tokio::time::sleep_until(deadline) => {
+            _ = &mut sleep => {
                 return Err(Error::Stream(format!(
                     "{} ({model}): request timed out after {timeout:?} ({} tokens received)",
                     spec.id,
@@ -535,7 +632,7 @@ async fn single_request(
             ttfb = Some(now - start);
         }
         if let Some(fragment) = &event.tool_args {
-            tool_args.push_str(fragment);
+            push_capped(&mut tool_args, fragment, MAX_TOOL_ARGS_BYTES);
             // streamed argument fragments are delivered content: each
             // fragment is roughly one token on OpenAI-style streams, and
             // the characters back the estimate — without this, classic
@@ -546,7 +643,9 @@ async fn single_request(
         if let Some(t) = &event.token {
             if let Some(last) = last_token_at {
                 let gap_ms = (now - last).as_secs_f64() * 1000.0;
-                itl_gaps_ms.push(gap_ms);
+                if itl_gaps_ms.len() < MAX_ITL_GAPS {
+                    itl_gaps_ms.push(gap_ms);
+                }
                 if gap_ms > STUTTER_MS {
                     stutters += 1;
                 }
@@ -554,20 +653,24 @@ async fn single_request(
             last_token_at = Some(now);
             tokens += 1;
             chars += t.len() as u64;
-            answer.push_str(t);
-            let _ = progress.send(LaneUpdate {
-                provider: Arc::clone(&spec.id),
-                variant: variant_label.clone(),
-                model: Some(Arc::clone(&model_label)),
-                tokens,
-                elapsed_ms: (now - start).as_secs_f64() * 1000.0,
-                ttfb_ms: ttfb.map(|d| d.as_secs_f64() * 1000.0),
-                finished: false,
-                error: None,
-                server_ms: None,
-                last_token: Some(t.clone()),
-                ratelimit: None,
-            });
+            if expect.is_some() {
+                push_capped(&mut answer, t, MAX_ANSWER_BYTES);
+            }
+            if let Some(tx) = progress {
+                let _ = tx.send(LaneUpdate {
+                    provider: Arc::clone(&spec.id),
+                    variant: variant_label.clone(),
+                    model: Some(Arc::clone(&model_label)),
+                    tokens,
+                    elapsed_ms: (now - start).as_secs_f64() * 1000.0,
+                    ttfb_ms: ttfb.map(|d| d.as_secs_f64() * 1000.0),
+                    finished: false,
+                    error: None,
+                    server_ms: None,
+                    last_token: Some(t.clone()),
+                    ratelimit: None,
+                });
+            }
         }
         if let Some(n) = event.completion_tokens {
             usage = Some(n);
@@ -663,5 +766,47 @@ mod tests {
         assert!(later <= Duration::from_millis(1_600), "{later:?}");
         let capped = backoff(12, None);
         assert!(capped <= Duration::from_millis(8_000), "{capped:?}");
+    }
+
+    #[test]
+    fn push_capped_respects_utf8_boundaries_and_byte_cap() {
+        let mut buf = String::from("abc");
+        push_capped(&mut buf, "ééé", 6); // 'é' is 2 bytes; remaining is 3 bytes -> fits 1 'é' (2 bytes)
+        assert_eq!(buf, "abcé");
+        push_capped(&mut buf, "xyz", 5);
+        assert_eq!(buf, "abcé");
+    }
+
+    #[tokio::test]
+    async fn spawn_lane_stoppable_always_emits_finished_update_on_early_stop() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (handle, rx) = spawn_lane_stoppable(
+            reqwest::Client::new(),
+            ProviderSpec::mock(),
+            "mock-1".into(),
+            BenchConfig {
+                prompt: "hi".into(),
+                runs: 3,
+                warmup: 0,
+                ..BenchConfig::default()
+            },
+            stop,
+        );
+        let summary = handle.await.expect("lane task");
+        assert!(summary.runs.is_empty());
+        let updates: Vec<LaneUpdate> = rx.try_iter().collect();
+        assert!(
+            updates.iter().any(|u| u.finished),
+            "must emit a final finished:true update: {updates:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sleep_stoppable_exits_promptly_when_stopped() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let started = Instant::now();
+        let completed = sleep_stoppable(Duration::from_secs(30), &stop).await;
+        assert!(!completed);
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }
