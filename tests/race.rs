@@ -186,3 +186,77 @@ fn resolve_model_matches_the_cli_rule() {
     assert_eq!(resolve_model(&overrides, "ollama", "llama3.1"), "llama3.2");
     assert_eq!(resolve_model(&[], "groq", "llama-3.3-70b"), "llama-3.3-70b");
 }
+
+#[tokio::test]
+async fn warmup_mode_probe_changes_experiment_sha256() {
+    let same = Race::new([ProviderSpec::mock()])
+        .runs(1)
+        .warmup(1)
+        .run()
+        .await
+        .unwrap();
+    let probe = Race::new([ProviderSpec::mock()])
+        .runs(1)
+        .warmup(1)
+        .warmup_mode(llmrace::bench::WarmupMode::ConnectionProbe)
+        .run()
+        .await
+        .unwrap();
+    let same_json: serde_json::Value = serde_json::from_str(&same.json()).unwrap();
+    let probe_json: serde_json::Value = serde_json::from_str(&probe.json()).unwrap();
+    assert_eq!(same_json["experiment"]["warmup_mode"], "same-prompt");
+    assert_eq!(probe_json["experiment"]["warmup_mode"], "probe");
+    assert_ne!(
+        same_json["experiment_sha256"].as_str().unwrap(),
+        probe_json["experiment_sha256"].as_str().unwrap(),
+        "changing warmup_mode must change experiment_sha256"
+    );
+}
+
+#[tokio::test]
+async fn taskless_podium_omits_task_weight_from_header() {
+    let outcome = Race::new([ProviderSpec::mock(), ProviderSpec::mock()])
+        .runs(1)
+        .warmup(0)
+        .winner(llmrace::score::Weights::default())
+        .run()
+        .await
+        .unwrap();
+    let podium = outcome.podium();
+    assert!(podium.contains("mock-1"), "{podium}");
+    assert!(
+        !podium.contains("/ task 40"),
+        "taskless podium must not print unused task weight: {podium}"
+    );
+}
+
+#[tokio::test]
+async fn gate_policy_fail_on_inconclusive_works_through_race_outcome() {
+    let outcome = Race::new([ProviderSpec::mock()])
+        .runs(1)
+        .warmup(0)
+        .run()
+        .await
+        .unwrap();
+    let baseline = llmrace::regression::BaselineReport::from_json_str(
+        r#"{"providers":[{"provider":"mock","model":"mock-1","mean_total_ms":10000,"p95_total_ms":1,"mean_ttfb_ms":10000,"mean_tokens_per_sec":0.001}]}"#,
+    )
+    .unwrap();
+    let policy = GatePolicy {
+        fail_on_inconclusive: true,
+        ..GatePolicy::default()
+    };
+    let gate = outcome.gate(&baseline, policy);
+    assert!(policy.fail_on_inconclusive);
+    assert!(gate.gate_failed_with_policy(policy.require_significance, policy.fail_on_inconclusive));
+    let lenient = GatePolicy {
+        require_significance: true,
+        fail_on_inconclusive: false,
+        ..GatePolicy::default()
+    };
+    assert!(gate.inconclusive(lenient.require_significance));
+    assert!(
+        !gate.gate_failed_with_policy(lenient.require_significance, lenient.fail_on_inconclusive)
+    );
+    assert!(gate.gate_failed_with_policy(lenient.require_significance, true));
+}
