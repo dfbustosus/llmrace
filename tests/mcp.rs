@@ -185,3 +185,79 @@ fn gate_tool_verdict_matches_the_cli_exit_rule() {
     assert!(text.contains("## Regression"), "{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn mcp_rejects_invalid_parameters() {
+    let dir = std::env::temp_dir().join(format!("llmrace-mcp-invalid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let baseline = dir.join("baseline.json");
+    std::fs::write(
+        &baseline,
+        r#"{"providers":[{"provider":"mock","model":"mock-1"}]}"#,
+    )
+    .unwrap();
+
+    let responses = talk(&[
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "llmrace_race", "arguments": {"providers": ["mock"], "runs": 0}}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "llmrace_race", "arguments": {"providers": ["mock"], "runs": -1}}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "llmrace_race", "arguments": {"providers": ["mock"], "runs": 999999}}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "llmrace_race", "arguments": {"providers": ["mock"], "warmup_mode": "bogus"}}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": {"name": "llmrace_gate", "arguments": {
+            "providers": ["mock"],
+            "baseline": baseline.to_string_lossy(),
+            "max_regression": "bad",
+        }}}),
+    ]);
+    assert_eq!(responses.len(), 5);
+    for (idx, expected_hint) in [
+        (0, "runs"),
+        (1, "runs"),
+        (2, "runs"),
+        (3, "warmup"),
+        (4, "max_regression"),
+    ] {
+        let result = &responses[idx]["result"];
+        assert_eq!(result["isError"], true, "case {idx}: {result}");
+        let msg = result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(
+            msg.contains(expected_hint),
+            "case {idx} should mention '{expected_hint}': {msg}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn race_tool_supports_reproducible_probe_and_concurrency() {
+    let responses = talk(&[
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "llmrace_race", "arguments": {
+            "providers": ["mock"],
+            "runs": 1,
+            "warmup": 1,
+            "reproducible": true,
+            "warmup_mode": "probe",
+            "concurrency": 2,
+        }}}),
+    ]);
+    assert_eq!(responses.len(), 2);
+    let result = &responses[1]["result"];
+    assert_eq!(result["isError"], false, "{result}");
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("# 🏁 llmrace report"), "{text}");
+    assert!(text.contains("mock-1"), "{text}");
+    assert!(
+        text.contains("- **Sampling**: temperature 0, top_p 1, seed 0"),
+        "reproducible sampling note should appear in report: {text}"
+    );
+}
