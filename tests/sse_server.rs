@@ -217,8 +217,11 @@ async fn warmup_probe_sends_ping_without_priming_the_workload() {
         runs: 2,
         warmup: 1,
         warmup_mode: llmrace::bench::WarmupMode::ConnectionProbe,
+        tools: true,
+        tool_task: "weather".into(),
         sampling: llmrace::provider::Sampling {
             system: Some("Be brief.".into()),
+            json_output: Some(llmrace::provider::JsonOutput::Object),
             ..llmrace::provider::Sampling::default()
         },
         workload: vec![llmrace::workload::WorkloadPrompt::text("a", "one")],
@@ -233,7 +236,17 @@ async fn warmup_probe_sends_ping_without_priming_the_workload() {
     assert_eq!(bodies.len(), 3);
     let warmup: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
     assert_eq!(warmup["messages"][0]["content"], "ping");
-    assert_eq!(warmup["max_tokens"], 1);
+    assert_eq!(warmup["max_tokens"], 16);
+    assert!(
+        warmup.get("tools").is_none(),
+        "the probe omits tool schemas: {}",
+        bodies[0]
+    );
+    assert!(
+        warmup.get("response_format").is_none(),
+        "the probe omits response_format: {}",
+        bodies[0]
+    );
     assert!(
         !bodies[0].contains("Be brief"),
         "the probe carries no system prompt: {}",
@@ -242,6 +255,12 @@ async fn warmup_probe_sends_ping_without_priming_the_workload() {
     let measured: serde_json::Value = serde_json::from_str(&bodies[1]).unwrap();
     assert_eq!(measured["messages"][0]["content"], "Be brief.");
     assert_eq!(measured["messages"][1]["content"], "one");
+    assert!(
+        measured.get("tools").is_some(),
+        "measured rounds carry configured tools: {}",
+        bodies[1]
+    );
+    assert_eq!(measured["response_format"]["type"], "json_object");
 }
 
 #[tokio::test]
