@@ -1,7 +1,7 @@
 //! Benchmark engine: runs rounds of concurrent streaming requests per
 //! provider and aggregates latency, throughput and token statistics.
 
-mod engine;
+pub(crate) mod engine;
 mod metrics;
 mod summary;
 
