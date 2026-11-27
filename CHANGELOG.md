@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-11-27
+
+Security hardening, wire-protocol fidelity, TUI/concurrency reliability, MCP/library parity, and release-pipeline hygiene.
+
+### Added
+
+- Public library additions (additive minor release):
+  - `race::DEFAULT_PROMPT` shared by the CLI, MCP server, and library callers
+  - `Race::warmup_mode(WarmupMode)` builder method for library and MCP callers
+  - `GatePolicy.fail_on_inconclusive` (plus `Default` and `GatePolicy::failed`) — additive public struct field
+  - `ProviderComparison.variant` — additive public struct field identifying regressed sweep variants
+  - `Tui::is_all_done()` for distinguishing completed TUI sessions from user-interrupted exits
+  - `util::xml_escape`, `util::md_escape_cell`, and `util::redact_url` helpers
+- MCP `llmrace_race` and `llmrace_gate` parity options: `reproducible`, `system`, `tools`, `concurrency`, `warmup_mode`, `retries`, `timeout_secs`, and `json_output`
+- Built-in pricing coverage for `openai-responses/*` (inheriting `openai/*`), `vertex/*` (inheriting `gemini/*`), DeepSeek prefix cache-hit discounts (`prompt_cache_hit_tokens`), `openai/o3`, `openai/o3-mini`, `openai/o4-mini`, `anthropic/claude-opus-4-5`, and `anthropic/claude-opus-4-6`
+- Complete Draft 2020-12 JSON Schema definitions in `docs/schema.json` for `providers[].runs[]`, `providers[].failures[]`, nested `requests[].attempts[]`, and `regression.inconclusive`
+
+### Fixed
+
+- **Security & untrusted-input hardening**:
+  - Eliminated OS command/script injection in `notify::desktop_notification` across macOS (`osascript` `on run argv`), Linux (`notify-send --`), and Windows (static PowerShell reading environment variables)
+  - Eliminated remote panic in `Retry-After` float parsing (`Duration::try_from_secs_f64` capped at 30s)
+  - Dispatched Bedrock strictly on `spec.wire == Wire::Bedrock` (stopping accidental AWS SigV4 signing against non-Bedrock `bedrock-runtime.*` URLs) and validated AWS/GCP/Azure URL segments against a strict allowlist
+  - Disabled automatic HTTP redirects on `benchmark_client` and marked auth headers sensitive so custom API keys cannot leak across redirects; redacted secrets in `Debug` impls (`AwsCredentials`, `SignedHeaders`, `ServiceAccount`, `CachedToken`, `RequestAuth`), `reqwest::Error::without_url()`, and `--alert-test` / Pushgateway logs
+  - Eliminated O(N²) scanning in `SseParser::feed` and `BedrockStream`, capped HTTP response/error reads, capped per-request `answer`/`tool_args`/`itl_gaps_ms` buffers, bounded MCP stdin lines (1 MiB), provider arrays (64), numeric ranges, and regular-file reads (10 MiB), and sanitized `--suite` entry filenames against path traversal
+  - Hardened JUnit XML (stripping illegal XML 1.0 control chars), Markdown reports/tables, Prometheus non-finite floats, and TUI terminal strings; replaced `partial_cmp` sorting with `f64::total_cmp` and removed the last runtime `.expect()` lock call
+- **Wire protocols & measurement integrity**:
+  - Omitted `top_p` when `temperature` is set on Anthropic and Bedrock Claude models so `--reproducible` no longer triggers HTTP 400
+  - Added Cohere v2 `tool-call-delta` argument decoding and fixed Cohere `--response-schema` wire payload (`{"type": "json_object", "schema": ...}`)
+  - Iterated all Gemini/Vertex response `parts` while skipping `"thought": true` reasoning parts from visible output/TTFT, and handled `Wire::Vertex` directly in `decode_payload` and `SseStream`
+  - Fixed `list_models` for Anthropic (`/v1/models`), Vertex (async GCP OAuth bearer token), and Azure (`AuthKind::ApiKeyHeader`)
+  - Updated `--warmup-mode probe` to use `max_tokens: 16` and strip `json_output`/`messages`/`tools`/`tool`/`expect` for OpenAI Responses and structured-output compatibility
+  - Allowed standard JSON Schema annotation keywords (`description`, `title`, `$schema`, `$comment`, `default`) and whole-float integers in `tools::check_schema` / `value_matches_schema`
+  - Fixed concurrent partial-failure goodput (`c > 1`), separately-billed Gemini `thinking_ms_estimate`, mixed-workload `task_pass`, custom workload `tool_validity`, non-reasoning model `reasoning_tokens` fallback, directional Welch t-test gating, failed-baseline handling, NaN-safe scoring (`score_group`), and `recommend` failure/unit consistency
+- **Async reliability, TUI, SQLite & CLI parity**:
+  - Fixed TUI hang on early stop/disconnect, added `Ctrl+C` quit handling in raw mode, fixed repeat `Tui::run` terminal restore, eliminated TUI exit TOCTOU race, and propagated quit to stop running lanes
+  - Retried Anthropic HTTP 529 and Cloudflare 520–524 responses; classified reqwest timeouts reliably; keyed GCP OAuth token cache per service account with singleflight async refresh and `spawn_blocking` RSA signing
+  - Hardened SQLite with `busy_timeout(5s)`, WAL mode, `BEGIN IMMEDIATE`, `PRAGMA table_info` schema migrations, `ORDER BY timestamp_unix, rowid`, and non-negative clamps; fixed `history::append` for bare filenames
+  - Fixed sweep podiums in Markdown/HTML reports, unified `--ramp` goodput peaks & connection-pool sizing, preserved failing `--suite` lane tables & per-entry validation, wrote reports and `--prom-output` atomically, replaced per-lane forwarder threads in `Race::spawn`, and deduplicated `Ctrl+C` listeners via `SignalGuard`
+- **CI, Docker, fuzzing & release hygiene**:
+  - Eliminated shell injection in `probe.yml`, scoped least-privilege workflow `permissions`, pinned `twine==6.1.0` with `twine check`, fixed `docker.yml` checkout `ref:`, ran non-root `USER 65532:65532` in Dockerfiles, enabled default-feature doc-tests in `ci.yml`, isolated test temp directories, aligned `RELEASE.md`/`docs/release.md`, and expanded `sse_parser` fuzz chunking
+
 ## [1.39.0] - 2026-11-26
 
 Measurement integrity, consistent gates, and reproducible execution records.
