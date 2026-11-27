@@ -1,10 +1,12 @@
 //! Continuous monitoring: re-run the race on an interval and alert on
 //! degradations against a rolling baseline.
 
-use crate::bench::{spawn_lane, LaneSummary};
+use crate::bench::LaneSummary;
 use crate::provider::ProviderSpec;
 use crate::stats::Sample;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Tuning for [`watch`].
@@ -170,26 +172,56 @@ where
     let mut streaks: BTreeMap<(String, &'static str), usize> = BTreeMap::new();
     let limit = config.rounds.unwrap_or(usize::MAX);
     let mut round = 0usize;
+    let lane_stop = Arc::new(AtomicBool::new(false));
 
     while round < limit {
-        if stop() {
+        if lane_stop.load(Ordering::Relaxed) || stop() {
+            lane_stop.store(true, Ordering::Relaxed);
             break;
         }
         round += 1;
-        let mut handles = Vec::new();
+        let mut handles: Vec<(String, String, tokio::task::JoinHandle<LaneSummary>)> =
+            Vec::with_capacity(lanes.len());
         for (spec, model) in &lanes {
-            let (handle, _progress) = spawn_lane(
+            let handle = crate::bench::engine::spawn_lane_with_sender(
                 client.clone(),
                 spec.clone(),
                 model.clone(),
                 config.bench.clone(),
+                Arc::clone(&lane_stop),
+                None,
             );
-            handles.push(handle);
+            handles.push((spec.id.to_string(), model.clone(), handle));
         }
-        let mut summaries = Vec::new();
-        for h in handles {
-            if let Ok(s) = h.await {
-                summaries.push(s);
+        let mut summaries = Vec::with_capacity(handles.len());
+        let poll_step = Duration::from_millis(100);
+        let mut poll_tick =
+            tokio::time::interval_at(tokio::time::Instant::now() + poll_step, poll_step);
+        poll_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        for (name, model, mut handle) in handles {
+            let res = loop {
+                tokio::select! {
+                    res = &mut handle => break res,
+                    _ = poll_tick.tick(), if !lane_stop.load(Ordering::Relaxed) => {
+                        if stop() {
+                            lane_stop.store(true, Ordering::Relaxed);
+                        }
+                    }
+                }
+            };
+            match res {
+                Ok(s) => summaries.push(s),
+                Err(e) => summaries.push(LaneSummary {
+                    name,
+                    model,
+                    error: Some(format!("lane task failed: {e}")),
+                    prompt: config.bench.prompt.clone(),
+                    concurrency: config.bench.concurrency,
+                    variant: config.bench.variant.as_ref().map(|v| v.to_string()),
+                    tool_task: Some(config.bench.tool_task.clone()),
+                    price_book: config.bench.price_book.clone(),
+                    ..LaneSummary::default()
+                }),
             }
         }
 
@@ -214,39 +246,27 @@ where
                 streak_of(&mut streaks, &key, "p95", false);
                 continue;
             }
-            let ttfb_hist = history.get(&key).cloned().unwrap_or_default();
-            let ttfb_streak = streak_of(
-                &mut streaks,
+            let ttfb_hist = history.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+            let ttfb_degraded = degrade_check(
+                round,
                 &key,
                 "ttfb",
-                degrade_check(
-                    round,
-                    &key,
-                    "ttfb",
-                    &ttfb_hist,
-                    s.mean_ttfb_ms(),
-                    config.max_regression_pct,
-                )
-                .is_some(),
+                ttfb_hist,
+                s.mean_ttfb_ms(),
+                config.max_regression_pct,
             );
+            let ttfb_streak = streak_of(&mut streaks, &key, "ttfb", ttfb_degraded.is_some());
             if ttfb_streak == config.alert_rounds.max(1) {
-                if let Some(alert) = degrade_check(
-                    round,
-                    &key,
-                    "ttfb",
-                    &ttfb_hist,
-                    s.mean_ttfb_ms(),
-                    config.max_regression_pct,
-                ) {
+                if let Some(alert) = ttfb_degraded {
                     alerts.push(alert);
                 }
             }
-            let p95_hist = p95_history.get(&key).cloned().unwrap_or_default();
+            let p95_hist = p95_history.get(&key).map(Vec::as_slice).unwrap_or(&[]);
             let p95_degraded = degrade_check(
                 round,
                 &key,
                 "p95",
-                &p95_hist,
+                p95_hist,
                 s.p95_total_ms(),
                 config.max_regression_pct,
             );
@@ -272,10 +292,14 @@ where
         }
         report.rounds.push(summaries);
 
-        if round < limit && !stop() {
+        if round < limit && !lane_stop.load(Ordering::Relaxed) && !stop() {
             let started = std::time::Instant::now();
             let interval = Duration::from_secs(config.every_secs);
-            while started.elapsed() < interval && !stop() {
+            while started.elapsed() < interval {
+                if lane_stop.load(Ordering::Relaxed) || stop() {
+                    lane_stop.store(true, Ordering::Relaxed);
+                    break;
+                }
                 tokio::time::sleep(
                     interval
                         .saturating_sub(started.elapsed())
