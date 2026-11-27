@@ -33,6 +33,7 @@ jobs:
           git diff --no-index --exit-code docs/schema.json schema-check.json
           rm schema-check.json
       - run: cargo test --locked --all-targets
+      - run: cargo test --locked --doc
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -56,7 +57,7 @@ jobs:
       - run: cargo doc --locked --all-features --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
-      - run: cargo run -- mock --no-tui -n 1 --warmup 0 --out report.md --json --csv
+      - run: cargo run --locked --features sqlite -- mock --no-tui -n 1 --warmup 0 --out report.md --json --csv
   race-gate:
     name: Mock task-success gate
     runs-on: ubuntu-latest
@@ -79,15 +80,15 @@ jobs:
               json.dumps({"id": "mock", "prompt": "hi", "expect": "nope"}) + "\n"
           )
           PY
-          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+          cargo run --locked --quiet -- mock --no-tui -n 2 --warmup 0 \
             --workload gate/pass.jsonl --json --out gate/pass.md
-          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+          cargo run --locked --quiet -- mock --no-tui -n 2 --warmup 0 \
             --workload gate/pass.jsonl \
             --baseline gate/pass.json \
             --max-regression 15 \
             --require-significance \
             --json --out gate/pass-again.md
-          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+          cargo run --locked --quiet -- mock --no-tui -n 2 --warmup 0 \
             --workload gate/fail.jsonl --json --out gate/fail.md
           python3 - <<'PY'
           import json
@@ -102,7 +103,7 @@ jobs:
           Path("gate/was-correct.json").write_text(json.dumps(doc))
           PY
           set +e
-          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+          cargo run --locked --quiet -- mock --no-tui -n 2 --warmup 0 \
             --workload gate/fail.jsonl \
             --baseline gate/was-correct.json \
             --max-regression 15 \
@@ -112,7 +113,7 @@ jobs:
           set -e
           test "$code" -ne 0
           grep -q "task success" gate/dropped.txt
-          cargo run --quiet -- mock --no-tui -n 2 --warmup 0 \
+          cargo run --locked --quiet -- mock --no-tui -n 2 --warmup 0 \
             --workload gate/fail.jsonl \
             --baseline gate/fail.json \
             --max-regression 15 \
