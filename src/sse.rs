@@ -15,6 +15,9 @@ pub struct SseParser {
     /// Start of the unconsumed region: bytes before it belong to blocks
     /// already returned. Avoids an O(n) drain per block.
     start: usize,
+    /// Offset up to which `buf` has already been scanned without finding a
+    /// separator. Always satisfies `self.start <= self.scanned <= self.buf.len()`.
+    scanned: usize,
 }
 
 impl SseParser {
@@ -33,7 +36,8 @@ impl SseParser {
     /// unconsumed buffer would exceed [`SseParser::MAX_BUFFER_BYTES`] without
     /// a separator — a hardening bound against hostile or broken streams.
     pub fn feed(&mut self, bytes: &[u8]) -> crate::error::Result<Vec<String>> {
-        if self.buf.len() - self.start + bytes.len() > Self::MAX_BUFFER_BYTES {
+        let unconsumed = self.buf.len().saturating_sub(self.start);
+        if unconsumed.saturating_add(bytes.len()) > Self::MAX_BUFFER_BYTES {
             return Err(crate::error::Error::Protocol(format!(
                 "sse buffer exceeded {} bytes without a separator",
                 Self::MAX_BUFFER_BYTES
@@ -41,12 +45,16 @@ impl SseParser {
         }
         self.buf.extend_from_slice(bytes);
         let mut blocks = Vec::new();
+        // A separator is at most 4 bytes (`\r\n\r\n`), so a newly completed
+        // separator can start at most 3 bytes before the prior scan horizon.
+        let mut scan_from = self.scanned.saturating_sub(3).max(self.start);
         loop {
-            let window = &self.buf[self.start..];
+            let window = &self.buf[scan_from..];
             let Some(rel) = find_separator(window) else {
+                self.scanned = self.buf.len();
                 break;
             };
-            let pos = self.start + rel;
+            let pos = scan_from + rel;
             let sep_len = if self.buf[pos..].starts_with(b"\r\n\r\n") {
                 4
             } else {
@@ -57,6 +65,8 @@ impl SseParser {
                 blocks.push(text);
             }
             self.start = end;
+            self.scanned = end;
+            scan_from = end;
         }
         self.compact();
         Ok(blocks)
@@ -67,6 +77,7 @@ impl SseParser {
         if self.start >= self.buf.len() {
             self.buf.clear();
             self.start = 0;
+            self.scanned = 0;
             return Vec::new();
         }
         let block = &self.buf[self.start..];
@@ -76,6 +87,7 @@ impl SseParser {
         };
         self.buf.clear();
         self.start = 0;
+        self.scanned = 0;
         out
     }
 
@@ -85,8 +97,10 @@ impl SseParser {
         if self.start == self.buf.len() {
             self.buf.clear();
             self.start = 0;
+            self.scanned = 0;
         } else if self.start > 64 * 1024 {
             self.buf.drain(..self.start);
+            self.scanned = self.scanned.saturating_sub(self.start);
             self.start = 0;
         }
     }
@@ -135,4 +149,70 @@ pub fn parse_data_events(block: &str) -> Vec<&str> {
             line.strip_prefix("data:").map(|rest| rest.trim_start())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn one_byte_chunking_handles_lf_crlf_and_cr_separators() {
+        let stream = b"data: one\n\ndata: two\r\n\r\ndata: three\r\rdata: tail";
+        let mut parser = SseParser::new();
+        let mut blocks = Vec::new();
+        for b in stream {
+            blocks.extend(parser.feed(&[*b]).unwrap());
+        }
+        blocks.extend(parser.finish());
+        assert_eq!(
+            blocks,
+            vec!["data: one", "data: two", "data: three", "data: tail"]
+        );
+    }
+
+    #[test]
+    fn split_crlf_crlf_across_every_boundary() {
+        let payload = b"data: first\r\n\r\ndata: second\r\n\r\n";
+        for split in 0..=payload.len() {
+            let mut parser = SseParser::new();
+            let mut blocks = parser.feed(&payload[..split]).unwrap();
+            blocks.extend(parser.feed(&payload[split..]).unwrap());
+            blocks.extend(parser.finish());
+            assert_eq!(
+                blocks,
+                vec!["data: first", "data: second"],
+                "failed at split={split}"
+            );
+        }
+    }
+
+    #[test]
+    fn cap_enforcement_rejects_unterminated_stream_over_limit() {
+        let mut parser = SseParser::new();
+        let chunk = vec![b'a'; 64 * 1024];
+        for _ in 0..(SseParser::MAX_BUFFER_BYTES / chunk.len()) {
+            assert!(parser.feed(&chunk).unwrap().is_empty());
+        }
+        let err = parser.feed(b"x").unwrap_err();
+        assert!(matches!(err, crate::error::Error::Protocol(_)));
+    }
+
+    #[test]
+    fn compaction_preserves_scan_offset_for_split_separator() {
+        let mut parser = SseParser::new();
+        // Push > 64 KiB of completed events plus a partial event with trailing `\r\n\r`.
+        let mut big = Vec::new();
+        let unit = b"data: 0123456789abcdef\n\n";
+        while big.len() <= 70 * 1024 {
+            big.extend_from_slice(unit);
+        }
+        let expected_count = big.len() / unit.len();
+        big.extend_from_slice(b"data: after-compact\r\n\r");
+        let first = parser.feed(&big).unwrap();
+        assert_eq!(first.len(), expected_count);
+        let second = parser.feed(b"\n").unwrap();
+        assert_eq!(second, vec!["data: after-compact"]);
+    }
 }
