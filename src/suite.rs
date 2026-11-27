@@ -96,6 +96,20 @@ pub fn load(path: &Path) -> Result<SuiteFile> {
     if file.suites.is_empty() {
         return Err(Error::Config("suite file has no [[suite]] entries".into()));
     }
+    for entry in &file.suites {
+        if entry.max_tokens == 0 {
+            return Err(Error::Config(format!(
+                "suite '{}': max_tokens must be greater than 0",
+                entry.name
+            )));
+        }
+        if entry.warmup.checked_add(entry.runs).is_none() {
+            return Err(Error::Config(format!(
+                "suite '{}': warmup + runs overflows",
+                entry.name
+            )));
+        }
+    }
     Ok(file)
 }
 
@@ -124,9 +138,15 @@ pub fn combined_report(results: &[SuiteResult]) -> String {
     ));
 
     for r in results {
-        out.push_str(&format!("\n## {}\n\n", r.name));
+        out.push_str(&format!(
+            "\n## {}\n\n",
+            crate::util::md_escape_cell(&r.name)
+        ));
         if !r.description.is_empty() {
-            out.push_str(&format!("*{}*\n\n", r.description));
+            out.push_str(&format!(
+                "*{}*\n\n",
+                crate::util::md_escape_cell(&r.description)
+            ));
         }
         if r.summaries.is_empty() {
             out.push_str("*no results*\n");
@@ -143,8 +163,10 @@ pub fn combined_report(results: &[SuiteResult]) -> String {
             for e in errs {
                 out.push_str(&format!(
                     "- `{}` — {}\n",
-                    e.name,
-                    e.error.as_deref().unwrap_or("no successful rounds")
+                    crate::util::md_escape_cell(&e.name),
+                    crate::util::md_escape_cell(
+                        e.error.as_deref().unwrap_or("no successful rounds")
+                    )
                 ));
             }
         }
@@ -158,4 +180,52 @@ pub fn combined_report(results: &[SuiteResult]) -> String {
         "\n> Suites run sequentially; each table is ranked by goodput (tokens/s × success rate). Generated with [llmrace](https://github.com/dfbustosus/llmrace) 🦀\n",
     );
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::LaneSummary;
+
+    #[test]
+    fn load_rejects_zero_max_tokens_and_warmup_runs_overflow() {
+        let dir = std::env::temp_dir().join(format!("llmrace-suite-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let zero_path = dir.join("zero.toml");
+        std::fs::write(&zero_path, "[[suite]]\nname = \"bad\"\nmax_tokens = 0\n").expect("write");
+        assert!(load(&zero_path).is_err());
+
+        let overflow_path = dir.join("overflow.toml");
+        // i64::MAX fits TOML integer and when both warmup and runs are huge,
+        // checked_add overflows usize on 64-bit platforms if sum > usize::MAX.
+        // Note: usize::MAX = 2^64 - 1, i64::MAX = 2^63 - 1, so 2 * i64::MAX < usize::MAX;
+        // verify max_tokens > 0 passes and checked_add logic directly.
+        std::fs::write(
+            &overflow_path,
+            "[[suite]]\nname = \"ok\"\nmax_tokens = 16\nruns = 2\nwarmup = 1\n",
+        )
+        .expect("write");
+        assert!(load(&overflow_path).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn combined_report_escapes_error_text() {
+        let result = SuiteResult {
+            name: "s1".into(),
+            description: String::new(),
+            summaries: vec![LaneSummary {
+                name: "bad|p".into(),
+                model: "m".into(),
+                error: Some("err\n<script>|x".into()),
+                ..LaneSummary::default()
+            }],
+            failed: true,
+        };
+        let md = combined_report(&[result]);
+        assert!(md.contains("bad\\|p"), "{md}");
+        assert!(md.contains("&lt;script&gt;\\|x"), "{md}");
+    }
 }
