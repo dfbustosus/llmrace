@@ -15,12 +15,21 @@ use rsa::PrivateKey;
 use serde::Deserialize;
 
 /// The parsed service-account key file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ServiceAccount {
     /// The service account's email (`client_email` in the JSON).
     pub client_email: String,
     /// PEM-encoded RSA private key (`private_key`).
     pub private_key: String,
+}
+
+impl std::fmt::Debug for ServiceAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceAccount")
+            .field("client_email", &self.client_email)
+            .field("private_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Loads (and caches) the service account from `GOOGLE_APPLICATION_CREDENTIALS`.
@@ -58,6 +67,14 @@ pub fn load_service_account() -> Result<ServiceAccount> {
     Ok(account)
 }
 
+/// Async wrapper around [`load_service_account`] that offloads blocking file
+/// I/O to Tokio's blocking pool so async worker threads are never stalled.
+pub(crate) async fn load_service_account_async() -> Result<ServiceAccount> {
+    tokio::task::spawn_blocking(load_service_account)
+        .await
+        .map_err(|e| Error::Stream(format!("loading service account task failed: {e}")))?
+}
+
 /// Base64url-encoded JWT parts.
 /// Base64url without padding (JWT standard encoding).
 fn b64(data: &[u8]) -> String {
@@ -82,6 +99,23 @@ fn b64(data: &[u8]) -> String {
     out
 }
 
+fn build_signing_input(account: &ServiceAccount, iat_unix: u64, ttl_secs: u64) -> Result<String> {
+    let header = serde_json::to_vec(&serde_json::json!({
+        "alg": "RS256",
+        "typ": "JWT",
+    }))
+    .map_err(|e| Error::Config(format!("encoding JWT header: {e}")))?;
+    let claims = serde_json::to_vec(&serde_json::json!({
+        "iss": account.client_email,
+        "scope": "https://www.googleapis.com/auth/cloud-platform",
+        "aud": "https://oauth2.googleapis.com/token",
+        "iat": iat_unix,
+        "exp": iat_unix.saturating_add(ttl_secs),
+    }))
+    .map_err(|e| Error::Config(format!("encoding JWT claims: {e}")))?;
+    Ok(format!("{}.{}", b64(&header), b64(&claims)))
+}
+
 /// Builds an RS256-signed JWT for the OAuth2 token grant.
 ///
 /// The claims follow the [service-account flow][1]:
@@ -90,14 +124,7 @@ fn b64(data: &[u8]) -> String {
 ///
 /// [1]: https://developers.google.com/identity/protocols/oauth2/service-account
 pub fn build_jwt(account: &ServiceAccount, iat_unix: u64, ttl_secs: u64) -> Result<String> {
-    let header = br#"{"alg":"RS256","typ":"JWT"}"#;
-    let claims = format!(
-        r#"{{"iss":"{}","scope":"https://www.googleapis.com/auth/cloud-platform","aud":"https://oauth2.googleapis.com/token","iat":{},"exp":{}}}"#,
-        account.client_email,
-        iat_unix,
-        iat_unix + ttl_secs
-    );
-    let signing_input = format!("{}.{}", b64(header), b64(claims.as_bytes()));
+    let signing_input = build_signing_input(account, iat_unix, ttl_secs)?;
 
     let key = PrivateKey::from_pkcs8_pem(&account.private_key)
         .map_err(|e| Error::Config(format!("parsing private key: {e}")))?;
@@ -112,8 +139,7 @@ pub fn build_jwt(account: &ServiceAccount, iat_unix: u64, ttl_secs: u64) -> Resu
 }
 
 /// A cached access token with its expiry.
-#[derive(Debug, Clone)]
-#[allow(dead_code)] // expiry drives the future token-cache path
+#[derive(Clone)]
 pub struct CachedToken {
     /// The bearer token.
     pub token: String,
@@ -121,37 +147,59 @@ pub struct CachedToken {
     pub expires_at: u64,
 }
 
+impl std::fmt::Debug for CachedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedToken")
+            .field("token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+fn is_token_fresh(cached: &CachedToken, now_unix: u64) -> bool {
+    cached.expires_at > now_unix.saturating_add(60)
+}
+
+fn cache_if_newer(
+    cache: &mut std::collections::HashMap<String, CachedToken>,
+    client_email: &str,
+    fresh: CachedToken,
+) {
+    let should_store = cache
+        .get(client_email)
+        .is_none_or(|existing| fresh.expires_at > existing.expires_at);
+    if should_store {
+        cache.insert(client_email.to_string(), fresh);
+    }
+}
+
 /// Returns a cached access token, refreshing it when absent or within
 /// 60 seconds of expiry. Google tokens are valid for one hour; without
 /// this, every streamed completion pays a ~500 ms token roundtrip.
 ///
-/// The cache is process-wide (a race fits comfortably in one token's
-/// lifetime); concurrent callers may briefly race on refresh, which is
-/// harmless — the loser's token is still valid.
+/// The cache is process-wide, keyed by service-account email, and guarded by
+/// an async mutex so concurrent callers coalesce into a single refresh without
+/// bleeding tokens across accounts.
 pub async fn token(
     client: &reqwest::Client,
     account: &ServiceAccount,
     now_unix: u64,
 ) -> Result<String> {
-    static CACHE: std::sync::OnceLock<std::sync::RwLock<Option<CachedToken>>> =
-        std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| std::sync::RwLock::new(None));
+    static CACHE: std::sync::OnceLock<
+        tokio::sync::Mutex<std::collections::HashMap<String, CachedToken>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
-    // fast path: read lock, token still fresh
-    if let Ok(guard) = cache.read() {
-        if let Some(cached) = guard.as_ref() {
-            if cached.expires_at > now_unix + 60 {
-                return Ok(cached.token.clone());
-            }
+    let mut guard = cache.lock().await;
+    if let Some(cached) = guard.get(&account.client_email) {
+        if is_token_fresh(cached, now_unix) {
+            return Ok(cached.token.clone());
         }
     }
 
-    // slow path: refresh under write lock
     let fresh = fetch_token(client, account, now_unix).await?;
     let token = fresh.token.clone();
-    if let Ok(mut guard) = cache.write() {
-        *guard = Some(fresh);
-    }
+    cache_if_newer(&mut guard, &account.client_email, fresh);
     Ok(token)
 }
 
@@ -162,7 +210,10 @@ pub async fn fetch_token(
     account: &ServiceAccount,
     iat_unix: u64,
 ) -> Result<CachedToken> {
-    let jwt = build_jwt(account, iat_unix, 3600)?;
+    let account_owned = account.clone();
+    let jwt = tokio::task::spawn_blocking(move || build_jwt(&account_owned, iat_unix, 3600))
+        .await
+        .map_err(|e| Error::Stream(format!("oauth2 jwt signing task failed: {e}")))??;
     let resp = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
@@ -171,20 +222,25 @@ pub async fn fetch_token(
         ])
         .send()
         .await
-        .map_err(|e| Error::Stream(format!("oauth2 token endpoint: {e}")))?;
+        .map_err(|e| Error::Stream(format!("oauth2 token endpoint: {}", e.without_url())))?;
     let status = resp.status();
-    let body: serde_json::Value = resp
-        .json()
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(super::request::parse_retry_after);
+    let raw = crate::util::read_body_capped(resp, 64 * 1024)
         .await
-        .map_err(|e| Error::Stream(format!("oauth2 response decode: {e}")))?;
+        .map_err(|e| Error::Stream(format!("oauth2 response read: {}", e.without_url())))?;
     if !status.is_success() {
         return Err(Error::Http {
             provider: "vertex".into(),
             status: status.as_u16(),
-            body: crate::util::truncate(&body.to_string(), 300),
-            retry_after: None,
+            body: crate::util::truncate(&raw, 300),
+            retry_after,
         });
     }
+    let body: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| Error::Stream(format!("oauth2 response decode: {e}")))?;
     let token = body
         .get("access_token")
         .and_then(|t| t.as_str())
@@ -195,7 +251,7 @@ pub async fn fetch_token(
         .unwrap_or(3600);
     Ok(CachedToken {
         token: token.to_string(),
-        expires_at: iat_unix + expires_in,
+        expires_at: iat_unix.saturating_add(expires_in),
     })
 }
 
@@ -307,6 +363,8 @@ mod extra_tests {
 
 #[cfg(test)]
 mod cache_tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
 
     #[test]
@@ -316,8 +374,92 @@ mod cache_tests {
             expires_at: 1000,
         };
         // at now=900 (100s before expiry): still fresh (>60s margin)
-        assert!(cached.expires_at > 900 + 60);
+        assert!(is_token_fresh(&cached, 900));
         // at now=950 (50s before expiry): stale (<60s margin, triggers refresh)
-        assert!(cached.expires_at <= 950 + 60);
+        assert!(!is_token_fresh(&cached, 950));
+        // saturating_add prevents overflow near u64::MAX
+        assert!(!is_token_fresh(&cached, u64::MAX));
+    }
+
+    #[test]
+    fn debug_redacts_private_key_and_access_token() {
+        let account = ServiceAccount {
+            client_email: "svc@proj.iam.gserviceaccount.com".into(),
+            private_key: "mock-private-key-material".into(),
+        };
+        let acct_dbg = format!("{account:?}");
+        assert!(acct_dbg.contains("svc@proj.iam.gserviceaccount.com"));
+        assert!(acct_dbg.contains("[REDACTED]"));
+        assert!(!acct_dbg.contains("mock-private-key-material"));
+
+        let cached = CachedToken {
+            token: "mock-bearer-token-value".into(),
+            expires_at: 4242,
+        };
+        let tok_dbg = format!("{cached:?}");
+        assert!(tok_dbg.contains("4242"));
+        assert!(tok_dbg.contains("[REDACTED]"));
+        assert!(!tok_dbg.contains("mock-bearer-token-value"));
+    }
+
+    #[test]
+    fn jwt_claims_json_escapes_special_client_email_and_saturates_expiry() {
+        let account = ServiceAccount {
+            client_email: "bad\"email\\with,\"role\":\"admin\"".into(),
+            private_key: String::new(),
+        };
+        let input = build_signing_input(&account, u64::MAX - 10, 3600).unwrap();
+        let parts: Vec<&str> = input.split('.').collect();
+        assert_eq!(parts.len(), 2);
+        let claims = b64_decode(parts[1]);
+        let v: serde_json::Value = serde_json::from_slice(&claims).unwrap();
+        assert_eq!(v["iss"], account.client_email);
+        assert!(v.get("role").is_none());
+        assert_eq!(v["iat"], u64::MAX - 10);
+        assert_eq!(v["exp"], u64::MAX);
+    }
+
+    #[test]
+    fn cache_isolates_accounts_and_only_overwrites_with_newer_expiry() {
+        let mut cache = std::collections::HashMap::new();
+        cache_if_newer(
+            &mut cache,
+            "a@proj.iam.gserviceaccount.com",
+            CachedToken {
+                token: "tok-a-1".into(),
+                expires_at: 2000,
+            },
+        );
+        cache_if_newer(
+            &mut cache,
+            "b@proj.iam.gserviceaccount.com",
+            CachedToken {
+                token: "tok-b-1".into(),
+                expires_at: 1500,
+            },
+        );
+        // Stale or equal expiry must not overwrite existing token.
+        cache_if_newer(
+            &mut cache,
+            "a@proj.iam.gserviceaccount.com",
+            CachedToken {
+                token: "tok-a-stale".into(),
+                expires_at: 2000,
+            },
+        );
+        assert_eq!(cache["a@proj.iam.gserviceaccount.com"].token, "tok-a-1");
+        assert_eq!(cache["b@proj.iam.gserviceaccount.com"].token, "tok-b-1");
+
+        // Strictly newer expiry updates that account only.
+        cache_if_newer(
+            &mut cache,
+            "a@proj.iam.gserviceaccount.com",
+            CachedToken {
+                token: "tok-a-2".into(),
+                expires_at: 3000,
+            },
+        );
+        assert_eq!(cache["a@proj.iam.gserviceaccount.com"].token, "tok-a-2");
+        assert_eq!(cache["b@proj.iam.gserviceaccount.com"].token, "tok-b-1");
     }
 }
