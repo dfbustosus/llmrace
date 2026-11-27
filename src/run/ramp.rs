@@ -1,10 +1,14 @@
 //! Saturation-curve mode: race at each concurrency level.
 
-use super::collect::race_collect;
+use super::collect::{race_collect, SignalGuard};
 use super::config::RunConfig;
-use anyhow::{Context, Result};
+use super::reports::write_atomic;
+use anyhow::Result;
 use llmrace::bench::LaneSummary;
 use std::fmt::Write as _;
+use std::path::Path;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 /// One `--ramp` level and its lane summaries.
 pub(crate) struct RampLevel {
@@ -13,6 +17,96 @@ pub(crate) struct RampLevel {
     /// Lane results at this level.
     pub summaries: Vec<LaneSummary>,
 }
+
+/// Aggregated saturation summary for one provider/model lane across ramp phases,
+/// shared by terminal, Markdown, JSON, and HTML outputs so peak goodput and
+/// post-peak degradation never drift between renderers.
+struct RampRow {
+    name: String,
+    model: String,
+    /// `(concurrency, mean_tps, goodput)` for each completed phase.
+    points: Vec<(usize, f64, f64)>,
+    peak_concurrency: usize,
+    peak_tps: f64,
+    peak_goodput: f64,
+    failure_rate_crosses_at: Option<usize>,
+    degraded: bool,
+}
+
+impl RampRow {
+    fn peak_label(&self) -> String {
+        if self.degraded {
+            format!(
+                "c={} ({:.1}) \u{2b07}",
+                self.peak_concurrency, self.peak_goodput
+            )
+        } else {
+            format!("c={} ({:.1})", self.peak_concurrency, self.peak_goodput)
+        }
+    }
+}
+
+fn build_ramp_rows(phases: &[RampLevel]) -> Vec<RampRow> {
+    let order: Vec<(String, String)> = phases
+        .first()
+        .map(|p| {
+            p.summaries
+                .iter()
+                .map(|s| (s.name.clone(), s.model.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut rows = Vec::with_capacity(order.len());
+    for (name, model) in order {
+        let mut points = Vec::with_capacity(phases.len());
+        let mut best: Option<(usize, f64, f64)> = None;
+        let mut failure_rate_crosses_at = None;
+        for phase in phases {
+            let lane = phase
+                .summaries
+                .iter()
+                .find(|s| s.name == name && s.model == model);
+            let tps = lane
+                .filter(|s| s.successful())
+                .map(|s| s.mean_tokens_per_sec())
+                .unwrap_or(0.0);
+            let goodput = lane
+                .filter(|s| s.successful())
+                .map(|s| s.goodput_tokens_per_sec())
+                .unwrap_or(0.0);
+            if best.is_none_or(|(_, _, b)| goodput > b) {
+                best = Some((phase.concurrency, tps, goodput));
+            }
+            if failure_rate_crosses_at.is_none()
+                && lane
+                    .and_then(|s| s.failure_rate())
+                    .is_some_and(|rate| rate > 0.05)
+            {
+                failure_rate_crosses_at = Some(phase.concurrency);
+            }
+            points.push((phase.concurrency, tps, goodput));
+        }
+        let (peak_concurrency, peak_tps, peak_goodput) = best.unwrap_or((1, 0.0, 0.0));
+        // Flag degradation when any higher concurrency drops >10% below peak goodput.
+        let degraded = peak_goodput > 0.0
+            && points
+                .iter()
+                .any(|&(c, _, g)| c > peak_concurrency && g < peak_goodput * 0.9);
+        rows.push(RampRow {
+            name,
+            model,
+            points,
+            peak_concurrency,
+            peak_tps,
+            peak_goodput,
+            failure_rate_crosses_at,
+            degraded,
+        });
+    }
+    rows
+}
+
 /// Parses a `--ramp` level list (`1,2,4,8`): values must be \u{2265} 1 and
 /// at least two distinct levels must remain after sorting and deduplication.
 pub(crate) fn parse_ramp_levels(spec: &str) -> anyhow::Result<Vec<usize>> {
@@ -36,7 +130,13 @@ pub(crate) fn parse_ramp_levels(spec: &str) -> anyhow::Result<Vec<usize>> {
 
 /// `--ramp`: races every provider at each concurrency level and renders the
 /// saturation curve. Returns the process exit code.
-pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
+pub(crate) async fn ramp_race(mut cfg: RunConfig, levels: &[usize]) -> Result<i32> {
+    let max_concurrency = levels.iter().copied().max().unwrap_or(1);
+    cfg.client = llmrace::provider::benchmark_client(
+        std::time::Duration::from_secs(cfg.bench.timeout_secs),
+        max_concurrency,
+    )?;
+
     if !cfg.quiet {
         cfg.status(format!(
             "\u{1f3c1} llmrace v{} ramp — {} providers \u{d7} levels {:?} ({} rounds each)",
@@ -59,19 +159,14 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     }
 
     let mut phases: Vec<RampLevel> = Vec::new();
-    // graceful interrupt across phases: SIGINT finishes the in-flight
-    // phase's rounds and skips the remaining levels
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    {
-        let stop = std::sync::Arc::clone(&stop);
-        tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            eprintln!("\n\u{23f9} interrupt received — finishing in-flight rounds, writing the curve so far…");
-        });
-    }
+    // Single Ctrl-C guard across all phases: SIGINT finishes the in-flight
+    // phase's rounds and skips remaining levels without leaking signal tasks.
+    let signal_guard = SignalGuard::install(
+        "\u{23f9} interrupt received — finishing in-flight rounds, writing the curve so far…",
+    );
+    let stop = signal_guard.flag();
     for (idx, level) in levels.iter().enumerate() {
-        if stop.load(std::sync::atomic::Ordering::Relaxed) && idx > 0 {
+        if stop.load(Ordering::Relaxed) && idx > 0 {
             break;
         }
         if !cfg.quiet {
@@ -83,122 +178,65 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
         }
         let mut bench = cfg.bench.clone();
         bench.concurrency = *level;
-        let summaries = race_collect(&cfg, Some(bench), true, std::sync::Arc::clone(&stop)).await?;
+        let summaries = race_collect(&cfg, Some(bench), true, Arc::clone(&stop)).await?;
         phases.push(RampLevel {
             concurrency: *level,
             summaries,
         });
     }
+    drop(signal_guard);
+
+    let completed_levels: Vec<usize> = phases.iter().map(|p| p.concurrency).collect();
+    let rows = build_ramp_rows(&phases);
 
     // curve table (terminal + markdown)
     let mut curve = String::from("| Provider |");
     let mut header = String::new();
-    for level in levels {
+    for level in &completed_levels {
         let _ = write!(header, " c={level} |");
     }
     curve.push_str(&header);
     curve.push_str(" peak |\n|---|");
-    for _ in levels {
+    for _ in &completed_levels {
         curve.push_str("---:|");
     }
     curve.push_str("---:|\n");
 
     let mut curve_term = format!("{:<20}", "Provider");
-    for level in levels {
+    for level in &completed_levels {
         let _ = write!(curve_term, " {:>10}", format!("c={level}"));
     }
     curve_term.push_str("      peak\n");
     curve_term.push_str(&"-".repeat(curve_term.len()));
     curve_term.push('\n');
 
-    // stable lane order from the first phase
-    let order: Vec<(String, String)> = phases
-        .first()
-        .map(|p| {
-            p.summaries
-                .iter()
-                .map(|s| (s.name.clone(), s.model.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut ramp_json: Vec<serde_json::Value> = Vec::new();
-    for (name, model) in &order {
-        let mut md_row = format!("| {name} |");
-        let mut term_row = format!("{:<20}", name);
-        let mut best: Option<(usize, f64)> = None;
+    let mut ramp_json: Vec<serde_json::Value> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let mut md_row = format!("| {} |", llmrace::util::md_escape_cell(&row.name));
+        let mut term_row = format!("{:<20}", row.name);
         let mut per_level = serde_json::Map::new();
-        for phase in &phases {
-            let lane = phase
-                .summaries
-                .iter()
-                .find(|s| s.name == *name && s.model == *model);
-            let tps = lane
-                .filter(|s| s.successful())
-                .map(|s| s.mean_tokens_per_sec())
-                .unwrap_or(0.0);
-            let goodput = lane
-                .filter(|s| s.successful())
-                .map(|s| s.goodput_tokens_per_sec())
-                .unwrap_or(0.0);
-            if best.is_none_or(|(_, b)| goodput > b) {
-                best = Some((phase.concurrency, goodput));
-            }
+        for &(concurrency, tps, _goodput) in &row.points {
             per_level.insert(
-                phase.concurrency.to_string(),
+                concurrency.to_string(),
                 serde_json::json!((tps * 10.0).round() / 10.0),
             );
             let _ = write!(md_row, " {tps:.1} |");
             let _ = write!(term_row, " {tps:>10.1}");
         }
-        let peak = best.unwrap_or((1, 0.0));
-        let crosses = phases.iter().find(|ph| {
-            ph.summaries
-                .iter()
-                .find(|s| s.name == *name && s.model == *model)
-                .and_then(|s| s.failure_rate())
-                .is_some_and(|rate| rate > 0.05)
-        });
-        // flag degradation: any later level >10% below peak
-        let degraded = phases.iter().any(|ph| {
-            ph.concurrency > peak.0
-                && ph
-                    .summaries
-                    .iter()
-                    .find(|s| s.name == *name && s.model == *model)
-                    .filter(|s| s.successful())
-                    .map(|s| s.goodput_tokens_per_sec())
-                    .is_some_and(|goodput| goodput < peak.1 * 0.9)
-        });
-        let peak_tps = phases
-            .iter()
-            .find(|ph| ph.concurrency == peak.0)
-            .and_then(|ph| {
-                ph.summaries
-                    .iter()
-                    .find(|s| s.name == *name && s.model == *model)
-            })
-            .filter(|s| s.successful())
-            .map(|s| s.mean_tokens_per_sec())
-            .unwrap_or(0.0);
-        let peak_note = if degraded {
-            format!("c={} ({:.1}) \u{2b07}", peak.0, peak.1)
-        } else {
-            format!("c={} ({:.1})", peak.0, peak.1)
-        };
+        let peak_note = row.peak_label();
         let _ = writeln!(md_row, " {peak_note} |");
         let _ = writeln!(term_row, "  {peak_note}");
         curve.push_str(&md_row);
         curve_term.push_str(&term_row);
         ramp_json.push(serde_json::json!({
-            "provider": name,
-            "model": model,
+            "provider": row.name,
+            "model": row.model,
             "tokens_per_sec_by_concurrency": per_level,
-            "peak_concurrency": peak.0,
-            "peak_tokens_per_sec": (peak_tps * 10.0).round() / 10.0,
-            "peak_goodput_tokens_per_sec": (peak.1 * 10.0).round() / 10.0,
-            "failure_rate_crosses_at": crosses.map(|ph| ph.concurrency),
-            "degrades_past_peak": degraded,
+            "peak_concurrency": row.peak_concurrency,
+            "peak_tokens_per_sec": (row.peak_tps * 10.0).round() / 10.0,
+            "peak_goodput_tokens_per_sec": (row.peak_goodput * 10.0).round() / 10.0,
+            "failure_rate_crosses_at": row.failure_rate_crosses_at,
+            "degrades_past_peak": row.degraded,
         }));
     }
 
@@ -211,7 +249,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     md.push_str(&format!(
         "- **Prompt**: `\"{}\"`\n- **Levels**: {:?}\n- **Rounds per level**: {}\n",
         if cfg.bench.workload.is_empty() {
-            cfg.prompt.replace('\n', " ")
+            llmrace::util::md_escape_cell(&cfg.prompt)
         } else {
             format!("{} prompts", cfg.bench.workload.len())
         },
@@ -228,7 +266,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
     let out_ext = if cfg.out == "-" {
         None
     } else {
-        std::path::Path::new(&cfg.out)
+        Path::new(&cfg.out)
             .extension()
             .and_then(|e| e.to_str())
             .map(str::to_ascii_lowercase)
@@ -241,14 +279,14 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
             Some("json" | "html") => crate::report_sibling(&cfg.out, "md"),
             _ => cfg.out.clone(),
         };
-        std::fs::write(&md_path, &md).with_context(|| format!("writing {md_path}"))?;
+        write_atomic(Path::new(&md_path), md.as_bytes())?;
         cfg.status(format!("\u{1f4c4} ramp report saved to {md_path}"));
     }
 
     if cfg.html || out_ext.as_deref() == Some("html") {
-        let h = ramp_html(&order, &phases);
+        let h = ramp_html(&completed_levels, &rows);
         let path = crate::report_sibling(&cfg.out, "html");
-        std::fs::write(&path, h).with_context(|| format!("writing {path}"))?;
+        write_atomic(Path::new(&path), h.as_bytes())?;
         cfg.status(format!("\u{1f310} ramp html saved to {path}"));
     }
 
@@ -268,8 +306,8 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
             payload["sampling"] = sampling;
         }
         let path = crate::report_sibling(&cfg.out, "json");
-        std::fs::write(&path, serde_json::to_string_pretty(&payload)?)
-            .with_context(|| format!("writing {path}"))?;
+        let serialized = serde_json::to_string_pretty(&payload)?;
+        write_atomic(Path::new(&path), serialized.as_bytes())?;
         cfg.status(format!("\u{1f4ca} ramp json saved to {path}"));
     }
 
@@ -287,7 +325,7 @@ pub(crate) async fn ramp_race(cfg: RunConfig, levels: &[usize]) -> Result<i32> {
 
 /// Self-contained HTML page for a ramp: SVG throughput-by-concurrency
 /// series per provider plus the curve table.
-fn ramp_html(order: &[(String, String)], phases: &[RampLevel]) -> String {
+fn ramp_html(levels: &[usize], rows: &[RampRow]) -> String {
     const W: f64 = 760.0;
     const H: f64 = 320.0;
     const PAD: f64 = 44.0;
@@ -295,25 +333,11 @@ fn ramp_html(order: &[(String, String)], phases: &[RampLevel]) -> String {
         "#3390ff", "#3fb950", "#d29922", "#f778ba", "#a371f7", "#39c5cf",
     ];
 
-    let levels: Vec<usize> = phases.iter().map(|p| p.concurrency).collect();
-    let tps = |name: &str, model: &str, level: usize| -> f64 {
-        phases
-            .iter()
-            .find(|p| p.concurrency == level)
-            .and_then(|p| {
-                p.summaries
-                    .iter()
-                    .find(|s| s.name == name && s.model == model)
-            })
-            .filter(|s| s.successful())
-            .map(|s| s.mean_tokens_per_sec())
-            .unwrap_or(0.0)
-    };
-    let max_tps = order
+    let max_tps = rows
         .iter()
-        .flat_map(|(n, m)| levels.iter().map(move |l| tps(n, m, *l)))
+        .flat_map(|row| row.points.iter().map(|&(_, tps, _)| tps))
         .fold(1.0, f64::max);
-    let max_level = *levels.last().unwrap_or(&1) as f64;
+    let max_level = levels.last().copied().unwrap_or(1).max(1) as f64;
     let x = |level: usize| PAD + (level as f64 / max_level) * (W - 2.0 * PAD);
     let y = |v: f64| H - PAD - (v / max_tps) * (H - 2.0 * PAD);
 
@@ -333,7 +357,7 @@ fn ramp_html(order: &[(String, String)], phases: &[RampLevel]) -> String {
             max_tps * step as f64 / 4.0
         ));
     }
-    for level in &levels {
+    for level in levels {
         svg.push_str(&format!(
             "<text x='{:.1}' y='{}' text-anchor='middle'>{level}</text>",
             x(*level),
@@ -347,61 +371,113 @@ fn ramp_html(order: &[(String, String)], phases: &[RampLevel]) -> String {
     ));
 
     let mut legend = String::new();
-    for (i, (name, model)) in order.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate() {
         let color = COLORS[i % COLORS.len()];
-        let points: Vec<String> = levels
+        let points: Vec<String> = row
+            .points
             .iter()
-            .map(|l| format!("{:.1},{:.1}", x(*l), y(tps(name, model, *l))))
+            .map(|&(level, tps, _)| format!("{:.1},{:.1}", x(level), y(tps)))
             .collect();
         svg.push_str(&format!(
             "<polyline fill='none' stroke='{color}' stroke-width='2' points='{}'/>",
             points.join(" ")
         ));
-        for l in &levels {
+        for &(level, tps, _) in &row.points {
             svg.push_str(&format!(
                 "<circle cx='{:.1}' cy='{:.1}' r='3' fill='{color}'/>",
-                x(*l),
-                y(tps(name, model, *l))
+                x(level),
+                y(tps)
             ));
         }
         legend.push_str(&format!(
             "<li><span style='color:{color}'>\u{25cf}</span> {} ({})</li>",
-            llmrace::util::html_escape(name),
-            llmrace::util::html_escape(model)
+            llmrace::util::html_escape(&row.name),
+            llmrace::util::html_escape(&row.model)
         ));
     }
     svg.push_str("</svg>");
 
-    // reuse the markdown curve table, converted loosely: rebuild as HTML
     let mut table = String::from("<table><tr><th>Provider</th>");
-    for level in &levels {
+    for level in levels {
         table.push_str(&format!("<th>c={level}</th>"));
     }
     table.push_str("<th>peak</th></tr>");
-    for (name, model) in order {
+    for row in rows {
         table.push_str(&format!(
             "<tr><td>{} ({})</td>",
-            llmrace::util::html_escape(name),
-            llmrace::util::html_escape(model)
+            llmrace::util::html_escape(&row.name),
+            llmrace::util::html_escape(&row.model)
         ));
-        let mut peak = (1usize, 0.0);
-        for level in &levels {
-            let v = tps(name, model, *level);
-            if v > peak.1 {
-                peak = (*level, v);
-            }
-            table.push_str(&format!("<td>{v:.1}</td>"));
+        for &(_, tps, _) in &row.points {
+            table.push_str(&format!("<td>{tps:.1}</td>"));
         }
         table.push_str(&format!(
-            "<td><b>c={} ({:.1})</b></td></tr>",
-            peak.0, peak.1
+            "<td><b>{}</b></td></tr>",
+            llmrace::util::html_escape(&row.peak_label())
         ));
     }
     table.push_str("</table>");
 
     format!(
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>llmrace ramp</title><style>:root {{ color-scheme: dark; }}body {{ font-family: ui-monospace, 'SF Mono', Menlo, monospace; background: #0d1117; color: #e6edf3; margin: 0 auto; max-width: 820px; padding: 2rem 1rem; }}h1 {{ color: #3390ff; }} svg {{ width: 100%; height: auto; background: #161b22; border: 1px solid #21262d; border-radius: 6px; }}text {{ fill: #8b949e; font-size: 10px; }} table {{ border-collapse: collapse; width: 100%; margin-top: 1rem; }}th, td {{ border: 1px solid #21262d; padding: .3rem .6rem; text-align: left; }} th {{ color: #8b949e; }}ul {{ list-style: none; padding: 0; }} footer {{ color: #484f58; margin-top: 3rem; }}
-</style></head><body><h1>\u{1f3c1} llmrace ramp</h1><p>throughput by concurrency — peak marks each provider's saturation point</p>{svg}<ul>{legend}</ul>{table}<footer>generated with <a style='color:#3390ff' href='https://github.com/dfbustosus/llmrace'>llmrace</a> v{} \u{1f980}</footer></body></html>",
+</style></head><body><h1>\u{1f3c1} llmrace ramp</h1><p>throughput by concurrency — peak marks each provider's saturation point (by goodput; \u{2b07} flags &gt;10% post-peak drop)</p>{svg}<ul>{legend}</ul>{table}<footer>generated with <a style='color:#3390ff' href='https://github.com/dfbustosus/llmrace'>llmrace</a> v{} \u{1f980}</footer></body></html>",
         env!("CARGO_PKG_VERSION"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llmrace::bench::{FailureClass, RoundFailure, RunMetrics};
+
+    fn make_lane(concurrency: usize, tokens: u64, failed_rounds: usize) -> LaneSummary {
+        LaneSummary {
+            name: "mock".into(),
+            model: "m1".into(),
+            runs: vec![RunMetrics {
+                total_ms: 1000.0,
+                ttfb_ms: 0.0,
+                tokens,
+                ..RunMetrics::default()
+            }],
+            failures: (0..failed_rounds)
+                .map(|_| RoundFailure {
+                    task_checked: false,
+                    requests: Vec::new(),
+                    elapsed_ms: 1000.0,
+                    class: FailureClass::Server,
+                    attempts: 1,
+                    message: "503".into(),
+                    prompt_id: String::new(),
+                })
+                .collect(),
+            concurrency,
+            ..LaneSummary::default()
+        }
+    }
+
+    #[test]
+    fn ramp_rows_and_html_use_goodput_peak_and_degradation_flag() {
+        // c=1: 100 tok/s, 0 failures => goodput 100.0
+        // c=4: 120 tok/s, 1 failure (50% success) => goodput 60.0 (degraded >10% below peak!)
+        let phases = vec![
+            RampLevel {
+                concurrency: 1,
+                summaries: vec![make_lane(1, 100, 0)],
+            },
+            RampLevel {
+                concurrency: 4,
+                summaries: vec![make_lane(4, 120, 1)],
+            },
+        ];
+        let rows = build_ramp_rows(&phases);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].peak_concurrency, 1);
+        assert!((rows[0].peak_goodput - 100.0).abs() < 0.1);
+        assert!(rows[0].degraded);
+        assert_eq!(rows[0].failure_rate_crosses_at, Some(4));
+
+        let html = ramp_html(&[1, 4], &rows);
+        assert!(html.contains("<b>c=1 (100.0) \u{2b07}</b>"), "{html}");
+    }
 }
