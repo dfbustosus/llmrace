@@ -1,16 +1,35 @@
 //! The standard race (or sweep) mode.
 
-use super::collect::race_collect;
-use super::config::RunConfig;
+use super::collect::{race_collect, SignalGuard};
+use super::config::{resolve_model, RunConfig};
 use super::reports::{
     export_metrics, load_regression, record_history, regression_gate, ttfb_gate, write_reports,
 };
 use anyhow::Result;
 use llmrace::bench::LaneSummary;
 use llmrace::report;
+use std::io::IsTerminal as _;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-/// Runs one full race (or sweep) and returns the process exit code.
+/// Runs one full race (or sweep) and returns the process exit code and summaries.
 pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let _signal_guard = (cfg.no_tui || !std::io::stdout().is_terminal()).then(|| {
+        SignalGuard::with_flag(
+            Arc::clone(&stop),
+            "\u{23f9} interrupt received — finishing in-flight rounds, then writing reports…",
+        )
+    });
+    run_race_with_stop(cfg, stop).await
+}
+
+/// Runs one full race (or sweep) sharing a caller-owned stop flag (used by
+/// `--suite` so one [`SignalGuard`] governs the entire suite).
+pub(crate) async fn run_race_with_stop(
+    cfg: RunConfig,
+    stop: Arc<AtomicBool>,
+) -> Result<(i32, Vec<LaneSummary>)> {
     if !cfg.quiet {
         cfg.status(format!(
             "\u{1f3c1} llmrace v{} — {} providers × {} rounds ({} warmup, c={})",
@@ -35,20 +54,18 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
     // Reasoning models spend the token budget thinking first; a small cap
     // yields almost no visible output (live-verified: gpt-5-nano returned 1
     // visible token with --max-tokens 256).
-    let reasoning_capped = cfg
-        .providers
-        .iter()
-        .any(|p| llmrace::provider::is_reasoning_model(&p.default_model))
-        && cfg.bench.max_tokens < 512;
+    let reasoning_capped = cfg.providers.iter().any(|p| {
+        let model = resolve_model(&cfg.model_overrides, &p.id, &p.default_model);
+        llmrace::provider::is_reasoning_model(&model)
+    }) && cfg.bench.max_tokens < 512;
     if reasoning_capped && !cfg.quiet {
         cfg.status(
             "\u{1f9e0} note: reasoning models think before the first visible token — consider --max-tokens 512+ so the answer isn't starved",
         );
     }
 
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let summaries = race_collect(&cfg, None, false, std::sync::Arc::clone(&stop)).await?;
-    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+    let summaries = race_collect(&cfg, None, false, Arc::clone(&stop)).await?;
+    if stop.load(Ordering::Relaxed) {
         eprintln!("\u{23f9} interrupted — writing partial results");
     }
 
@@ -76,8 +93,7 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
     if cfg.notify_desktop && !summaries.is_empty() {
         let winner = summaries.iter().filter(|s| s.successful()).max_by(|a, b| {
             a.goodput_tokens_per_sec()
-                .partial_cmp(&b.goodput_tokens_per_sec())
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&b.goodput_tokens_per_sec())
         });
         if let Some(w) = winner {
             llmrace::notify::desktop_notification(
@@ -97,15 +113,15 @@ pub(crate) async fn run_race(cfg: RunConfig) -> Result<(i32, Vec<LaneSummary>)> 
     // pass over a total outage.
     if llmrace::gates::all_lanes_failed(&summaries) {
         eprintln!("\n✗ every provider failed — no metrics were measured");
-        return Ok((1, Vec::new()));
+        return Ok((1, summaries));
     }
 
     if !ttfb_gate(&summaries, &cfg) {
-        return Ok((1, Vec::new()));
+        return Ok((1, summaries));
     }
     let regression = loaded?;
     if !regression_gate(regression.as_ref(), &cfg) {
-        return Ok((1, Vec::new()));
+        return Ok((1, summaries));
     }
     Ok((0, summaries))
 }
