@@ -187,9 +187,12 @@ pub fn tool_body(wire: Wire, tool: &ToolDefinition) -> Value {
 
 /// Rejects a schema this crate will not evaluate.
 ///
-/// The supported keywords are `type`, `required`, `properties`,
+/// The supported validation keywords are `type`, `required`, `properties`,
 /// `additionalProperties`, `items`, `enum`, `minimum`, `maximum`,
-/// `minLength` and `maxLength`. Nesting stops at 8 levels.
+/// `minLength` and `maxLength`. Standard annotation/metadata keywords
+/// (`description`, `title`, `$schema`, `$comment`, `default`) are accepted
+/// as no-ops so Pydantic, Zod and OpenAI tool schemas pass cleanly.
+/// Nesting stops at 8 levels.
 pub fn check_schema(schema: &Value) -> Result<(), String> {
     check_schema_at(schema, 0)
 }
@@ -212,7 +215,12 @@ fn check_schema_at(schema: &Value, depth: usize) -> Result<(), String> {
             | "minimum"
             | "maximum"
             | "minLength"
-            | "maxLength" => {}
+            | "maxLength"
+            | "description"
+            | "title"
+            | "$schema"
+            | "$comment"
+            | "default" => {}
             other => return Err(format!("unsupported schema keyword '{other}'")),
         }
     }
@@ -284,7 +292,13 @@ pub fn value_matches_schema(value: &Value, schema: &Value) -> bool {
             "array" => value.is_array(),
             "string" => value.is_string(),
             "number" => value.is_number(),
-            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "integer" => {
+                value.as_i64().is_some()
+                    || value.as_u64().is_some()
+                    || value
+                        .as_f64()
+                        .is_some_and(|f| f.is_finite() && f.fract() == 0.0)
+            }
             "boolean" => value.is_boolean(),
             "null" => value.is_null(),
             _ => false,
@@ -348,13 +362,14 @@ pub fn value_matches_schema(value: &Value, schema: &Value) -> bool {
             }
         }
         Value::String(text) => {
+            let len = text.chars().count() as u64;
             if let Some(min) = object.get("minLength").and_then(Value::as_u64) {
-                if text.chars().count() < min as usize {
+                if len < min {
                     return false;
                 }
             }
             if let Some(max) = object.get("maxLength").and_then(Value::as_u64) {
-                if text.chars().count() > max as usize {
+                if len > max {
                     return false;
                 }
             }
@@ -523,4 +538,47 @@ pub fn tool_task_prompt() -> &'static str {
 /// Legacy helper; prefer [`tool_schema`] with a task from [`find`].
 pub fn weather_tool(wire: Wire) -> Value {
     tool_schema(&weather(), wire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_tool_schemas_and_annotations_pass_check_schema() {
+        for task in registry() {
+            let params = (task.parameters)();
+            assert!(
+                check_schema(&params).is_ok(),
+                "{} failed check_schema: {:?}",
+                task.name,
+                check_schema(&params)
+            );
+        }
+        let pydantic_style = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "WeatherQuery",
+            "description": "Lookup query",
+            "$comment": "generated",
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "City name",
+                    "default": "Paris"
+                }
+            },
+            "required": ["city"]
+        });
+        assert!(check_schema(&pydantic_style).is_ok());
+    }
+
+    #[test]
+    fn integer_schema_accepts_whole_floats_and_rejects_fractions() {
+        let schema = json!({"type": "integer"});
+        assert!(value_matches_schema(&json!(5), &schema));
+        assert!(value_matches_schema(&json!(5.0), &schema));
+        assert!(value_matches_schema(&json!(-3.0), &schema));
+        assert!(!value_matches_schema(&json!(5.5), &schema));
+    }
 }
