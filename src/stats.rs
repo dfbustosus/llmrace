@@ -138,7 +138,7 @@ impl Sample {
 
     fn sorted(&self) -> Vec<f64> {
         let mut sorted = self.values.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(f64::total_cmp);
         sorted
     }
 
@@ -226,21 +226,32 @@ fn t_critical_95(df: usize) -> f64 {
 /// observations or a zero variance sum.
 #[must_use]
 pub fn welch_t(sample_a: &[f64], sample_b: &[f64]) -> Option<(f64, f64)> {
-    let a = Sample::from_values(sample_a.to_vec());
-    let b = Sample::from_values(sample_b.to_vec());
-    if a.len() < 2 || b.len() < 2 {
+    if sample_a.len() < 2
+        || sample_b.len() < 2
+        || sample_a.iter().any(|v| !v.is_finite())
+        || sample_b.iter().any(|v| !v.is_finite())
+    {
         return None;
     }
+    let a = Sample::from_values(sample_a.to_vec());
+    let b = Sample::from_values(sample_b.to_vec());
     let (va, vb) = (a.variance(), b.variance());
     let (na, nb) = (a.len() as f64, b.len() as f64);
     let sea = va / na;
     let seb = vb / nb;
     let denom = sea + seb;
-    if denom <= f64::EPSILON {
+    if !denom.is_finite() || denom <= 0.0 {
         return None;
     }
     let t = (a.mean() - b.mean()) / denom.sqrt();
-    let df = denom * denom / (sea * sea / (na - 1.0) + seb * seb / (nb - 1.0));
+    let df_denom = sea * sea / (na - 1.0) + seb * seb / (nb - 1.0);
+    if !df_denom.is_finite() || df_denom <= 0.0 {
+        return None;
+    }
+    let df = denom * denom / df_denom;
+    if !t.is_finite() || !df.is_finite() || df <= 0.0 {
+        return None;
+    }
     Some((t, df))
 }
 
@@ -259,11 +270,17 @@ pub fn welch_t(sample_a: &[f64], sample_b: &[f64]) -> Option<(f64, f64)> {
 /// ```
 #[must_use]
 pub fn t_two_sided_p(t: f64, df: f64) -> f64 {
-    if df <= 0.0 {
+    if !t.is_finite() || !df.is_finite() || df <= 0.0 {
         return 1.0;
     }
     let x = df / (df + t * t);
+    if !x.is_finite() {
+        return 0.0;
+    }
     let p = betai(df / 2.0, 0.5, x);
+    if !p.is_finite() {
+        return 1.0;
+    }
     p.clamp(0.0, 1.0)
 }
 
@@ -363,5 +380,41 @@ fn ln_gamma(x: f64) -> f64 {
             ag += g / (x + i as f64);
         }
         0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + ag.ln()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_sorting_with_nan_does_not_panic() {
+        let s = Sample::from_values(vec![3.0, f64::NAN, 1.0, 2.0, f64::NAN]);
+        let _ = s.percentile(50.0);
+        let _ = s.percentiles(&[10.0, 50.0, 95.0]);
+    }
+
+    #[test]
+    fn welch_t_rejects_non_finite_and_handles_small_positive_variances() {
+        assert!(welch_t(&[1.0, f64::NAN], &[1.0, 2.0]).is_none());
+        assert!(welch_t(&[1.0, 2.0], &[1.0, f64::INFINITY]).is_none());
+        assert!(welch_t(&[1.0, 1.0], &[2.0, 2.0]).is_none());
+
+        // Small non-zero variances (smaller than f64::EPSILON) must still compute.
+        let a = [0.000_000_001, 0.000_000_002, 0.000_000_001_5];
+        let b = [0.000_000_010, 0.000_000_011, 0.000_000_010_5];
+        let (t, df) = welch_t(&a, &b).expect("small variance Welch t");
+        assert!(t < 0.0 && df > 0.0);
+        assert!(t_two_sided_p(t, df) < 0.05);
+    }
+
+    #[test]
+    fn t_two_sided_p_guards_non_finite_and_invalid_df() {
+        assert_eq!(t_two_sided_p(f64::NAN, 4.0), 1.0);
+        assert_eq!(t_two_sided_p(f64::INFINITY, 4.0), 1.0);
+        assert_eq!(t_two_sided_p(2.0, f64::NAN), 1.0);
+        assert_eq!(t_two_sided_p(2.0, f64::INFINITY), 1.0);
+        assert_eq!(t_two_sided_p(2.0, 0.0), 1.0);
+        assert_eq!(t_two_sided_p(2.0, -3.0), 1.0);
     }
 }
