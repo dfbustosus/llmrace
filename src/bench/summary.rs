@@ -290,13 +290,32 @@ impl LaneSummary {
         self.mean_prompt_tokens().is_some()
     }
 
+    fn mean_successful_requests_per_round(&self) -> f64 {
+        if self.runs.is_empty() {
+            return self.concurrency.max(1) as f64;
+        }
+        let total: usize = self
+            .runs
+            .iter()
+            .map(|r| {
+                if r.requests.is_empty() {
+                    self.concurrency.max(1)
+                } else {
+                    r.requests.iter().filter(|q| q.metrics().is_some()).count()
+                }
+            })
+            .sum();
+        total as f64 / self.runs.len() as f64
+    }
+
     fn priced_usage(&self) -> crate::cost::UsageTokens {
         let measured = self.prompt_tokens_measured();
         let bucket = |mean: Option<f64>| if measured { mean.unwrap_or(0.0) } else { 0.0 };
         crate::cost::UsageTokens {
-            prompt: self
-                .mean_prompt_tokens()
-                .unwrap_or_else(|| crate::cost::estimate_prompt_tokens(&self.prompt)),
+            prompt: self.mean_prompt_tokens().unwrap_or_else(|| {
+                crate::cost::estimate_prompt_tokens(&self.prompt)
+                    * self.mean_successful_requests_per_round()
+            }),
             cache_read: bucket(self.mean_cache_read_tokens()),
             cache_write: bucket(self.mean_cache_write_tokens()),
             cache_write_1h: bucket(self.mean_cache_write_1h_tokens()),
@@ -348,7 +367,9 @@ impl LaneSummary {
 
     /// `(valid, total)` tool-argument validity across rounds that produced
     /// arguments; `None` when no round produced tool arguments. Validation
-    /// uses this lane's tool task when known, falling back to the default.
+    /// honors workload-evaluated `task_ok` for workload rounds (which may
+    /// carry custom tool schemas), and otherwise uses this lane's built-in
+    /// tool task validator, falling back to the default.
     #[must_use]
     pub fn tool_validity(&self) -> Option<(usize, usize)> {
         let with_args: Vec<&RunMetrics> = self
@@ -363,7 +384,17 @@ impl LaneSummary {
             Some(task) => task.validate,
             None => crate::tools::validate_args,
         };
-        let valid = with_args.iter().filter(|r| validate(&r.tool_args)).count();
+        let valid = with_args
+            .iter()
+            .filter(|r| {
+                if !r.prompt_id.is_empty() {
+                    if let Some(ok) = r.task_ok {
+                        return ok;
+                    }
+                }
+                validate(&r.tool_args)
+            })
+            .count();
         Some((valid, with_args.len()))
     }
 
@@ -405,7 +436,8 @@ impl LaneSummary {
 
     /// Reasoning tokens. Uses the provider count (`thoughtsTokenCount`,
     /// OpenAI `reasoning_tokens`) when any round carried one. Otherwise
-    /// the visible-stream estimate: usage minus streamed tokens.
+    /// falls back to the visible-stream estimate (`usage - visible_tokens`)
+    /// only for known reasoning models.
     #[must_use]
     pub fn reasoning_tokens(&self) -> u64 {
         let reported: Vec<u64> = self
@@ -416,7 +448,11 @@ impl LaneSummary {
         if !reported.is_empty() {
             return reported.iter().sum();
         }
-        self.total_tokens().saturating_sub(self.visible_tokens())
+        if crate::provider::is_reasoning_model(&self.model) {
+            self.total_tokens().saturating_sub(self.visible_tokens())
+        } else {
+            0
+        }
     }
 
     /// Time per output token, in milliseconds: the effective generation
@@ -451,16 +487,25 @@ impl LaneSummary {
     /// This is an estimate, not a measurement — providers do not report
     /// the reasoning/visible split of their processing time. Assuming a
     /// uniform server-side token rate, the reasoning share of the window
-    /// is `reasoning_tokens / total_tokens`.
+    /// is `reasoning_tokens / (total_tokens + extra_reasoning_tokens)`,
+    /// clamped to `<= 1.0`.
     #[must_use]
     pub fn thinking_ms_estimate(&self) -> Option<f64> {
         let server = self.median_server_ms()?;
         let total = self.total_tokens();
+        let extra_reasoning: u64 = self
+            .runs
+            .iter()
+            .filter(|r| r.reasoning_billed_separately)
+            .filter_map(|r| r.reasoning_tokens)
+            .sum();
+        let denom = total.saturating_add(extra_reasoning);
         let hidden = self.reasoning_tokens();
-        if total == 0 || hidden == 0 {
+        if denom == 0 || hidden == 0 {
             return None;
         }
-        Some(server * hidden as f64 / total as f64)
+        let ratio = (hidden as f64 / denom as f64).min(1.0);
+        Some(server * ratio)
     }
 
     fn itl_sample(&self) -> Option<Sample> {
@@ -564,15 +609,20 @@ impl LaneSummary {
         }
     }
 
-    /// Successful-round tokens/s scaled by the success rate.
+    /// Successful-round tokens/s scaled by the fraction of measured rounds
+    /// that produced output (`runs.len() / measured_rounds`).
     ///
-    /// A lane at 100 tokens/s that failed half its rounds has a goodput of
-    /// 50. With no failures this equals [`Self::mean_tokens_per_sec`], so
-    /// a clean race ranks exactly as it did before failures were recorded.
+    /// For `concurrency == 1` this is identically `tokens/s * (1 - failure_rate)`.
+    /// Under `concurrency > 1`, partially-failed rounds already reflect only
+    /// successful requests' tokens over full wall-time, so scaling by
+    /// `runs.len() / measured` avoids double-penalizing partial failures to zero.
     #[must_use]
     pub fn goodput_tokens_per_sec(&self) -> f64 {
-        let success = 1.0 - self.failure_rate().unwrap_or(0.0);
-        self.mean_tokens_per_sec() * success
+        let measured = self.measured_rounds();
+        if measured == 0 {
+            return 0.0;
+        }
+        self.mean_tokens_per_sec() * (self.runs.len() as f64 / measured as f64)
     }
 
     /// `true` when at least one measured round succeeded.
@@ -675,22 +725,25 @@ impl LaneSummary {
         self.runs.iter().filter(|r| r.cache_read_tokens > 0).count()
     }
 
-    /// `(passed, measured)` for the task, when this lane had one.
+    /// `(passed, checked)` for the task, when this lane had one.
     ///
-    /// The denominator is every measured round, including HTTP failures,
-    /// so a dropped round is not a pass. `None` when no round was checked.
+    /// The denominator counts only checked rounds (rounds with `task_ok` set
+    /// plus failed rounds with `task_checked == true`), so unchecked prompts in
+    /// mixed workloads are not counted as failures while dropped checked rounds
+    /// still count as failures. `None` when no round was checked.
     #[must_use]
     pub fn task_pass(&self) -> Option<(usize, usize)> {
-        let checked = self.runs.iter().any(|r| r.task_ok.is_some())
-            || self.failures.iter().any(|f| f.task_checked);
-        if !checked {
+        let checked_runs = self.runs.iter().filter(|r| r.task_ok.is_some()).count();
+        let checked_failures = self.failures.iter().filter(|f| f.task_checked).count();
+        let total = checked_runs + checked_failures;
+        if total == 0 {
             return None;
         }
         let ok = self.runs.iter().filter(|r| r.task_ok == Some(true)).count();
-        Some((ok, self.measured_rounds()))
+        Some((ok, total))
     }
 
-    /// Fraction of measured rounds that passed the task.
+    /// Fraction of checked rounds that passed the task.
     #[must_use]
     pub fn task_rate(&self) -> Option<f64> {
         self.task_pass()
@@ -717,4 +770,189 @@ pub struct PromptRow {
     /// includes an HTTP failure of this id, so a dropped round is not a pass.
     /// `None` when no successful round of this prompt had a task.
     pub task_pass: Option<(usize, usize)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::metrics::{RequestAttempt, RequestOutcome};
+
+    #[test]
+    fn goodput_under_concurrency_partial_failure_is_not_zeroed() {
+        let ok_req = RequestOutcome {
+            elapsed_ms: 1000.0,
+            attempts: vec![RequestAttempt::Success(RunMetrics {
+                total_ms: 1000.0,
+                ttfb_ms: 100.0,
+                tokens: 90,
+                ..RunMetrics::default()
+            })],
+        };
+        let fail_req = RequestOutcome {
+            elapsed_ms: 1000.0,
+            attempts: vec![RequestAttempt::Failure(RoundFailure {
+                task_checked: false,
+                requests: Vec::new(),
+                elapsed_ms: 1000.0,
+                class: FailureClass::RateLimit,
+                attempts: 1,
+                message: "429".into(),
+                prompt_id: String::new(),
+            })],
+        };
+        let summary = LaneSummary {
+            name: "p".into(),
+            model: "m".into(),
+            concurrency: 2,
+            runs: vec![RunMetrics {
+                requests: vec![ok_req, fail_req],
+                total_ms: 1100.0,
+                ttfb_ms: 100.0,
+                tokens: 90,
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        // Round failure rate is 1.0 (1/1 round had a failed request),
+        // yet goodput must equal the round's actual surviving tokens/s (90 tok/s), not 0.
+        assert_eq!(summary.failure_rate(), Some(1.0));
+        assert!((summary.goodput_tokens_per_sec() - 90.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn thinking_ms_estimate_handles_separately_billed_reasoning_tokens() {
+        let gemini = LaneSummary {
+            name: "gemini".into(),
+            model: "gemini-2.5-flash".into(),
+            runs: vec![RunMetrics {
+                total_ms: 1200.0,
+                ttfb_ms: 200.0,
+                tokens: 200,
+                reasoning_tokens: Some(800),
+                reasoning_billed_separately: true,
+                server_ms: Some(1000.0),
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        let est = gemini.thinking_ms_estimate().expect("estimate");
+        assert!(
+            (est - 800.0).abs() < 1e-6,
+            "expected 1000 * 800 / (200 + 800) = 800, got {est}"
+        );
+    }
+
+    #[test]
+    fn task_pass_excludes_unchecked_rounds_in_mixed_workloads() {
+        let summary = LaneSummary {
+            name: "p".into(),
+            model: "m".into(),
+            runs: vec![
+                RunMetrics {
+                    prompt_id: "checked".into(),
+                    task_ok: Some(true),
+                    ..RunMetrics::default()
+                },
+                RunMetrics {
+                    prompt_id: "unchecked".into(),
+                    task_ok: None,
+                    ..RunMetrics::default()
+                },
+            ],
+            failures: vec![
+                RoundFailure {
+                    task_checked: true,
+                    requests: Vec::new(),
+                    elapsed_ms: 100.0,
+                    class: FailureClass::Server,
+                    attempts: 1,
+                    message: "500".into(),
+                    prompt_id: "checked".into(),
+                },
+                RoundFailure {
+                    task_checked: false,
+                    requests: Vec::new(),
+                    elapsed_ms: 100.0,
+                    class: FailureClass::Server,
+                    attempts: 1,
+                    message: "500".into(),
+                    prompt_id: "unchecked".into(),
+                },
+            ],
+            ..LaneSummary::default()
+        };
+        assert_eq!(summary.task_pass(), Some((1, 2)));
+    }
+
+    #[test]
+    fn tool_validity_honors_custom_workload_tool_task_ok() {
+        let summary = LaneSummary {
+            name: "p".into(),
+            model: "m".into(),
+            tool_task: Some("weather".into()),
+            runs: vec![RunMetrics {
+                prompt_id: "custom_order".into(),
+                tool_args: r#"{"order_id":"ORD-42"}"#.into(),
+                task_ok: Some(true),
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        assert_eq!(summary.tool_validity(), Some((1, 1)));
+    }
+
+    #[test]
+    fn reasoning_tokens_gates_fallback_on_reasoning_model_only() {
+        let classic = LaneSummary {
+            name: "openai".into(),
+            model: "gpt-4o-mini".into(),
+            runs: vec![RunMetrics {
+                tokens: 500,
+                visible_tokens: 60,
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        assert_eq!(classic.reasoning_tokens(), 0);
+
+        let gpt5 = LaneSummary {
+            model: "gpt-5-nano".into(),
+            ..classic.clone()
+        };
+        assert_eq!(gpt5.reasoning_tokens(), 440);
+
+        // Explicit provider-reported reasoning_tokens works on any model name.
+        let gemini = LaneSummary {
+            name: "gemini".into(),
+            model: "gemini-2.5-flash".into(),
+            runs: vec![RunMetrics {
+                tokens: 100,
+                visible_tokens: 100,
+                reasoning_tokens: Some(250),
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        assert_eq!(gemini.reasoning_tokens(), 250);
+    }
+
+    #[test]
+    fn unmeasured_prompt_cost_scales_by_concurrency() {
+        let single = LaneSummary {
+            name: "openai".into(),
+            model: "gpt-4o-mini".into(),
+            prompt: "Explain zero-knowledge proofs briefly.".into(),
+            concurrency: 1,
+            runs: vec![RunMetrics {
+                tokens: 100,
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        let quad = LaneSummary {
+            concurrency: 4,
+            ..single.clone()
+        };
+        assert!((quad.priced_usage().prompt - single.priced_usage().prompt * 4.0).abs() < 1e-9);
+    }
 }
