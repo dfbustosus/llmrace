@@ -13,7 +13,7 @@ const PAD: f64 = 28.0;
 
 /// Renders the dashboard HTML for records within the last `days` days.
 pub fn render_html(records: &[HistoryRecord], days: u64, now_unix: u64) -> String {
-    let cutoff = now_unix.saturating_sub(days * 86_400);
+    let cutoff = now_unix.saturating_sub(days.saturating_mul(86_400));
     let window: Vec<&HistoryRecord> = records
         .iter()
         .filter(|r| r.timestamp_unix >= cutoff)
@@ -180,4 +180,15 @@ fn distinct_models(lanes: &[&&HistoryRecord]) -> Vec<String> {
 
 fn date(unix: u64) -> String {
     crate::util::unix_to_date(unix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_html_handles_large_days_without_overflow() {
+        let html = render_html(&[], u64::MAX, 1_700_000_000);
+        assert!(html.contains("llmrace dashboard"));
+    }
 }
