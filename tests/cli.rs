@@ -1,11 +1,16 @@
 use llmrace::provider::split_model_override;
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn tmppath(name: &str) -> String {
-    std::env::temp_dir()
-        .join(format!("llmrace-{name}.md"))
-        .to_string_lossy()
-        .into_owned()
+static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let n = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("llmrace-{label}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
 }
 
 #[test]
@@ -133,6 +138,8 @@ fn model_overrides_parse_correctly() {
 
 #[test]
 fn per_provider_model_flag_targets_one_lane() {
+    let dir = unique_temp_dir("pm");
+    let out_path = dir.join("pm.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
             "mock",
@@ -145,8 +152,8 @@ fn per_provider_model_flag_targets_one_lane() {
             "mock=custom-model-9",
             "--json",
             "--out",
-            tmppath("pm").as_str(),
         ])
+        .arg(&out_path)
         .output()
         .unwrap();
     assert!(
@@ -154,15 +161,18 @@ fn per_provider_model_flag_targets_one_lane() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let json_path = tmppath("pm").replace(".md", ".json");
+    let json_path = out_path.with_extension("json");
     let raw = std::fs::read_to_string(&json_path)
-        .unwrap_or_else(|_| panic!("expected json report at {json_path}"));
+        .unwrap_or_else(|_| panic!("expected json report at {}", json_path.display()));
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["providers"][0]["model"], "custom-model-9");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn global_model_flag_applies_to_all_lanes() {
+    let dir = unique_temp_dir("gm");
+    let out_path = dir.join("gm.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
             "mock",
@@ -175,22 +185,21 @@ fn global_model_flag_applies_to_all_lanes() {
             "gpt-4o-mini",
             "--json",
             "--out",
-            tmppath("gm").as_str(),
         ])
+        .arg(&out_path)
         .output()
         .unwrap();
     assert!(out.status.success());
-    let json_path = tmppath("gm").replace(".md", ".json");
+    let json_path = out_path.with_extension("json");
     let raw = std::fs::read_to_string(&json_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(parsed["providers"][0]["model"], "gpt-4o-mini");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn init_creates_config_and_fails_on_existing() {
-    let dir = std::env::temp_dir().join(format!("llmrace-init-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("init");
 
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("--init")
@@ -220,18 +229,13 @@ fn init_creates_config_and_fails_on_existing() {
 
 #[test]
 fn quiet_mode_suppresses_output() {
+    let dir = unique_temp_dir("quiet");
+    let out_path = dir.join("quiet.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
-            "mock",
-            "--no-tui",
-            "--quiet",
-            "-n",
-            "1",
-            "--warmup",
-            "0",
-            "--out",
-            tmppath("quiet").as_str(),
+            "mock", "--no-tui", "--quiet", "-n", "1", "--warmup", "0", "--out",
         ])
+        .arg(&out_path)
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -244,11 +248,14 @@ fn quiet_mode_suppresses_output() {
         !stdout.contains("✓ mock"),
         "quiet must suppress progress: {stdout}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn max_ttfb_gate_fails_and_passes() {
+    let dir = unique_temp_dir("max-ttfb");
     let fail = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .current_dir(&dir)
         .args([
             "mock",
             "--no-tui",
@@ -268,6 +275,7 @@ fn max_ttfb_gate_fails_and_passes() {
     assert!(stderr.contains("mock"), "{stderr}");
 
     let pass = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .current_dir(&dir)
         .args([
             "mock",
             "--no-tui",
@@ -282,10 +290,13 @@ fn max_ttfb_gate_fails_and_passes() {
         .output()
         .unwrap();
     assert!(pass.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn provider_model_positional_races_named_model() {
+    let dir = unique_temp_dir("positional");
+    let out_path = dir.join("positional.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock=demo-model")
         .arg("--no-tui")
@@ -295,7 +306,7 @@ fn provider_model_positional_races_named_model() {
         .arg("0")
         .arg("--json")
         .arg("--out")
-        .arg(tmppath("positional"))
+        .arg(&out_path)
         .output()
         .expect("spawn llmrace");
     assert!(
@@ -303,13 +314,16 @@ fn provider_model_positional_races_named_model() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let json = std::fs::read_to_string(std::env::temp_dir().join("llmrace-positional.json"))
-        .expect("json report written");
+    let json =
+        std::fs::read_to_string(out_path.with_extension("json")).expect("json report written");
     assert!(json.contains("demo-model"), "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn same_provider_twice_races_two_models() {
+    let dir = unique_temp_dir("twice");
+    let out_path = dir.join("twice.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock=model-a")
         .arg("mock=model-b")
@@ -320,7 +334,7 @@ fn same_provider_twice_races_two_models() {
         .arg("0")
         .arg("--json")
         .arg("--out")
-        .arg(tmppath("twice"))
+        .arg(&out_path)
         .output()
         .expect("spawn llmrace");
     assert!(
@@ -328,10 +342,11 @@ fn same_provider_twice_races_two_models() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let json = std::fs::read_to_string(std::env::temp_dir().join("llmrace-twice.json"))
-        .expect("json report written");
+    let json =
+        std::fs::read_to_string(out_path.with_extension("json")).expect("json report written");
     assert!(json.contains("model-a"), "{json}");
     assert!(json.contains("model-b"), "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -351,6 +366,8 @@ fn api_keys_never_leak_into_reports() {
     // A distinctive fake key: if any output path ever echoes environment
     // values, this test catches it.
     const MARKER: &str = "sk-LEAK-MARKER-do-not-print";
+    let dir = unique_temp_dir("leak");
+    let out_path = dir.join("leak.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .env("OPENAI_API_KEY", MARKER)
         .arg("mock")
@@ -363,7 +380,7 @@ fn api_keys_never_leak_into_reports() {
         .arg("--csv")
         .arg("--html")
         .arg("--out")
-        .arg(tmppath("leak"))
+        .arg(&out_path)
         .output()
         .expect("spawn llmrace");
     assert!(out.status.success());
@@ -372,18 +389,12 @@ fn api_keys_never_leak_into_reports() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!stderr.contains(MARKER), "key leaked to stderr");
     for ext in ["md", "json", "csv", "html"] {
-        let path = std::env::temp_dir().join(format!(
-            "llmrace-leak{}",
-            if ext == "md" {
-                ".md".to_string()
-            } else {
-                format!(".{ext}")
-            }
-        ));
+        let path = out_path.with_extension(ext);
         if let Ok(content) = std::fs::read_to_string(&path) {
             assert!(!content.contains(MARKER), "key leaked into {ext} report");
         }
     }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -422,26 +433,35 @@ fn doctor_json_is_structured() {
 #[test]
 fn trend_with_empty_history_renders_hint() {
     // XDG_DATA_HOME pointed at an empty temp dir — no history exists there
+    let dir = unique_temp_dir("empty");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
-        .env("XDG_DATA_HOME", std::env::temp_dir().join("llmrace-empty"))
+        .env("XDG_DATA_HOME", &dir)
         .arg("--trend")
         .output()
         .expect("spawn llmrace");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("no history yet"), "{stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn compare_with_missing_file_errors() {
+    let dir = unique_temp_dir("missing-compare");
+    let arg = format!(
+        "{},{}",
+        dir.join("does-not-exist-a.json").display(),
+        dir.join("does-not-exist-b.json").display()
+    );
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("--compare")
-        .arg("/tmp/does-not-exist-a.json,/tmp/does-not-exist-b.json")
+        .arg(&arg)
         .output()
         .expect("spawn llmrace");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("reading"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(unix)]
@@ -451,9 +471,9 @@ fn watch_mode_runs_records_and_exits_cleanly_on_sigint() {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    let data_dir = std::env::temp_dir().join("llmrace-watch-test");
-    let _ = std::fs::remove_dir_all(&data_dir);
-    let out_path = std::env::temp_dir().join("llmrace-watch.md");
+    let dir = unique_temp_dir("watch-test");
+    let data_dir = dir.join("data");
+    let out_path = dir.join("watch.md");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock")
@@ -520,6 +540,7 @@ fn watch_mode_runs_records_and_exits_cleanly_on_sigint() {
         .read_to_string(&mut history)
         .unwrap();
     assert!(history.contains("\"provider\":\"mock\""), "{history}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -553,6 +574,8 @@ fn schema_is_valid_json_and_matches_reports() {
 
     // every top-level required property exists in the schema, and every
     // top-level key a real report emits is described by it
+    let dir = unique_temp_dir("schema");
+    let out_path = dir.join("schema.md");
     let report = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock")
         .arg("--no-tui")
@@ -562,16 +585,11 @@ fn schema_is_valid_json_and_matches_reports() {
         .arg("0")
         .arg("--json")
         .arg("--out")
-        .arg(
-            std::env::temp_dir()
-                .join("llmrace-schema.md")
-                .to_string_lossy()
-                .into_owned(),
-        )
+        .arg(&out_path)
         .output()
         .unwrap();
     assert!(report.status.success());
-    let json_path = std::env::temp_dir().join("llmrace-schema.json");
+    let json_path = out_path.with_extension("json");
     let generated: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
     for key in generated.as_object().unwrap().keys() {
@@ -590,10 +608,13 @@ fn schema_is_valid_json_and_matches_reports() {
             key
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn ramp_runs_phases_and_writes_curve() {
+    let dir = unique_temp_dir("ramp");
+    let out_path = dir.join("ramp.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock")
         .arg("--ramp")
@@ -605,7 +626,7 @@ fn ramp_runs_phases_and_writes_curve() {
         .arg("0")
         .arg("--json")
         .arg("--out")
-        .arg(tmppath("ramp"))
+        .arg(&out_path)
         .output()
         .expect("spawn llmrace");
     assert!(
@@ -613,13 +634,12 @@ fn ramp_runs_phases_and_writes_curve() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let md = std::fs::read_to_string(tmppath("ramp")).unwrap();
+    let md = std::fs::read_to_string(&out_path).unwrap();
     assert!(md.contains("Saturation curve"), "{md}");
     assert!(md.contains("c=1"), "{md}");
-    let json: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(std::env::temp_dir().join("llmrace-ramp.json")).unwrap(),
-    )
-    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_path.with_extension("json")).unwrap())
+            .unwrap();
     assert_eq!(json["mode"], "ramp");
     let ramp = json["ramp"].as_array().unwrap();
     assert_eq!(ramp[0]["provider"], "mock");
@@ -631,6 +651,7 @@ fn ramp_runs_phases_and_writes_curve() {
     let two = tps["2"].as_f64().unwrap();
     assert!(two > one * 1.8, "expected ~2x scaling: {one} -> {two}");
     assert_eq!(ramp[0]["peak_concurrency"], 2);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -660,9 +681,7 @@ fn ramp_conflicts_and_validation() {
 
 #[test]
 fn json_report_carries_the_gate_verdict() {
-    let dir = std::env::temp_dir().join(format!("llmrace-verdict-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("verdict");
     let baseline = dir.join("baseline.md");
     let again = dir.join("again.md");
     let record = Command::new(env!("CARGO_BIN_EXE_llmrace"))
@@ -721,8 +740,9 @@ fn json_report_carries_the_gate_verdict() {
 #[test]
 fn baseline_gate_end_to_end_passes_on_stable_provider() {
     // mock is deterministic: a baseline recorded now gates a replay cleanly
-    let baseline_path = std::env::temp_dir().join("llmrace-baseline-e2e.json");
-    let md_path = std::env::temp_dir().join("llmrace-baseline-e2e.md");
+    let dir = unique_temp_dir("baseline-e2e");
+    let baseline_path = dir.join("baseline.json");
+    let md_path = dir.join("report.md");
 
     let record = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock")
@@ -733,11 +753,11 @@ fn baseline_gate_end_to_end_passes_on_stable_provider() {
         .arg("0")
         .arg("--json")
         .arg("--out")
-        .arg(md_path.to_string_lossy().into_owned())
+        .arg(&md_path)
         .output()
         .unwrap();
     assert!(record.status.success());
-    let baseline_json = std::env::temp_dir().join("llmrace-baseline-e2e.json");
+    let baseline_json = md_path.with_extension("json");
     std::fs::rename(&baseline_json, &baseline_path).unwrap();
 
     // This test exercises gate MECHANICS (record → replay → verdict), not
@@ -753,13 +773,13 @@ fn baseline_gate_end_to_end_passes_on_stable_provider() {
         .arg("--warmup")
         .arg("0")
         .arg("--baseline")
-        .arg(baseline_path.to_string_lossy().into_owned())
+        .arg(&baseline_path)
         .arg("--max-regression")
         .arg("10000")
         .arg("--require-significance")
         .arg("--quiet")
         .arg("--out")
-        .arg(md_path.to_string_lossy().into_owned())
+        .arg(&md_path)
         .output()
         .unwrap();
     assert!(
@@ -778,6 +798,7 @@ fn baseline_gate_end_to_end_passes_on_stable_provider() {
         md.contains("## Regression"),
         "the markdown report carries the gate verdict: {md}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[cfg(unix)]
@@ -786,9 +807,9 @@ fn watch_resolves_model_per_lane() {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    let data_dir = std::env::temp_dir().join("llmrace-watch-models");
-    let _ = std::fs::remove_dir_all(&data_dir);
-    let out_path = std::env::temp_dir().join("llmrace-watch-models.md");
+    let dir = unique_temp_dir("watch-models");
+    let data_dir = dir.join("data");
+    let out_path = dir.join("watch-models.md");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock=model-a")
@@ -832,11 +853,14 @@ fn watch_resolves_model_per_lane() {
     let history = std::fs::read_to_string(data_dir.join("llmrace/history.jsonl")).unwrap();
     assert!(history.contains("\"model\":\"model-a\""), "{history}");
     assert!(history.contains("\"model\":\"model-b\""), "{history}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn out_dash_streams_markdown_to_stdout() {
+    let dir = unique_temp_dir("out-dash-stdout");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .current_dir(&dir)
         .arg("mock")
         .arg("--no-tui")
         .arg("-n")
@@ -853,13 +877,16 @@ fn out_dash_streams_markdown_to_stdout() {
     assert!(stdout.contains("# 🏁 llmrace report"), "{stdout}");
     assert!(stdout.contains("| 1 | mock |"), "{stdout}");
     // no report file named '-' left behind
-    assert!(!std::path::Path::new("-").exists());
+    assert!(!dir.join("-").exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn non_tty_stdout_falls_back_to_headless() {
     // cargo test pipes stdout, so the TUI is impossible here: without the
     // fallback this invocation used to garble or fail on a pipe
+    let dir = unique_temp_dir("tty");
+    let out_path = dir.join("tty.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock")
         .arg("-n")
@@ -867,7 +894,7 @@ fn non_tty_stdout_falls_back_to_headless() {
         .arg("--warmup")
         .arg("0")
         .arg("--out")
-        .arg(tmppath("tty"))
+        .arg(&out_path)
         .output()
         .unwrap();
     assert!(
@@ -877,6 +904,7 @@ fn non_tty_stdout_falls_back_to_headless() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("headless"), "note expected: {stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -973,8 +1001,11 @@ fn cli_contract_every_documented_flag_exists() {
 
 #[test]
 fn prom_output_writes_text_format_file() {
-    let path = std::env::temp_dir().join("llmrace-prom-output-test.prom");
+    let dir = unique_temp_dir("prom-output");
+    let path = dir.join("metrics.prom");
+    let out_md = dir.join("report.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
+        .current_dir(&dir)
         .arg("mock")
         .arg("--no-tui")
         .arg("-n")
@@ -982,22 +1013,24 @@ fn prom_output_writes_text_format_file() {
         .arg("--warmup")
         .arg("0")
         .arg("--quiet")
+        .arg("--out")
+        .arg(&out_md)
         .arg("--prom-output")
-        .arg(path.to_string_lossy().into_owned())
+        .arg(&path)
         .output()
         .unwrap();
     assert!(out.status.success());
     let body = std::fs::read_to_string(&path).unwrap();
     assert!(body.contains("llmrace_ttfb_ms{provider=\"mock\""), "{body}");
     assert!(body.contains("llmrace_tokens_per_second{"), "{body}");
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn suite_runs_multiple_races_and_writes_combined_report() {
-    let dir = std::env::temp_dir();
-    let suite_path = dir.join("llmrace-suite-test.toml");
-    let out_path = dir.join("llmrace-suite-out.md");
+    let dir = unique_temp_dir("suite");
+    let suite_path = dir.join("suite-test.toml");
+    let out_path = dir.join("suite-out.md");
     std::fs::write(
         &suite_path,
         r#"
@@ -1023,10 +1056,10 @@ prompt = "count"
 
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("--suite")
-        .arg(suite_path.to_string_lossy().into_owned())
+        .arg(&suite_path)
         .arg("--quiet")
         .arg("--out")
-        .arg(out_path.to_string_lossy().into_owned())
+        .arg(&out_path)
         .output()
         .unwrap();
     assert!(
@@ -1035,7 +1068,7 @@ prompt = "count"
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let suite_report = dir.join("llmrace-suite-out-suite.md");
+    let suite_report = dir.join("suite-out-suite.md");
     let body = std::fs::read_to_string(&suite_report).unwrap();
     assert!(body.contains("## quick"), "{body}");
     assert!(body.contains("## sat"), "{body}");
@@ -1045,6 +1078,7 @@ prompt = "count"
         !body.contains("1 failed"),
         "no suite failures expected: {body}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1063,7 +1097,8 @@ fn recommend_json_is_structured() {
 
 #[test]
 fn sampling_flags_are_stamped_and_out_of_range_values_fail() {
-    let path = std::env::temp_dir().join(format!("llmrace-sampling-{}.md", std::process::id()));
+    let dir = unique_temp_dir("sampling");
+    let path = dir.join("sampling.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .arg("mock")
         .arg("--no-tui")
@@ -1102,9 +1137,7 @@ fn sampling_flags_are_stamped_and_out_of_range_values_fail() {
     assert!(md.contains("temperature 0"), "{md}");
     let html = std::fs::read_to_string(path.with_extension("html")).unwrap();
     assert!(html.contains("temperature 0"), "{html}");
-    let _ = std::fs::remove_file(&path);
-    let _ = std::fs::remove_file(&json_path);
-    let _ = std::fs::remove_file(path.with_extension("html"));
+    let _ = std::fs::remove_dir_all(&dir);
 
     let bad = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
@@ -1126,9 +1159,7 @@ fn sampling_flags_are_stamped_and_out_of_range_values_fail() {
 
 #[test]
 fn reproducible_fills_only_the_sampling_controls_still_unset() {
-    let dir = std::env::temp_dir().join(format!("llmrace-repro-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("repro");
     let report = dir.join("race.json");
     let run = |extra: &[&str]| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_llmrace"));
@@ -1180,9 +1211,7 @@ fn reproducible_fills_only_the_sampling_controls_still_unset() {
 
 #[test]
 fn response_schema_is_loaded_checked_and_stamped() {
-    let dir = std::env::temp_dir().join(format!("llmrace-schema-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("response-schema");
     let schema_path = dir.join("answer.schema.json");
     std::fs::write(
         &schema_path,
@@ -1246,9 +1275,7 @@ fn alert_test_requires_webhook() {
 
 #[test]
 fn out_dash_with_json_and_unquiet_keeps_stdout_pure_markdown() {
-    let dir = std::env::temp_dir().join(format!("llmrace-out-dash-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("out-dash");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .current_dir(&dir)
         .args([
@@ -1288,9 +1315,7 @@ fn out_dash_with_json_and_unquiet_keeps_stdout_pure_markdown() {
 
 #[test]
 fn out_json_extension_writes_valid_json_without_json_flag() {
-    let dir = std::env::temp_dir().join(format!("llmrace-out-json-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("out-json");
     let target = dir.join("only.json");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
@@ -1315,9 +1340,7 @@ fn out_json_extension_writes_valid_json_without_json_flag() {
 
 #[test]
 fn sarif_flag_writes_code_scanning_results_for_gate_failures() {
-    let dir = std::env::temp_dir().join(format!("llmrace-sarif-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("sarif");
     let md_path = dir.join("race.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
@@ -1355,9 +1378,7 @@ fn sarif_flag_writes_code_scanning_results_for_gate_failures() {
 
 #[test]
 fn junit_flag_writes_a_test_report_next_to_the_markdown() {
-    let dir = std::env::temp_dir().join(format!("llmrace-junit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("junit");
     let md_path = dir.join("race.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
@@ -1380,9 +1401,7 @@ fn junit_flag_writes_a_test_report_next_to_the_markdown() {
 
 #[test]
 fn duration_html_report_uses_actual_runs_not_sentinel() {
-    let dir = std::env::temp_dir().join(format!("llmrace-dur-html-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("dur-html");
     let md_path = dir.join("dur.md");
     let out = Command::new(env!("CARGO_BIN_EXE_llmrace"))
         .args([
