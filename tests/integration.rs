@@ -1616,7 +1616,7 @@ fn html_report_renders_lanes_and_bars() {
 fn reasoning_tokens_split_from_visible() {
     let summary = llmrace::bench::LaneSummary {
         name: "gpt5".into(),
-        model: "m".into(),
+        model: "gpt-5-nano".into(),
         runs: vec![RunMetrics {
             total_ms: 1665.0,
             ttfb_ms: 1652.0,
