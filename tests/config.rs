@@ -1,4 +1,16 @@
 use llmrace::config::Config;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let n = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("llmrace-{label}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 const SAMPLE: &str = r#"
 [profiles.fast]
@@ -109,9 +121,7 @@ fn profiles_accept_retries() {
 #[test]
 fn explicit_flags_win_over_profile_values() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("llmrace-profile-e2e");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("profile-e2e");
     std::fs::write(
         dir.join("llmrace.toml"),
         r#"
@@ -155,14 +165,14 @@ fn explicit_flags_win_over_profile_values() {
     // equals-form also counts as explicit
     let (_, json) = run(&["--runs=3"]);
     assert!(json.contains("\"runs\": 3"), "{json}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn explicit_max_tokens_wins_over_profile() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("llmrace-profile-mt");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("profile-mt");
     std::fs::write(
         dir.join("llmrace.toml"),
         r#"
@@ -188,14 +198,13 @@ fn explicit_max_tokens_wins_over_profile() {
     assert!(out.status.success());
     let json = std::fs::read_to_string(dir.join("llmrace-report.json")).unwrap();
     assert!(json.contains("\"max_tokens\": 32"), "{json}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn custom_variants_run_in_sweeps() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join("llmrace-custom-variants");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = unique_temp_dir("custom-variants");
     std::fs::write(
         dir.join("llmrace.toml"),
         r#"
@@ -230,4 +239,5 @@ fn custom_variants_run_in_sweeps() {
     let md = std::fs::read_to_string(dir.join("llmrace-report.md")).unwrap();
     assert!(md.contains("variant: `sql`"), "{md}");
     assert!(md.contains("custom variant"), "{md}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
