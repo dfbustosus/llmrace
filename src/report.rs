@@ -4,13 +4,23 @@ use crate::bench::LaneSummary;
 use crate::cost;
 use crate::stats::fmt_ms;
 
-/// Renders a shareable markdown report ranked by aggregate tokens/s.
-///
-/// When lanes carry variant labels (a `--sweep` run), one table is emitted
-/// per variant.
+/// Display label for one lane: `provider/model` when `summaries` contains
+/// multiple lanes for the same provider and `summary.model` is non-empty,
+/// otherwise `provider`.
+pub(crate) fn lane_label(summary: &LaneSummary, summaries: &[LaneSummary]) -> String {
+    let dup = summaries.iter().filter(|x| x.name == summary.name).count() > 1;
+    if dup && !summary.model.is_empty() {
+        format!("{}/{}", summary.name, summary.model)
+    } else {
+        summary.name.clone()
+    }
+}
+
 /// Renders just the significance verdict line, if computable.
 pub(crate) fn significance_line(summaries: &[LaneSummary]) -> Option<String> {
     top_two_significance(summaries).map(|(a, b, delta, p, significant)| {
+        let a = crate::util::md_escape_cell(&a);
+        let b = crate::util::md_escape_cell(&b);
         if significant {
             format!(
                 "*Significance*: {a} vs {b} — \u{394} {delta:+.0} ms, statistically significant (p = {p:.3}) (Welch's t-test)."
@@ -40,21 +50,9 @@ pub fn verdict_line(summaries: &[LaneSummary]) -> Option<String> {
         .iter()
         .skip(1)
         .find(|lane| lane.variant == winner.variant)?;
-    let label = |s: &LaneSummary| {
-        let dup = summaries
-            .iter()
-            .filter(|x| x.name == s.name && x.successful())
-            .count()
-            > 1;
-        if dup && !s.model.is_empty() {
-            format!("{}/{}", s.name, s.model)
-        } else {
-            s.name.clone()
-        }
-    };
     let mut line = format!(
         "Verdict: {} leads on goodput — {:.1} tok/s, {:.0} ms mean, TTFT {} ms",
-        label(winner),
+        lane_label(winner, summaries),
         winner.goodput_tokens_per_sec(),
         winner.mean_total_ms(),
         fmt_ms(winner.mean_ttfb_ms())
@@ -70,16 +68,19 @@ pub fn verdict_line(summaries: &[LaneSummary]) -> Option<String> {
     if ratio >= 1.1 {
         line.push_str(&format!(
             " — {ratio:.1}× faster than {} in mean latency",
-            label(runner)
+            lane_label(runner, summaries)
         ));
     } else if ratio > 0.0 && ratio <= 1.0 / 1.1 {
         line.push_str(&format!(
             " — {:.1}× slower than {} in mean latency",
             1.0 / ratio,
-            label(runner)
+            lane_label(runner, summaries)
         ));
     } else {
-        line.push_str(&format!(" — within 10% of {}", label(runner)));
+        line.push_str(&format!(
+            " — within 10% of {}",
+            lane_label(runner, summaries)
+        ));
     }
     if let Some((_, _, _, p, significant)) = top_two_significance(summaries) {
         if significant {
@@ -105,7 +106,7 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
     out.push_str("# 🏁 llmrace report\n\n");
     out.push_str(&format!(
         "- **Prompt**: `\"{}\"`\n",
-        prompt.replace('\n', " ")
+        crate::util::md_escape_cell(prompt)
     ));
     out.push_str(&format!("- **Measured rounds per provider**: {}\n", runs));
     out.push_str(&format!("- **Max tokens**: {}\n", max_tokens));
@@ -118,12 +119,17 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
                 .find(|v| v.name == *name)
                 .map(|v| v.description)
                 .unwrap_or("custom variant (llmrace.toml)");
-            out.push_str(&format!("\n## variant: `{name}` — {desc}\n"));
+            out.push_str(&format!(
+                "\n## variant: `{}` — {desc}\n",
+                crate::util::md_escape_cell(name)
+            ));
         }
         out.push_str(&variant_table(&lanes));
     }
 
     if let Some((a, b, delta, p, significant)) = top_two_significance(summaries) {
+        let a = crate::util::md_escape_cell(&a);
+        let b = crate::util::md_escape_cell(&b);
         let verdict = if significant {
             format!("statistically significant (p = {p:.3})")
         } else {
@@ -134,7 +140,7 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
         ));
     }
     if let Some(line) = verdict_line(summaries) {
-        out.push_str(&format!("\n*{line}*\n"));
+        out.push_str(&format!("\n*{}*\n", crate::util::md_escape_cell(&line)));
     }
 
     let unpriced: Vec<&LaneSummary> = summaries
@@ -155,13 +161,13 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
             let variant = s
                 .variant
                 .as_deref()
-                .map(|v| format!(" ({v})"))
+                .map(|v| format!(" ({})", crate::util::md_escape_cell(v)))
                 .unwrap_or_default();
             out.push_str(&format!(
                 "- `{}{}` — {}\n",
-                s.name,
+                crate::util::md_escape_cell(&s.name),
                 variant,
-                s.error.as_deref().unwrap_or("no successful rounds")
+                crate::util::md_escape_cell(s.error.as_deref().unwrap_or("no successful rounds"))
             ));
         }
     }
@@ -184,10 +190,10 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
     out.push_str("> Cost/run uses billed input and output tokens when the provider reported them. Cache reads and cache writes use the published discount when this crate has one for the model; hourly cache storage is not in the per-request usage and is not included. A trailing ~ means input tokens were estimated from the user prompt, which leaves out a system prompt and tool schemas. ");
     out.push_str(&crate::cost::pricing_stamp());
     out.push('\n');
-    let undiscounted: Vec<&str> = summaries
+    let undiscounted: Vec<String> = summaries
         .iter()
         .filter(|s| s.successful() && !s.cache_discount_applied())
-        .map(|s| s.name.as_str())
+        .map(|s| crate::util::md_escape_cell(s.name.as_str()))
         .collect();
     if !undiscounted.is_empty() {
         out.push_str(&format!(
@@ -249,9 +255,9 @@ pub(crate) fn variant_table(lanes: &[&LaneSummary]) -> String {
         out.push_str(&format!(
             "| {} | {}{} | `{}` | {} | {} | {:.0} ms | {:.0} ms | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
             i + 1,
-            s.name,
+            crate::util::md_escape_cell(&s.name),
             outlier_mark,
-            s.model,
+            crate::util::md_escape_cell(&s.model),
             s.concurrency,
             mean,
             s.median_total_ms(),
@@ -292,14 +298,7 @@ fn prompt_table(summaries: &[LaneSummary]) -> String {
         "\n## Per prompt\n\n| Provider | Prompt | Rounds | Pass | TTFT | Tokens/s |\n|----------|--------|-------:|-----:|-----:|---------:|\n",
     );
     for s in summaries {
-        // same-provider multi-model races name the model, mirroring the
-        // significance labels
-        let dup = summaries.iter().filter(|x| x.name == s.name).count() > 1;
-        let provider = if dup && !s.model.is_empty() {
-            format!("{}/{}", s.name, s.model)
-        } else {
-            s.name.clone()
-        };
+        let provider = crate::util::md_escape_cell(&lane_label(s, summaries));
         for row in s.prompt_rows() {
             let pass = match row.task_pass {
                 Some((ok, n)) => format!("{ok}/{n}"),
@@ -307,7 +306,11 @@ fn prompt_table(summaries: &[LaneSummary]) -> String {
             };
             out.push_str(&format!(
                 "| {} | `{}` | {} | {pass} | {:.0} ms | {:.1} |\n",
-                provider, row.id, row.rounds, row.ttfb_ms, row.tokens_per_sec
+                provider,
+                crate::util::md_escape_cell(&row.id),
+                row.rounds,
+                row.ttfb_ms,
+                row.tokens_per_sec
             ));
         }
     }
@@ -326,13 +329,11 @@ fn rank<L: std::borrow::Borrow<LaneSummary>>(lanes: &[L]) -> Vec<&LaneSummary> {
         .collect();
     ranked.sort_by(|a, b| {
         b.goodput_tokens_per_sec()
-            .partial_cmp(&a.goodput_tokens_per_sec())
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.goodput_tokens_per_sec())
             .then_with(|| {
                 a.failure_rate()
                     .unwrap_or(0.0)
-                    .partial_cmp(&b.failure_rate().unwrap_or(0.0))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .total_cmp(&b.failure_rate().unwrap_or(0.0))
             })
     });
     ranked
@@ -396,7 +397,14 @@ pub fn cache_note(summaries: &[LaneSummary]) -> Option<String> {
             let hits = s.cache_hit_rounds();
             !s.runs.is_empty() && hits > 0 && hits < s.runs.len()
         })
-        .map(|s| format!("{} ({}/{})", s.name, s.cache_hit_rounds(), s.runs.len()))
+        .map(|s| {
+            format!(
+                "{} ({}/{})",
+                crate::util::md_escape_cell(&s.name),
+                s.cache_hit_rounds(),
+                s.runs.len()
+            )
+        })
         .collect();
     if mixed.is_empty() {
         None
@@ -975,21 +983,21 @@ pub fn junit_xml_with_gate(
         let time: f64 = cases.iter().map(|c| c.time_s).sum();
         out.push_str(&format!(
             "  <testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" time=\"{time:.3}\">\n",
-            crate::util::html_escape(name),
+            crate::util::xml_escape(name),
             cases.len(),
             failures
         ));
         for case in cases {
             out.push_str(&format!(
                 "    <testcase classname=\"{}\" name=\"{}\" time=\"{:.3}\">\n",
-                crate::util::html_escape(&case.classname),
-                crate::util::html_escape(&case.name),
+                crate::util::xml_escape(&case.classname),
+                crate::util::xml_escape(&case.name),
                 case.time_s
             ));
             if let Some(message) = &case.failure {
                 out.push_str(&format!(
                     "      <failure message=\"{}\"/>\n",
-                    crate::util::html_escape(message)
+                    crate::util::xml_escape(message)
                 ));
             }
             out.push_str("    </testcase>\n");
@@ -1042,20 +1050,13 @@ fn top_two_significance(summaries: &[LaneSummary]) -> Option<(String, String, f6
     let (t, df) = crate::stats::welch_t(&a, &b)?;
     let p = crate::stats::t_two_sided_p(t, df);
     let delta = leader.mean_total_ms() - runner_up.mean_total_ms();
-    // disambiguate same-provider multi-model races, mirroring the podium
-    let label = |s: &LaneSummary| {
-        let dup = summaries
-            .iter()
-            .filter(|x| x.name == s.name && x.successful())
-            .count()
-            > 1;
-        if dup && !s.model.is_empty() {
-            format!("{}/{}", s.name, s.model)
-        } else {
-            s.name.clone()
-        }
-    };
-    Some((label(leader), label(runner_up), delta, p, p < 0.05))
+    Some((
+        lane_label(leader, summaries),
+        lane_label(runner_up, summaries),
+        delta,
+        p,
+        p < 0.05,
+    ))
 }
 
 /// Renders the compact terminal ranking table.
@@ -1107,8 +1108,7 @@ pub fn terminal_table(summaries: &[LaneSummary]) -> String {
                 format!("{v:.0}{st}")
             })
             .unwrap_or_else(|| "—".into());
-        let reasoning = if s.reasoning_tokens() > 0 && crate::provider::is_reasoning_model(&s.model)
-        {
+        let reasoning = if s.reasoning_tokens() > 0 {
             format!(" 🧠{}", s.reasoning_tokens())
         } else {
             String::new()
@@ -1195,7 +1195,11 @@ pub fn histogram_section(summaries: &[LaneSummary]) -> String {
             .iter()
             .map(|(_, v)| format!("{v:.0} ms"))
             .collect();
-        out.push_str(&format!("| {} | {} |\n", s.name, cells.join(" | ")));
+        out.push_str(&format!(
+            "| {} | {} |\n",
+            crate::util::md_escape_cell(&s.name),
+            cells.join(" | ")
+        ));
     }
 
     // TTFB ladder: first-token latency distribution, distinct from the
@@ -1211,7 +1215,11 @@ pub fn histogram_section(summaries: &[LaneSummary]) -> String {
             .iter()
             .map(|v| format!("{v:.0} ms"))
             .collect();
-        out.push_str(&format!("| {} | {} |\n", s.name, cells.join(" | ")));
+        out.push_str(&format!(
+            "| {} | {} |\n",
+            crate::util::md_escape_cell(&s.name),
+            cells.join(" | ")
+        ));
     }
 
     out.push_str("\n```\n");
@@ -1231,7 +1239,7 @@ pub fn histogram_section(summaries: &[LaneSummary]) -> String {
             histogram[idx.min(BUCKETS - 1)] += 1;
         }
         let peak = histogram.iter().copied().max().unwrap_or(1).max(1);
-        out.push_str(&format!("{}\n", s.name));
+        out.push_str(&format!("{}\n", crate::util::md_escape_cell(&s.name)));
         for (i, count) in histogram.iter().enumerate() {
             let bar_len = (count * MAX_BAR / peak).min(MAX_BAR);
             let bar: String = "▇".repeat(bar_len);
@@ -1406,4 +1414,72 @@ fn lane_bars(s: &LaneSummary) -> String {
     }
     svg.push_str("</svg>");
     svg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::RunMetrics;
+
+    #[test]
+    fn terminal_table_shows_reasoning_badge_for_non_openai_models() {
+        let gemini = LaneSummary {
+            name: "gemini".into(),
+            model: "gemini-2.5-flash".into(),
+            concurrency: 1,
+            runs: vec![RunMetrics {
+                total_ms: 500.0,
+                ttfb_ms: 100.0,
+                tokens: 50,
+                reasoning_tokens: Some(300),
+                reasoning_billed_separately: true,
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        let table = terminal_table(&[gemini]);
+        assert!(table.contains("🧠300"), "{table}");
+    }
+
+    #[test]
+    fn junit_xml_strips_illegal_xml10_control_chars() {
+        let failed = LaneSummary {
+            name: "p\x00\x07".into(),
+            model: "m'".into(),
+            error: Some("bad \x1b[31merr".into()),
+            ..LaneSummary::default()
+        };
+        let xml = junit_xml(&[failed]);
+        assert!(!xml.contains('\x00') && !xml.contains('\x07') && !xml.contains('\x1b'));
+        assert!(xml.contains("&apos;"), "{xml}");
+    }
+
+    #[test]
+    fn markdown_escapes_untrusted_provider_model_prompt_and_error() {
+        let ok = LaneSummary {
+            name: "p|one".into(),
+            model: "m`1".into(),
+            concurrency: 1,
+            runs: vec![RunMetrics {
+                total_ms: 100.0,
+                ttfb_ms: 10.0,
+                tokens: 20,
+                prompt_id: "id|1".into(),
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        let err = LaneSummary {
+            name: "bad|lane".into(),
+            model: "m".into(),
+            error: Some("boom\n<script>|x".into()),
+            ..LaneSummary::default()
+        };
+        let md = markdown(&[ok, err], "prompt `with` | <tag>", 1, 32);
+        assert!(md.contains("p\\|one"), "{md}");
+        assert!(md.contains("m\\`1"), "{md}");
+        assert!(md.contains("id\\|1"), "{md}");
+        assert!(md.contains("&lt;script&gt;\\|x"), "{md}");
+        assert!(md.contains("prompt \\`with\\` \\| &lt;tag&gt;"), "{md}");
+    }
 }
