@@ -4,6 +4,91 @@
   "title": "llmrace race report",
   "type": "object",
   "required": ["tool", "version", "prompt", "pricing_as_of", "workload", "prompt_sha256", "request_sha256", "runs", "max_tokens", "providers"],
+  "$defs": {
+    "request_outcome": {
+      "type": "object",
+      "required": ["elapsed_ms", "attempts"],
+      "properties": {
+        "elapsed_ms": {"type": "number", "minimum": 0},
+        "attempts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/request_attempt"}
+        }
+      }
+    },
+    "request_attempt": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "result"],
+          "properties": {
+            "status": {"const": "success"},
+            "result": {"$ref": "#/$defs/run_metrics"}
+          }
+        },
+        {
+          "type": "object",
+          "required": ["status", "result"],
+          "properties": {
+            "status": {"const": "failure"},
+            "result": {"$ref": "#/$defs/round_failure"}
+          }
+        }
+      ]
+    },
+    "round_failure": {
+      "type": "object",
+      "required": ["elapsed_ms", "class", "attempts", "message"],
+      "properties": {
+        "task_checked": {"type": "boolean"},
+        "requests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/request_outcome"}
+        },
+        "elapsed_ms": {"type": "number", "minimum": 0},
+        "class": {
+          "type": "string",
+          "enum": ["timeout", "rate_limit", "server", "client", "stream", "protocol", "io", "config"]
+        },
+        "attempts": {"type": "integer", "minimum": 1},
+        "message": {"type": "string"},
+        "prompt_id": {"type": "string"}
+      }
+    },
+    "run_metrics": {
+      "type": "object",
+      "required": ["total_ms", "ttfb_ms", "tokens"],
+      "properties": {
+        "requests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/request_outcome"}
+        },
+        "total_ms": {"type": "number", "minimum": 0},
+        "ttfb_ms": {"type": "number", "minimum": 0},
+        "tokens": {"type": "integer", "minimum": 0},
+        "chars": {"type": "integer", "minimum": 0},
+        "prompt_tokens": {"type": "integer", "minimum": 0},
+        "cache_read_tokens": {"type": "integer", "minimum": 0},
+        "cache_write_tokens": {"type": "integer", "minimum": 0},
+        "cache_write_1h_tokens": {"type": "integer", "minimum": 0},
+        "reasoning_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "reasoning_billed_separately": {"type": "boolean"},
+        "tool_args": {"type": "string"},
+        "prompt_id": {"type": "string"},
+        "task_ok": {"type": ["boolean", "null"]},
+        "server_ms": {"type": ["number", "null"]},
+        "request_id": {"type": ["string", "null"]},
+        "ratelimit_remaining": {"type": ["string", "null"]},
+        "itl_gaps_ms": {
+          "type": "array",
+          "items": {"type": "number", "minimum": 0}
+        },
+        "stutters": {"type": "integer", "minimum": 0},
+        "visible_tokens": {"type": "integer", "minimum": 0},
+        "tokens_per_sec": {"type": "number", "minimum": 0}
+      }
+    }
+  },
   "properties": {
     "tool": {"const": "llmrace"},
     "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
@@ -50,7 +135,20 @@
       "properties": {
         "ok": {"type": "boolean"},
         "status": {"enum": ["pass", "fail", "inconclusive"]},
-        "inconclusive": {"type": "array", "items": {"type": "object"}},
+        "inconclusive": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["provider", "model", "metric", "prompt_id", "reason"],
+            "properties": {
+              "provider": {"type": "string"},
+              "model": {"type": "string"},
+              "metric": {"type": "string"},
+              "prompt_id": {"type": ["string", "null"]},
+              "reason": {"type": "string"}
+            }
+          }
+        },
         "request_mismatch": {"type": "boolean"},
         "threshold_pct": {"type": "number", "minimum": 0},
         "failures": {
@@ -60,6 +158,7 @@
             "required": ["provider", "metric", "prompt_id", "baseline", "current", "delta_pct"],
             "properties": {
               "provider": {"type": "string"},
+              "model": {"type": "string"},
               "metric": {"type": "string"},
               "prompt_id": {"type": ["string", "null"]},
               "baseline": {"type": "number"},
@@ -107,43 +206,20 @@
           "goodput_tokens_per_sec": {"type": "number", "minimum": 0},
           "failures": {
             "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["elapsed_ms", "class", "attempts", "message"],
-              "properties": {
-                "elapsed_ms": {"type": "number", "minimum": 0},
-                "class": {"type": "string"},
-                "attempts": {"type": "integer", "minimum": 1},
-                "message": {"type": "string"}
-              }
-            }
+            "items": {"$ref": "#/$defs/round_failure"}
           },
           "runs": {
             "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["total_ms", "ttfb_ms", "tokens"],
-              "properties": {
-                "total_ms": {"type": "number", "minimum": 0},
-                "ttfb_ms": {"type": "number", "minimum": 0},
-                "tokens": {"type": "integer", "minimum": 0},
-                "chars": {"type": "integer", "minimum": 0},
-                "prompt_tokens": {"type": "integer", "minimum": 0},
-                "cache_read_tokens": {"type": "integer", "minimum": 0},
-                "cache_write_tokens": {"type": "integer", "minimum": 0},
-                "cache_write_1h_tokens": {"type": "integer", "minimum": 0},
-                "tokens_per_sec": {"type": "number", "minimum": 0},
-                "prompt_id": {"type": "string"}
-              }
-            }
+            "items": {"$ref": "#/$defs/run_metrics"}
           },
           "mean_total_ms": {"type": "number"},
           "median_total_ms": {"type": "number"},
           "p95_total_ms": {"type": "number"},
           "ci95_total_ms": {
-            "type": ["array", "number", "null"],
+            "type": ["array", "null"],
             "items": {"type": "number"},
-            "minItems": 2, "maxItems": 2
+            "minItems": 2,
+            "maxItems": 2
           },
           "mean_ttfb_ms": {"type": "number"},
           "ttft_ms": {"type": "number"},
@@ -202,7 +278,8 @@
           "tool_validity": {
             "type": ["array", "null"],
             "items": {"type": "integer", "minimum": 0},
-            "minItems": 2, "maxItems": 2
+            "minItems": 2,
+            "maxItems": 2
           }
         }
       }
