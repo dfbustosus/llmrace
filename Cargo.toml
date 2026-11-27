@@ -1,6 +1,6 @@
 [package]
 name = "llmrace"
-version = "1.39.0"
+version = "1.40.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Race the same LLM request across providers: latency, TTFT, tokens/s, cost, and a CI gate that names the prompt."
@@ -19,8 +19,15 @@ exclude = [
   "docs/demo-mcp.gif",
   "docs/demo-mcp.tape",
   "docs/social-preview.png",
+  "docs/launch/**",
+  ".agents/**",
+  "AGENTS.md",
   ".github/**",
+  "docker/**",
   "python/**",
+  "RELEASE.md",
+  "deny.toml",
+  "tests/contracts.py",
   "llmrace-report.*",
 ]
 
