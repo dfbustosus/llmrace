@@ -98,10 +98,12 @@ fn field_u64(obj: &serde_json::Value, names: &[&str]) -> Option<u64> {
 }
 
 /// OpenAI's `prompt_tokens` already includes `cached_tokens`.
+/// DeepSeek reports the same cache-hit bucket as `prompt_cache_hit_tokens`.
 fn openai_input(v: &serde_json::Value) -> InputUsage {
     InputUsage {
         prompt_tokens: json_u64(v.pointer("/usage/prompt_tokens")),
-        cache_read_tokens: json_u64(v.pointer("/usage/prompt_tokens_details/cached_tokens")),
+        cache_read_tokens: json_u64(v.pointer("/usage/prompt_tokens_details/cached_tokens"))
+            .or_else(|| json_u64(v.pointer("/usage/prompt_cache_hit_tokens"))),
         cache_write_tokens: None,
         cache_write_1h_tokens: None,
     }
@@ -297,7 +299,12 @@ impl SseStream {
     }
 
     fn enqueue_block(&mut self, block: &str) {
-        let payload = parse_data_events(block).join("\n");
+        let data_lines = parse_data_events(block);
+        let payload: std::borrow::Cow<'_, str> = match data_lines.as_slice() {
+            [] => return,
+            [one] => std::borrow::Cow::Borrowed(*one),
+            many => std::borrow::Cow::Owned(many.join("\n")),
+        };
         if payload.is_empty() || self.upstream_done {
             return;
         }
@@ -332,7 +339,7 @@ impl SseStream {
                 .pointer("/choices/0/finish_reason")
                 .is_some_and(|v| v.is_string()),
             Wire::Anthropic => kind == "message_stop",
-            Wire::Gemini => value
+            Wire::Gemini | Wire::Vertex => value
                 .pointer("/candidates/0/finishReason")
                 .is_some_and(|v| v.is_string()),
             Wire::Cohere => {
@@ -342,20 +349,17 @@ impl SseStream {
             Wire::OpenAiResponses => matches!(kind, "response.completed" | "response.incomplete"),
             _ => false,
         };
-        {
-            let payload = payload.as_str();
-            if let Some(event) = decode_payload(payload, self.wire) {
-                let carries_output = event.token.is_some()
-                    || event.completion_tokens.is_some()
-                    || event.tool_args.is_some()
-                    || event.prompt_tokens.is_some()
-                    || event.cache_read_tokens.is_some()
-                    || event.cache_write_tokens.is_some()
-                    || event.cache_write_1h_tokens.is_some()
-                    || event.reasoning_tokens.is_some();
-                if carries_output {
-                    self.pending.push_back(Ok(event));
-                }
+        if let Some(event) = decode_value(&value, self.wire) {
+            let carries_output = event.token.is_some()
+                || event.completion_tokens.is_some()
+                || event.tool_args.is_some()
+                || event.prompt_tokens.is_some()
+                || event.cache_read_tokens.is_some()
+                || event.cache_write_tokens.is_some()
+                || event.cache_write_1h_tokens.is_some()
+                || event.reasoning_tokens.is_some();
+            if carries_output {
+                self.pending.push_back(Ok(event));
             }
         }
     }
@@ -389,7 +393,9 @@ impl futures_util::Stream for SseStream {
                 },
                 Poll::Ready(Some(Err(e))) => {
                     self.upstream_done = true;
-                    return Poll::Ready(Some(Err(Error::Stream(e.to_string()))));
+                    return Poll::Ready(Some(Err(Error::Stream(
+                        super::request::format_reqwest_error(None, e),
+                    ))));
                 }
                 Poll::Ready(None) => {
                     for block in self.parser.finish() {
@@ -417,6 +423,10 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
         return None;
     }
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    decode_value(&v, wire)
+}
+
+fn decode_value(v: &serde_json::Value, wire: Wire) -> Option<StreamEvent> {
     match wire {
         Wire::OpenAiCompat => {
             let token = v
@@ -430,7 +440,7 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
             let usage = json_u64(v.pointer("/usage/completion_tokens"));
-            let mut event = openai_input(&v).into_event(token, tool_args, usage);
+            let mut event = openai_input(v).into_event(token, tool_args, usage);
             // Already inside completion_tokens, so it is recorded and not
             // added to the bill a second time.
             event.reasoning_tokens =
@@ -454,7 +464,7 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                     Some(InputUsage::empty().into_event(token, tool_args, None))
                 }
                 "message_start" | "message_delta" => {
-                    let input = anthropic_input(&v);
+                    let input = anthropic_input(v);
                     let completion_tokens = json_u64(v.pointer("/usage/output_tokens"))
                         .or_else(|| json_u64(v.pointer("/message/usage/output_tokens")));
                     if input.prompt_tokens.is_none() && completion_tokens.is_none() {
@@ -465,18 +475,32 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 _ => None,
             }
         }
-        Wire::Gemini => {
-            let token = v
-                .pointer("/candidates/0/content/parts/0/text")
-                .and_then(|c| c.as_str())
-                .filter(|s| !s.is_empty())
-                .map(str::to_string);
-            let tool_args = v
-                .pointer("/candidates/0/content/parts/0/functionCall/args")
-                .filter(|a| a.is_object())
-                .map(|a| a.to_string());
+        Wire::Gemini | Wire::Vertex => {
+            let mut text_out = String::new();
+            let mut tool_args: Option<String> = None;
+            if let Some(parts) = v
+                .pointer("/candidates/0/content/parts")
+                .and_then(serde_json::Value::as_array)
+            {
+                for part in parts {
+                    if part.get("thought").and_then(serde_json::Value::as_bool) == Some(true) {
+                        continue;
+                    }
+                    if let Some(t) = part.get("text").and_then(serde_json::Value::as_str) {
+                        text_out.push_str(t);
+                    }
+                    if tool_args.is_none() {
+                        if let Some(args) =
+                            part.pointer("/functionCall/args").filter(|a| a.is_object())
+                        {
+                            tool_args = Some(args.to_string());
+                        }
+                    }
+                }
+            }
+            let token = (!text_out.is_empty()).then_some(text_out);
             let usage = json_u64(v.pointer("/usageMetadata/candidatesTokenCount"));
-            let input = gemini_input(&v);
+            let input = gemini_input(v);
             // Thoughts are billed as output and are not inside candidatesTokenCount.
             let thoughts = json_u64(v.pointer("/usageMetadata/thoughtsTokenCount"));
             if token.is_none()
@@ -493,6 +517,7 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
             Some(event)
         }
         Wire::Cohere => {
+            let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
             let token = v
                 .pointer("/delta/message/content/text")
                 .and_then(|c| c.as_str())
@@ -505,6 +530,15 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 })
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
+            let tool_args = if kind == "tool-call-delta" {
+                v.pointer("/delta/message/tool_calls/function/arguments")
+                    .or_else(|| v.pointer("/delta/message/tool_calls/0/function/arguments"))
+                    .and_then(|c| c.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            } else {
+                None
+            };
             let usage = json_u64(v.pointer("/delta/usage/billed_units/output_tokens"))
                 .or_else(|| json_u64(v.pointer("/response/meta/billed_units/output_tokens")))
                 .or_else(|| json_u64(v.pointer("/usage/tokens/output_tokens")));
@@ -515,10 +549,10 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 prompt_tokens,
                 ..InputUsage::empty()
             };
-            if token.is_none() && usage.is_none() && input.is_empty() {
+            if token.is_none() && tool_args.is_none() && usage.is_none() && input.is_empty() {
                 return None;
             }
-            Some(input.into_event(token, None, usage))
+            Some(input.into_event(token, tool_args, usage))
         }
         Wire::OpenAiResponses => {
             let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
@@ -563,7 +597,7 @@ pub fn decode_payload(payload: &str, wire: Wire) -> Option<StreamEvent> {
                 _ => None,
             }
         }
-        Wire::Bedrock | Wire::Vertex | Wire::Mock => None,
+        Wire::Bedrock | Wire::Mock => None,
     }
 }
 
@@ -573,6 +607,7 @@ pub struct MockStream {
     emitted: usize,
     delay: Duration,
     start: Option<tokio::time::Instant>,
+    sleep: Option<std::panic::AssertUnwindSafe<Pin<Box<tokio::time::Sleep>>>>,
     usage_sent: bool,
 }
 
@@ -583,6 +618,7 @@ impl MockStream {
             emitted: 0,
             delay,
             start: None,
+            sleep: None,
             usage_sent: false,
         }
     }
@@ -607,15 +643,24 @@ impl futures_util::Stream for MockStream {
             ))));
         }
         let start = *self.start.get_or_insert_with(tokio::time::Instant::now);
-        let target = start + self.delay * self.emitted as u32 + self.delay;
-        let now = tokio::time::Instant::now();
-        if now < target {
-            let waker = cx.waker().clone();
-            tokio::spawn(async move {
-                tokio::time::sleep_until(target).await;
-                waker.wake();
-            });
-            return Poll::Pending;
+        let step = self
+            .delay
+            .saturating_mul(u32::try_from(self.emitted).unwrap_or(u32::MAX))
+            .saturating_add(self.delay);
+        let target = start + step;
+        if let Some(sleep) = self.sleep.as_mut() {
+            if sleep.0.deadline() != target {
+                sleep.0.as_mut().reset(target);
+            }
+        } else {
+            self.sleep = Some(std::panic::AssertUnwindSafe(Box::pin(
+                tokio::time::sleep_until(target),
+            )));
+        }
+        if let Some(sleep) = self.sleep.as_mut() {
+            if std::future::Future::poll(sleep.0.as_mut(), cx).is_pending() {
+                return Poll::Pending;
+            }
         }
         self.emitted += 1;
         Poll::Ready(Some(Ok(InputUsage::empty().into_event(
@@ -631,19 +676,37 @@ impl futures_util::Stream for MockStream {
 pub struct BedrockStream {
     stream: Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
     buf: Vec<u8>,
+    start: usize,
+    prelude_checked: bool,
     pending: std::collections::VecDeque<Result<StreamEvent>>,
     upstream_done: bool,
     completed: bool,
 }
 
 impl BedrockStream {
+    /// Maximum unconsumed bytes buffered while assembling a single Bedrock
+    /// event-stream frame. Prevents a hostile stream from exhausting memory.
+    const MAX_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+
     pub(super) fn new(resp: reqwest::Response) -> Self {
         BedrockStream {
             stream: Box::pin(resp.bytes_stream()),
             buf: Vec::new(),
+            start: 0,
+            prelude_checked: false,
             pending: std::collections::VecDeque::new(),
             upstream_done: false,
             completed: false,
+        }
+    }
+
+    fn compact(&mut self) {
+        if self.start == self.buf.len() {
+            self.buf.clear();
+            self.start = 0;
+        } else if self.start > 64 * 1024 {
+            self.buf.drain(..self.start);
+            self.start = 0;
         }
     }
 
@@ -710,24 +773,51 @@ impl futures_util::Stream for BedrockStream {
             }
             match futures_util::StreamExt::poll_next_unpin(&mut self.stream, cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
+                    let unconsumed = self.buf.len().saturating_sub(self.start);
+                    if unconsumed.saturating_add(chunk.len()) > Self::MAX_BUFFER_BYTES {
+                        self.upstream_done = true;
+                        return Poll::Ready(Some(Err(Error::Protocol(format!(
+                            "Bedrock event-stream buffer exceeded {} bytes",
+                            Self::MAX_BUFFER_BYTES
+                        )))));
+                    }
                     self.buf.extend_from_slice(&chunk);
                     loop {
-                        let decoded =
-                            super::event_stream::complete_frame_len(&self.buf).and_then(|ready| {
-                                ready
-                                    .map(|_| super::event_stream::decode_frame(&self.buf))
-                                    .transpose()
-                            });
-                        match decoded {
-                            Ok(Some((frame, used))) => {
-                                self.buf.drain(..used);
+                        let window = &self.buf[self.start..];
+                        if window.len() < 12 {
+                            break;
+                        }
+                        let total = u32::from_be_bytes([window[0], window[1], window[2], window[3]])
+                            as usize;
+                        if !(16..=Self::MAX_BUFFER_BYTES).contains(&total) {
+                            self.pending.push_back(Err(Error::Protocol(format!(
+                                "event-stream: impossible total length {total}"
+                            ))));
+                            self.upstream_done = true;
+                            break;
+                        }
+                        if window.len() < total {
+                            if !self.prelude_checked {
+                                if let Err(error) = super::event_stream::complete_frame_len(window)
+                                {
+                                    self.pending.push_back(Err(error));
+                                    self.upstream_done = true;
+                                    break;
+                                }
+                                self.prelude_checked = true;
+                            }
+                            break;
+                        }
+                        match super::event_stream::decode_frame(window) {
+                            Ok((frame, used)) => {
+                                self.start += used;
+                                self.prelude_checked = false;
                                 if let Err(error) = self.enqueue_frame(&frame) {
                                     self.pending.push_back(Err(error));
                                     self.upstream_done = true;
                                     break;
                                 }
                             }
-                            Ok(None) => break,
                             Err(error) => {
                                 self.pending.push_back(Err(error));
                                 self.upstream_done = true;
@@ -735,14 +825,17 @@ impl futures_util::Stream for BedrockStream {
                             }
                         }
                     }
+                    self.compact();
                 }
                 Poll::Ready(Some(Err(e))) => {
                     self.upstream_done = true;
-                    return Poll::Ready(Some(Err(Error::Stream(e.to_string()))));
+                    return Poll::Ready(Some(Err(Error::Stream(
+                        super::request::format_reqwest_error(None, e),
+                    ))));
                 }
                 Poll::Ready(None) => {
                     self.upstream_done = true;
-                    if !self.buf.is_empty() || !self.completed {
+                    if self.start < self.buf.len() || !self.completed {
                         self.pending.push_back(Err(Error::Protocol(
                             "Bedrock stream ended before a complete messageStop".into(),
                         )));
@@ -774,5 +867,49 @@ mod tests {
         assert_eq!(event.cache_write_tokens, Some(25));
         assert_eq!(event.cache_write_1h_tokens, None);
         assert_eq!(event.completion_tokens, Some(20));
+    }
+
+    #[test]
+    fn cohere_v2_tool_call_delta_decodes_arguments() {
+        let payload = r#"{"type":"tool-call-delta","index":0,"delta":{"message":{"tool_calls":{"function":{"arguments":"{\"city\":\"Paris\"}"}}}}}"#;
+        let event = decode_payload(payload, Wire::Cohere).expect("cohere tool delta");
+        assert_eq!(event.tool_args.as_deref(), Some(r#"{"city":"Paris"}"#));
+        assert!(event.token.is_none());
+    }
+
+    #[test]
+    fn gemini_and_vertex_skip_thought_parts_and_keep_all_visible_parts() {
+        // Pure thought part must not emit visible token text (nor trigger TTFT).
+        let thought_only =
+            r#"{"candidates":[{"content":{"parts":[{"text":"internal chain","thought":true}]}}]}"#;
+        assert!(decode_payload(thought_only, Wire::Gemini).is_none());
+        assert!(decode_payload(thought_only, Wire::Vertex).is_none());
+
+        // Thought part followed by multiple visible text parts concatenates visible parts only.
+        let mixed = r#"{"candidates":[{"content":{"parts":[{"text":"secret","thought":true},{"text":"Hello"},{"text":", world"}]}}]}"#;
+        for wire in [Wire::Gemini, Wire::Vertex] {
+            let ev = decode_payload(mixed, wire).expect("mixed parts");
+            assert_eq!(ev.token.as_deref(), Some("Hello, world"));
+        }
+
+        // Thought part followed by functionCall still extracts tool_args.
+        let thought_and_tool = r#"{"candidates":[{"content":{"parts":[{"text":"plan","thought":true},{"functionCall":{"name":"get_weather","args":{"city":"Paris"}}}]}}]}"#;
+        let ev = decode_payload(thought_and_tool, Wire::Vertex).expect("tool call after thought");
+        assert!(ev.token.is_none());
+        assert_eq!(ev.tool_args.as_deref(), Some(r#"{"city":"Paris"}"#));
+    }
+
+    #[test]
+    fn deepseek_prompt_cache_hit_tokens_maps_to_cache_read_tokens() {
+        let deepseek = r#"{"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":800}}"#;
+        let ev = decode_payload(deepseek, Wire::OpenAiCompat).expect("deepseek usage");
+        assert_eq!(ev.prompt_tokens, Some(1000));
+        assert_eq!(ev.cache_read_tokens, Some(800));
+        assert_eq!(ev.completion_tokens, Some(50));
+
+        // OpenAI prompt_tokens_details.cached_tokens takes precedence if both exist.
+        let both = r#"{"choices":[],"usage":{"prompt_tokens":1000,"prompt_tokens_details":{"cached_tokens":600},"prompt_cache_hit_tokens":800}}"#;
+        let ev = decode_payload(both, Wire::OpenAiCompat).expect("both");
+        assert_eq!(ev.cache_read_tokens, Some(600));
     }
 }
