@@ -5,24 +5,111 @@
 //! API keys come from the environment; values never appear in responses.
 
 use anyhow::Result;
-use llmrace::provider::ProviderSpec;
-use llmrace::race::{GatePolicy, Race};
+use llmrace::bench::WarmupMode;
+use llmrace::provider::{JsonOutput, ProviderSpec, Sampling};
+use llmrace::race::{GatePolicy, Race, DEFAULT_PROMPT};
 use llmrace::regression::BaselineReport;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+enum LineRead {
+    Eof,
+    Line(String),
+    TooLong,
+    InvalidUtf8,
+}
+
+/// Reads one newline-delimited frame from `reader`, capping buffered memory at
+/// `max_bytes`. Oversized frames are drained to the next `\n` or EOF so the
+/// server can report an error and keep serving subsequent frames without OOM.
+async fn read_bounded_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<LineRead> {
+    let mut buf = Vec::new();
+    let mut exceeded = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if exceeded {
+                return Ok(LineRead::TooLong);
+            }
+            if buf.is_empty() {
+                return Ok(LineRead::Eof);
+            }
+            break;
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            let take = pos + 1;
+            if !exceeded {
+                if buf.len().saturating_add(pos) > max_bytes {
+                    exceeded = true;
+                    buf.clear();
+                } else {
+                    buf.extend_from_slice(&available[..pos]);
+                }
+            }
+            reader.consume(take);
+            if exceeded {
+                return Ok(LineRead::TooLong);
+            }
+            break;
+        } else {
+            let len = available.len();
+            if !exceeded {
+                if buf.len().saturating_add(len) > max_bytes {
+                    exceeded = true;
+                    buf.clear();
+                } else {
+                    buf.extend_from_slice(available);
+                }
+            }
+            reader.consume(len);
+        }
+    }
+    if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    match String::from_utf8(buf) {
+        Ok(line) => Ok(LineRead::Line(line)),
+        Err(_) => Ok(LineRead::InvalidUtf8),
+    }
+}
 
 /// Runs the server until stdin closes.
 pub(crate) async fn serve() -> Result<()> {
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut reader = BufReader::new(tokio::io::stdin());
     let mut out = tokio::io::stdout();
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim().to_string();
+    loop {
+        let line = match read_bounded_line(&mut reader, MAX_LINE_BYTES).await? {
+            LineRead::Eof => break,
+            LineRead::TooLong => {
+                write(
+                    &mut out,
+                    error(Value::Null, -32600, "request line exceeds 1 MiB limit"),
+                )
+                .await?;
+                continue;
+            }
+            LineRead::InvalidUtf8 => {
+                write(
+                    &mut out,
+                    error(Value::Null, -32700, "parse error: invalid UTF-8"),
+                )
+                .await?;
+                continue;
+            }
+            LineRead::Line(line) => line,
+        };
+        let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let msg: Value = match serde_json::from_str(&line) {
+        let msg: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
                 write(
@@ -99,22 +186,7 @@ fn tools_list() -> Value {
         {
             "name": "llmrace_gate",
             "description": "Race providers against a saved baseline report and return the regression verdict. Fails (isError) when the gate fails.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["providers", "baseline"],
-                "properties": {
-                    "providers": {"type": "array", "items": {"type": "string"}},
-                    "baseline": {"type": "string", "description": "Path to a race.json baseline report"},
-                    "prompt": {"type": "string"},
-                    "workload": {"type": "string", "description": "Path to a JSONL workload file"},
-                    "runs": {"type": "integer", "minimum": 1},
-                    "warmup": {"type": "integer", "minimum": 0},
-                    "max_tokens": {"type": "integer", "minimum": 1},
-                    "max_regression": {"type": "number", "description": "Threshold in percent (default 15)"},
-                    "require_significance": {"type": "boolean", "description": "Latency/throughput breaches must be significant (default true)"},
-                    "fail_on_inconclusive": {"type": "boolean", "description": "Fail breached metrics with no usable significance test (default false)"}
-                }
-            },
+            "inputSchema": gate_schema(),
         },
         {
             "name": "llmrace_doctor",
@@ -129,29 +201,116 @@ fn tools_list() -> Value {
     ]})
 }
 
+fn shared_race_properties() -> serde_json::Map<String, Value> {
+    let mut props = serde_json::Map::new();
+    props.insert(
+        "providers".into(),
+        json!({"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 64}),
+    );
+    props.insert("prompt".into(), json!({"type": "string"}));
+    props.insert(
+        "workload".into(),
+        json!({"type": "string", "description": "Path to a JSONL workload file"}),
+    );
+    props.insert(
+        "runs".into(),
+        json!({"type": "integer", "minimum": 1, "maximum": 1000}),
+    );
+    props.insert(
+        "warmup".into(),
+        json!({"type": "integer", "minimum": 0, "maximum": 100}),
+    );
+    props.insert(
+        "warmup_mode".into(),
+        json!({
+            "type": "string",
+            "enum": ["same-prompt", "probe"],
+            "description": "Warmup request mode: same-prompt (default) or probe"
+        }),
+    );
+    props.insert(
+        "max_tokens".into(),
+        json!({"type": "integer", "minimum": 1, "maximum": 131_072}),
+    );
+    props.insert(
+        "concurrency".into(),
+        json!({"type": "integer", "minimum": 1, "maximum": 128}),
+    );
+    props.insert(
+        "retries".into(),
+        json!({"type": "integer", "minimum": 0, "maximum": 10}),
+    );
+    props.insert(
+        "timeout_secs".into(),
+        json!({"type": "integer", "minimum": 1, "maximum": 600}),
+    );
+    props.insert(
+        "reproducible".into(),
+        json!({"type": "boolean", "description": "Pin temperature=0, top_p=1, seed=0"}),
+    );
+    props.insert(
+        "system".into(),
+        json!({"type": "string", "description": "System prompt sent with every request"}),
+    );
+    props.insert(
+        "tools".into(),
+        json!({"type": "boolean", "description": "Enable built-in tool-calling benchmark (weather task)"}),
+    );
+    props.insert(
+        "json_output".into(),
+        json!({"type": "boolean", "description": "Require JSON object output where supported"}),
+    );
+    props
+}
+
 fn race_schema() -> Value {
+    let mut props = shared_race_properties();
+    props.insert(
+        "winner".into(),
+        json!({"type": "boolean", "description": "Include the weighted podium"}),
+    );
     json!({
         "type": "object",
         "required": ["providers"],
-        "properties": {
-            "providers": {"type": "array", "items": {"type": "string"}},
-            "prompt": {"type": "string"},
-            "workload": {"type": "string", "description": "Path to a JSONL workload file"},
-            "runs": {"type": "integer", "minimum": 1},
-            "warmup": {"type": "integer", "minimum": 0},
-            "max_tokens": {"type": "integer", "minimum": 1},
-            "winner": {"type": "boolean", "description": "Include the weighted podium"}
-        }
+        "properties": Value::Object(props),
+    })
+}
+
+fn gate_schema() -> Value {
+    let mut props = shared_race_properties();
+    props.insert(
+        "baseline".into(),
+        json!({"type": "string", "description": "Path to a race.json baseline report"}),
+    );
+    props.insert(
+        "max_regression".into(),
+        json!({"type": "number", "minimum": 0, "description": "Threshold in percent (default 15)"}),
+    );
+    props.insert(
+        "require_significance".into(),
+        json!({"type": "boolean", "description": "Latency/throughput breaches must be significant (default true)"}),
+    );
+    props.insert(
+        "fail_on_inconclusive".into(),
+        json!({"type": "boolean", "description": "Fail breached metrics with no usable significance test (default false)"}),
+    );
+    json!({
+        "type": "object",
+        "required": ["providers", "baseline"],
+        "properties": Value::Object(props),
     })
 }
 
 async fn call_tool(id: Value, msg: &Value) -> Value {
     let params = &msg["params"];
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let args = match params.get("arguments") {
+        None | Some(Value::Null) => json!({}),
+        Some(v) if v.is_object() => v.clone(),
+        Some(_) => {
+            return result(id, error_result("'arguments' must be a JSON object".into()));
+        }
+    };
     let outcome = match name {
         "llmrace_race" => tool_race(&args).await,
         "llmrace_gate" => tool_gate(&args).await,
@@ -165,6 +324,125 @@ async fn call_tool(id: Value, msg: &Value) -> Value {
     }
 }
 
+fn opt_usize_in_range(
+    args: &Value,
+    key: &str,
+    min: usize,
+    max: usize,
+) -> Result<Option<usize>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let Some(raw) = value.as_u64() else {
+        return Err(format!("'{key}' must be an integer in {min}..={max}"));
+    };
+    let parsed =
+        usize::try_from(raw).map_err(|_| format!("'{key}' must be an integer in {min}..={max}"))?;
+    if !(min..=max).contains(&parsed) {
+        return Err(format!(
+            "'{key}' must be an integer in {min}..={max}, got {parsed}"
+        ));
+    }
+    Ok(Some(parsed))
+}
+
+fn opt_u64_in_range(args: &Value, key: &str, min: u64, max: u64) -> Result<Option<u64>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let Some(parsed) = value.as_u64() else {
+        return Err(format!("'{key}' must be an integer in {min}..={max}"));
+    };
+    if !(min..=max).contains(&parsed) {
+        return Err(format!(
+            "'{key}' must be an integer in {min}..={max}, got {parsed}"
+        ));
+    }
+    Ok(Some(parsed))
+}
+
+fn opt_f64_non_neg(args: &Value, key: &str) -> Result<Option<f64>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    let Some(parsed) = value.as_f64() else {
+        return Err(format!("'{key}' must be a finite nonnegative number"));
+    };
+    if !parsed.is_finite() || parsed < 0.0 {
+        return Err(format!("'{key}' must be finite and nonnegative"));
+    }
+    Ok(Some(parsed))
+}
+
+fn opt_bool(args: &Value, key: &str) -> Result<Option<bool>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_bool()
+        .map(Some)
+        .ok_or_else(|| format!("'{key}' must be a boolean"))
+}
+
+fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .map(Some)
+        .ok_or_else(|| format!("'{key}' must be a string"))
+}
+
+async fn read_regular_file_bounded(path: &str, label: &'static str) -> Result<String, String> {
+    read_regular_file_with_limit(path, label, MAX_FILE_BYTES).await
+}
+
+async fn read_regular_file_with_limit(
+    path: &str,
+    label: &'static str,
+    max_bytes: u64,
+) -> Result<String, String> {
+    let path_owned = path.to_string();
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read as _;
+        // Stat before open so POSIX FIFOs are rejected without blocking on open().
+        let meta = std::fs::metadata(&path_owned)
+            .map_err(|e| format!("reading {label} {path_owned}: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("{label} {path_owned} must be a regular file"));
+        }
+        let file = std::fs::File::open(&path_owned)
+            .map_err(|e| format!("reading {label} {path_owned}: {e}"))?;
+        let fmeta = file
+            .metadata()
+            .map_err(|e| format!("reading {label} {path_owned}: {e}"))?;
+        if !fmeta.is_file() {
+            return Err(format!("{label} {path_owned} must be a regular file"));
+        }
+        if fmeta.len() > max_bytes {
+            return Err(format!(
+                "{label} {path_owned} exceeds {max_bytes} byte limit"
+            ));
+        }
+        let mut buf = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("reading {label} {path_owned}: {e}"))?;
+        if buf.len() as u64 > max_bytes {
+            return Err(format!(
+                "{label} {path_owned} exceeds {max_bytes} byte limit"
+            ));
+        }
+        String::from_utf8(buf)
+            .map_err(|e| format!("reading {label} {path_owned}: invalid UTF-8: {e}"))
+    })
+    .await
+    .map_err(|e| format!("reading {label} {path}: task failed: {e}"))?
+}
+
+const MAX_PROVIDERS: usize = 64;
+
 fn resolve_providers(args: &Value) -> Result<Vec<ProviderSpec>, String> {
     let names = args
         .get("providers")
@@ -172,6 +450,11 @@ fn resolve_providers(args: &Value) -> Result<Vec<ProviderSpec>, String> {
         .ok_or("'providers' must be an array of provider ids")?;
     if names.is_empty() {
         return Err("'providers' must not be empty".to_string());
+    }
+    if names.len() > MAX_PROVIDERS {
+        return Err(format!(
+            "'providers' exceeds maximum of {MAX_PROVIDERS} entries"
+        ));
     }
     let mut specs = Vec::with_capacity(names.len());
     for name in names {
@@ -186,33 +469,78 @@ fn resolve_providers(args: &Value) -> Result<Vec<ProviderSpec>, String> {
     Ok(specs)
 }
 
-/// The prompt the CLI sends when none is given, so an MCP race and a CLI
-/// race hash the same request by default.
-const DEFAULT_PROMPT: &str = "Write one vivid paragraph about a lighthouse at dawn.";
-
 async fn build_race(args: &Value) -> Result<Race, String> {
     let specs = resolve_providers(args)?;
-    let mut race = Race::new(specs);
-    if let Some(prompt) = args.get("prompt").and_then(Value::as_str) {
-        race = race.prompt(prompt);
-    } else if args.get("workload").is_none() {
-        race = race.prompt(DEFAULT_PROMPT);
+    let prompt = opt_str(args, "prompt")?;
+    let workload_path = opt_str(args, "workload")?;
+    let runs = opt_usize_in_range(args, "runs", 1, 1000)?;
+    let warmup = opt_usize_in_range(args, "warmup", 0, 100)?;
+    let max_tokens = opt_u64_in_range(args, "max_tokens", 1, 131_072)?;
+    let concurrency = opt_usize_in_range(args, "concurrency", 1, 128)?;
+    let retries = opt_usize_in_range(args, "retries", 0, 10)?;
+    let timeout_secs = opt_u64_in_range(args, "timeout_secs", 1, 600)?;
+    let warmup_mode = match opt_str(args, "warmup_mode")? {
+        None => None,
+        Some("same-prompt") => Some(WarmupMode::SamePrompt),
+        Some("probe") => Some(WarmupMode::ConnectionProbe),
+        Some(other) => {
+            return Err(format!(
+                "invalid warmup_mode '{other}' (expected 'same-prompt' or 'probe')"
+            ))
+        }
+    };
+    let reproducible = opt_bool(args, "reproducible")?;
+    let system = opt_str(args, "system")?.map(str::to_string);
+    let tools = opt_bool(args, "tools")?;
+    let json_output = opt_bool(args, "json_output")?;
+    let winner = opt_bool(args, "winner")?;
+
+    let mut race = Race::new(specs).prompt(DEFAULT_PROMPT);
+    if tools == Some(true) {
+        race = race.tools("weather");
     }
-    if let Some(path) = args.get("workload").and_then(Value::as_str) {
-        let workload = llmrace::workload::load(std::path::Path::new(path))
-            .map_err(|e| format!("loading workload {path}: {e}"))?;
+    if let Some(prompt) = prompt {
+        race = race.prompt(prompt);
+    }
+    if let Some(path) = workload_path {
+        let raw = read_regular_file_bounded(path, "workload").await?;
+        let workload =
+            llmrace::workload::parse(&raw).map_err(|e| format!("loading workload {path}: {e}"))?;
         race = race.workload(workload);
     }
-    if let Some(runs) = args.get("runs").and_then(Value::as_u64) {
-        race = race.runs(runs as usize);
+    if let Some(runs) = runs {
+        race = race.runs(runs);
     }
-    if let Some(warmup) = args.get("warmup").and_then(Value::as_u64) {
-        race = race.warmup(warmup as usize);
+    if let Some(warmup) = warmup {
+        race = race.warmup(warmup);
     }
-    if let Some(max_tokens) = args.get("max_tokens").and_then(Value::as_u64) {
+    if let Some(warmup_mode) = warmup_mode {
+        race = race.warmup_mode(warmup_mode);
+    }
+    if let Some(max_tokens) = max_tokens {
         race = race.max_tokens(max_tokens);
     }
-    if args.get("winner").and_then(Value::as_bool) == Some(true) {
+    if let Some(concurrency) = concurrency {
+        race = race.concurrency(concurrency);
+    }
+    if let Some(retries) = retries {
+        race = race.retries(retries);
+    }
+    if let Some(timeout_secs) = timeout_secs {
+        race = race.timeout(timeout_secs);
+    }
+    if system.is_some() || json_output == Some(true) {
+        let sampling = Sampling {
+            system,
+            json_output: (json_output == Some(true)).then_some(JsonOutput::Object),
+            ..Sampling::default()
+        };
+        race = race.sampling(sampling);
+    }
+    if reproducible == Some(true) {
+        race = race.reproducible();
+    }
+    if winner == Some(true) {
         race = race.winner(llmrace::score::Weights::default());
     }
     Ok(race)
@@ -232,21 +560,14 @@ async fn tool_race(args: &Value) -> Result<String, String> {
 }
 
 async fn tool_gate(args: &Value) -> Result<String, String> {
-    let baseline_path = args
-        .get("baseline")
-        .and_then(Value::as_str)
-        .ok_or("'baseline' (path to a race.json report) is required".to_string())?;
-    let raw = std::fs::read_to_string(baseline_path)
-        .map_err(|e| format!("reading baseline {baseline_path}: {e}"))?;
+    let baseline_path = opt_str(args, "baseline")?
+        .ok_or_else(|| "'baseline' (path to a race.json report) is required".to_string())?;
+    let threshold = opt_f64_non_neg(args, "max_regression")?.unwrap_or(15.0);
+    let require_significance = opt_bool(args, "require_significance")?.unwrap_or(true);
+    let fail_on_inconclusive = opt_bool(args, "fail_on_inconclusive")?.unwrap_or(false);
+    let raw = read_regular_file_bounded(baseline_path, "baseline").await?;
     let baseline = BaselineReport::from_json_str(&raw)
         .map_err(|e| format!("parsing baseline {baseline_path}: {e}"))?;
-    let threshold = args
-        .get("max_regression")
-        .and_then(Value::as_f64)
-        .unwrap_or(15.0);
-    if !threshold.is_finite() || threshold < 0.0 {
-        return Err("max_regression must be finite and nonnegative".into());
-    }
     let outcome = build_race(args)
         .await?
         .run()
@@ -254,24 +575,22 @@ async fn tool_gate(args: &Value) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     let policy = GatePolicy {
         max_regression_pct: threshold,
-        require_significance: args
-            .get("require_significance")
-            .and_then(Value::as_bool)
-            .unwrap_or(true),
+        require_significance,
+        fail_on_inconclusive,
     };
     let gate = outcome.gate(&baseline, policy);
-    let strict = args
-        .get("fail_on_inconclusive")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let failed = gate.gate_failed_with_policy(policy.require_significance, strict);
+    let failed = policy.failed(&gate);
     let body = serde_json::json!({
         "ok": !failed,
-        "verdict": gate.verdict_json_with_policy(policy.max_regression_pct, policy.require_significance, strict),
+        "verdict": gate.verdict_json_with_policy(
+            policy.max_regression_pct,
+            policy.require_significance,
+            policy.fail_on_inconclusive,
+        ),
     });
     let mut text = serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?;
     text.push_str(&gate.markdown_section(policy.max_regression_pct, policy.require_significance));
-    if strict && gate.inconclusive(policy.require_significance) {
+    if policy.fail_on_inconclusive && gate.inconclusive(policy.require_significance) {
         text.push_str("\nThe gate fails because fail_on_inconclusive requires usable evidence.\n");
     }
     if failed {
@@ -312,4 +631,162 @@ fn tool_list() -> Result<String, String> {
         })
         .collect();
     serde_json::to_string_pretty(&providers).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bounded_line_reader_handles_oversized_frames_and_recovers() {
+        let mut input = Vec::new();
+        input.extend_from_slice(b"first\r\n");
+        input.extend_from_slice(&[b'x'; 20]);
+        input.push(b'\n');
+        input.extend_from_slice(b"after\n");
+        input.extend_from_slice(&[0xff, 0xfe, b'\n']);
+        input.extend_from_slice(b"tail");
+
+        let mut reader = BufReader::with_capacity(4, input.as_slice());
+        assert!(matches!(
+            read_bounded_line(&mut reader, 10).await.unwrap(),
+            LineRead::Line(ref s) if s == "first"
+        ));
+        assert!(matches!(
+            read_bounded_line(&mut reader, 10).await.unwrap(),
+            LineRead::TooLong
+        ));
+        assert!(matches!(
+            read_bounded_line(&mut reader, 10).await.unwrap(),
+            LineRead::Line(ref s) if s == "after"
+        ));
+        assert!(matches!(
+            read_bounded_line(&mut reader, 10).await.unwrap(),
+            LineRead::InvalidUtf8
+        ));
+        assert!(matches!(
+            read_bounded_line(&mut reader, 10).await.unwrap(),
+            LineRead::Line(ref s) if s == "tail"
+        ));
+        assert!(matches!(
+            read_bounded_line(&mut reader, 10).await.unwrap(),
+            LineRead::Eof
+        ));
+    }
+
+    #[test]
+    fn parameter_extractors_reject_wrong_types_and_out_of_range() {
+        assert!(opt_usize_in_range(&json!({"runs": -1}), "runs", 1, 1000).is_err());
+        assert!(opt_usize_in_range(&json!({"runs": "abc"}), "runs", 1, 1000).is_err());
+        assert!(opt_usize_in_range(&json!({"runs": 0}), "runs", 1, 1000).is_err());
+        assert!(opt_usize_in_range(&json!({"runs": 10_000_000}), "runs", 1, 1000).is_err());
+        assert!(opt_usize_in_range(&json!({"runs": null}), "runs", 1, 1000).is_err());
+        assert_eq!(
+            opt_usize_in_range(&json!({"runs": 1000}), "runs", 1, 1000).unwrap(),
+            Some(1000)
+        );
+        assert_eq!(
+            opt_usize_in_range(&json!({}), "runs", 1, 1000).unwrap(),
+            None
+        );
+
+        assert!(opt_u64_in_range(&json!({"max_tokens": 0}), "max_tokens", 1, 131_072).is_err());
+        assert!(
+            opt_u64_in_range(&json!({"max_tokens": 200_000}), "max_tokens", 1, 131_072).is_err()
+        );
+        assert_eq!(
+            opt_u64_in_range(&json!({"max_tokens": 131_072}), "max_tokens", 1, 131_072).unwrap(),
+            Some(131_072)
+        );
+
+        assert!(opt_f64_non_neg(&json!({"max_regression": "bad"}), "max_regression").is_err());
+        assert!(opt_f64_non_neg(&json!({"max_regression": -0.1}), "max_regression").is_err());
+        assert_eq!(
+            opt_f64_non_neg(&json!({"max_regression": 0}), "max_regression").unwrap(),
+            Some(0.0)
+        );
+
+        assert!(opt_bool(&json!({"tools": "yes"}), "tools").is_err());
+        assert_eq!(
+            opt_bool(&json!({"tools": true}), "tools").unwrap(),
+            Some(true)
+        );
+
+        assert!(opt_str(&json!({"system": 42}), "system").is_err());
+        assert_eq!(
+            opt_str(&json!({"system": "ok"}), "system").unwrap(),
+            Some("ok")
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_file_reader_rejects_directories_and_oversized_files() {
+        let dir = std::env::temp_dir().join(format!("llmrace-mcp-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let dir_err = read_regular_file_with_limit(dir.to_str().unwrap(), "baseline", 64)
+            .await
+            .unwrap_err();
+        assert!(dir_err.contains("regular file"), "{dir_err}");
+
+        let file = dir.join("sample.txt");
+        std::fs::write(&file, "a".repeat(100)).unwrap();
+        let big_err = read_regular_file_with_limit(file.to_str().unwrap(), "baseline", 64)
+            .await
+            .unwrap_err();
+        assert!(big_err.contains("exceeds 64 byte limit"), "{big_err}");
+
+        let ok = read_regular_file_with_limit(file.to_str().unwrap(), "baseline", 100)
+            .await
+            .unwrap();
+        assert_eq!(ok.len(), 100);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn build_race_wires_all_parity_options_and_validates_warmup_mode() {
+        let bad = build_race(&json!({
+            "providers": ["mock"],
+            "warmup_mode": "invalid"
+        }))
+        .await;
+        assert!(bad.is_err());
+
+        let race = build_race(&json!({
+            "providers": ["mock"],
+            "runs": 1,
+            "warmup": 1,
+            "warmup_mode": "probe",
+            "max_tokens": 64,
+            "concurrency": 2,
+            "retries": 1,
+            "timeout_secs": 30,
+            "reproducible": true,
+            "system": "Be concise.",
+            "tools": true,
+            "json_output": true
+        }))
+        .await
+        .unwrap();
+        let outcome = race.run().await.unwrap();
+        let report: Value = serde_json::from_str(&outcome.json()).unwrap();
+        assert_eq!(report["experiment"]["warmup_mode"], "probe");
+        assert_eq!(report["experiment"]["concurrency"], 2);
+        assert_eq!(report["experiment"]["retries"], 1);
+        assert_eq!(report["experiment"]["timeout_secs"], 30);
+        assert_eq!(report["sampling"]["temperature"], 0.0);
+        assert_eq!(report["sampling"]["top_p"], 1.0);
+        assert_eq!(report["sampling"]["seed"], 0);
+        assert_eq!(report["sampling"]["system"], "Be concise.");
+        assert_eq!(report["sampling"]["json_output"], "object");
+    }
+
+    #[test]
+    fn resolve_providers_caps_array_length() {
+        let too_many: Vec<Value> = (0..=MAX_PROVIDERS).map(|_| json!("mock")).collect();
+        let err = resolve_providers(&json!({"providers": too_many})).unwrap_err();
+        assert!(err.contains("exceeds maximum"), "{err}");
+    }
 }
