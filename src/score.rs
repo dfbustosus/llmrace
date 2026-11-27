@@ -96,13 +96,24 @@ impl Weights {
     }
 }
 
-/// Weights actually used for this race. Task is dropped when no scored
-/// lane had a task, the same way cost is dropped when a lane has no price.
+/// Weights actually used for this race. Task is dropped unless every eligible
+/// lane had a task, and cost is dropped unless every eligible lane has positive
+/// pricing — mirroring `score_group` so the podium header matches the math.
 #[must_use]
 pub fn applied_weights(summaries: &[LaneSummary], w: &Weights) -> Weights {
-    let tasked = summaries.iter().any(|s| s.task_pass().is_some());
+    let eligible: Vec<&LaneSummary> = summaries
+        .iter()
+        .filter(|s| s.successful() && s.goodput_tokens_per_sec() > 0.0 && s.mean_ttfb_ms() > 0.0)
+        .collect();
+    let all_tasked = !eligible.is_empty() && eligible.iter().all(|s| s.task_rate().is_some());
+    let all_priced = !eligible.is_empty()
+        && eligible.iter().all(|s| {
+            s.cost_per_run_usd()
+                .is_some_and(|v| v.is_finite() && v > 0.0)
+        });
     Weights {
-        task: if tasked { w.task } else { 0.0 },
+        cost: if all_priced { w.cost } else { 0.0 },
+        task: if all_tasked { w.task } else { 0.0 },
         ..*w
     }
 }
@@ -182,11 +193,22 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
         .iter()
         .map(|s| s.p95_total_ms())
         .fold(f64::MAX, f64::min);
+    if !best_ttfb.is_finite()
+        || best_ttfb <= 0.0
+        || !best_tps.is_finite()
+        || best_tps <= 0.0
+        || !best_p95.is_finite()
+        || best_p95 <= 0.0
+    {
+        return Vec::new();
+    }
     // Cost applies only when every scored lane has pricing; otherwise the
     // weight is dropped (and the effective total renormalized) so unpriced
     // lanes are not silently favored.
     let costs: Vec<Option<f64>> = lanes.iter().map(|s| s.cost_per_run_usd()).collect();
-    let all_priced = costs.iter().all(|c| c.is_some_and(|v| v > 0.0));
+    let all_priced = costs
+        .iter()
+        .all(|c| c.is_some_and(|v| v.is_finite() && v > 0.0));
     let cost_w = if all_priced { w.cost } else { 0.0 };
     let best_cost = costs.iter().filter_map(|c| *c).fold(f64::MAX, f64::min);
     let all_tasked = lanes.iter().all(|s| s.task_rate().is_some());
@@ -196,6 +218,9 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
         .filter_map(|s| s.task_rate())
         .fold(0.0_f64, f64::max);
     let effective_total = w.total() - (w.cost - cost_w) - (w.task - task_w);
+    if !effective_total.is_finite() || effective_total <= 0.0 {
+        return Vec::new();
+    }
 
     let mut scored: Vec<Scored> = lanes
         .iter()
@@ -204,7 +229,7 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
             let mut penalty = w.ttfb * (s.mean_ttfb_ms() / best_ttfb)
                 + w.tps * (best_tps / s.goodput_tokens_per_sec())
                 + w.p95 * (s.p95_total_ms() / best_p95);
-            if cost_w > 0.0 {
+            if cost_w > 0.0 && best_cost.is_finite() && best_cost > 0.0 {
                 penalty += cost_w * (cost.unwrap_or(best_cost) / best_cost);
             }
             if task_w > 0.0 {
@@ -218,18 +243,19 @@ fn score_group(lanes: &[&LaneSummary], w: &Weights) -> Vec<Scored> {
                 };
                 penalty += task_w * ratio;
             }
+            let score = if penalty.is_finite() && penalty > 0.0 {
+                100.0 * effective_total / penalty
+            } else {
+                0.0
+            };
             Scored {
                 name: s.name.clone(),
                 model: s.model.clone(),
-                score: 100.0 * effective_total / penalty,
+                score,
             }
         })
         .collect();
-    scored.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    scored.sort_by(|a, b| b.score.total_cmp(&a.score));
     // When one provider races several models, disambiguate labels with the model.
     let duplicated: Vec<String> = scored
         .iter()
@@ -256,6 +282,9 @@ pub fn podium(scored: &[Scored], w: &Weights) -> String {
         "\n🏆 podium — weights: ttfb {:.0} / tps {:.0} / p95 {:.0}",
         w.ttfb, w.tps, w.p95
     );
+    if w.cost > 0.0 {
+        out.push_str(&format!(" / cost {:.0}", w.cost));
+    }
     if w.task > 0.0 {
         out.push_str(&format!(" / task {:.0}", w.task));
     }
@@ -282,4 +311,80 @@ pub fn podiums(groups: &[(Option<String>, Vec<Scored>)], w: &Weights) -> String 
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::RunMetrics;
+
+    fn sample_lane(name: &str, model: &str, task_ok: Option<bool>) -> LaneSummary {
+        LaneSummary {
+            name: name.into(),
+            model: model.into(),
+            runs: vec![RunMetrics {
+                total_ms: 200.0,
+                ttfb_ms: 50.0,
+                tokens: 50,
+                task_ok,
+                ..RunMetrics::default()
+            }],
+            concurrency: 1,
+            ..LaneSummary::default()
+        }
+    }
+
+    #[test]
+    fn zero_effective_weights_returns_empty_instead_of_nan() {
+        let lanes = [
+            sample_lane("unpriced-a", "local-a", None),
+            sample_lane("unpriced-b", "local-b", None),
+        ];
+        let cost_only = Weights {
+            ttfb: 0.0,
+            tps: 0.0,
+            p95: 0.0,
+            cost: 100.0,
+            task: 0.0,
+        };
+        assert!(score_lanes(&lanes, &cost_only).is_empty());
+
+        let task_only = Weights {
+            ttfb: 0.0,
+            tps: 0.0,
+            p95: 0.0,
+            cost: 0.0,
+            task: 100.0,
+        };
+        assert!(score_lanes(&lanes, &task_only).is_empty());
+    }
+
+    #[test]
+    fn applied_weights_matches_score_group_and_podium_prints_cost() {
+        let mixed = [
+            sample_lane("openai", "gpt-4o-mini", Some(true)),
+            sample_lane("ollama", "llama3.2", None),
+        ];
+        let w = Weights {
+            cost: 25.0,
+            task: 40.0,
+            ..Weights::default()
+        };
+        let applied = applied_weights(&mixed, &w);
+        assert_eq!(applied.cost, 0.0);
+        assert_eq!(applied.task, 0.0);
+
+        let all_ok = [
+            sample_lane("openai", "gpt-4o-mini", Some(true)),
+            sample_lane("gemini", "gemini-2.0-flash", Some(true)),
+        ];
+        let applied = applied_weights(&all_ok, &w);
+        assert_eq!(applied.cost, 25.0);
+        assert_eq!(applied.task, 40.0);
+
+        let scored = score_lanes(&all_ok, &applied);
+        let text = podium(&scored, &applied);
+        assert!(text.contains("/ cost 25"), "{text}");
+        assert!(text.contains("/ task 40"), "{text}");
+    }
 }
