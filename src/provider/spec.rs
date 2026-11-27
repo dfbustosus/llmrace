@@ -289,7 +289,7 @@ impl ProviderSpec {
     /// #126. Credentials: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
     /// (optional `AWS_SESSION_TOKEN`) and `AWS_REGION`.
     pub fn bedrock() -> Self {
-        let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+        let region = safe_env_segment("AWS_REGION", "us-east-1");
         let endpoint = format!(
             "https://bedrock-runtime.{region}.amazonaws.com/model/{{model}}/converse-stream"
         );
@@ -312,10 +312,8 @@ impl ProviderSpec {
     /// Credentials: `GOOGLE_APPLICATION_CREDENTIALS` (service-account
     /// JSON), `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_REGION`.
     pub fn vertex() -> Self {
-        let project =
-            std::env::var("GOOGLE_CLOUD_PROJECT").unwrap_or_else(|_| "YOUR_PROJECT".to_string());
-        let region =
-            std::env::var("GOOGLE_CLOUD_REGION").unwrap_or_else(|_| "us-central1".to_string());
+        let project = safe_env_segment("GOOGLE_CLOUD_PROJECT", "YOUR_PROJECT");
+        let region = safe_env_segment("GOOGLE_CLOUD_REGION", "us-central1");
         let endpoint = format!(
             "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/publishers/google/models/{{model}}:streamGenerateContent?alt=sse",
         );
@@ -344,11 +342,18 @@ impl ProviderSpec {
     /// Builds an Azure OpenAI provider for a resource + deployment.
     ///
     /// Reads the key from `AZURE_OPENAI_API_KEY` and authenticates with the
-    /// `api-key` header instead of a bearer token.
+    /// `api-key` header instead of a bearer token. If `resource` or
+    /// `deployment` contains characters outside `[A-Za-z0-9._-]` (or is
+    /// empty / `.` / `..`), the endpoint is left empty so request dispatch
+    /// fails safely instead of interpolating untrusted URL syntax.
     pub fn azure_openai(resource: &str, deployment: &str) -> Self {
-        let endpoint = format!(
-            "https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview"
-        );
+        let endpoint = if is_safe_url_segment(resource) && is_safe_url_segment(deployment) {
+            format!(
+                "https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview"
+            )
+        } else {
+            String::new()
+        };
         let mut p = spec(
             "azure",
             &endpoint,
@@ -431,6 +436,26 @@ impl ProviderSpec {
     }
 }
 
+/// Validates that `s` is safe to interpolate as a URL host label or path
+/// segment without injecting delimiters (`/`, `@`, `:`, `?`, `#`, whitespace)
+/// or path traversal (`"."`, `".."`).
+pub(super) fn is_safe_url_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// Reads an environment variable for URL interpolation, falling back to
+/// `default` when absent or containing unsafe URL characters.
+pub(super) fn safe_env_segment(var: &str, default: &str) -> String {
+    std::env::var(var)
+        .ok()
+        .filter(|v| is_safe_url_segment(v))
+        .unwrap_or_else(|| default.to_string())
+}
+
 fn spec(id: &str, endpoint: &str, key_env: Option<&str>, model: &str, wire: Wire) -> ProviderSpec {
     ProviderSpec {
         id: Arc::from(id),
@@ -442,5 +467,44 @@ fn spec(id: &str, endpoint: &str, key_env: Option<&str>, model: &str, wire: Wire
         auth: AuthKind::default(),
         opt_in: false,
         experimental: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_segment_allowlist_accepts_valid_and_rejects_injection() {
+        for ok in ["us-east-1", "us-central1", "my-proj_1.0", "gpt-4o-mini"] {
+            assert!(is_safe_url_segment(ok), "should accept {ok}");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a@evil.com",
+            "a:8080",
+            "a?x=1",
+            "a#frag",
+            "us east 1",
+            "us-east-1\n",
+        ] {
+            assert!(!is_safe_url_segment(bad), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn azure_openai_refuses_unsafe_resource_or_deployment() {
+        let ok = ProviderSpec::azure_openai("my-resource", "gpt-4o-deploy");
+        assert_eq!(
+            ok.endpoint.as_ref(),
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-4o-deploy/chat/completions?api-version=2024-08-01-preview"
+        );
+        let bad_res = ProviderSpec::azure_openai("evil.com#", "deploy");
+        assert!(bad_res.endpoint.is_empty(), "got {}", bad_res.endpoint);
+        let bad_dep = ProviderSpec::azure_openai("res", "../admin");
+        assert!(bad_dep.endpoint.is_empty(), "got {}", bad_dep.endpoint);
     }
 }
