@@ -1,9 +1,13 @@
 use llmrace::config::Config;
+#[cfg(feature = "cli")]
 use std::path::PathBuf;
+#[cfg(feature = "cli")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(feature = "cli")]
 static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(feature = "cli")]
 fn unique_temp_dir(label: &str) -> PathBuf {
     let n = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("llmrace-{label}-{}-{n}", std::process::id()));
@@ -118,6 +122,7 @@ fn profiles_accept_retries() {
     assert_eq!(flaky.retries, Some(2));
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn explicit_flags_win_over_profile_values() {
     use std::process::Command;
@@ -169,6 +174,7 @@ fn explicit_flags_win_over_profile_values() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn explicit_max_tokens_wins_over_profile() {
     use std::process::Command;
@@ -201,6 +207,7 @@ fn explicit_max_tokens_wins_over_profile() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn custom_variants_run_in_sweeps() {
     use std::process::Command;
