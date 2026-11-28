@@ -247,37 +247,92 @@ pub fn check_config() -> Check {
     }
 }
 
-/// Checks history readability and size.
-pub fn check_history() -> Check {
-    let path = crate::history::history_path();
-    if !path.exists() {
-        return Check {
-            name: "history".into(),
-            status: Status::Warn,
-            detail: format!("no history yet at {}", path.display()),
-        };
+fn worse_status(a: Status, b: Status) -> Status {
+    match (a, b) {
+        (Status::Fail, _) | (_, Status::Fail) => Status::Fail,
+        (Status::Warn, _) | (_, Status::Warn) => Status::Warn,
+        (Status::Pass, Status::Pass) => Status::Pass,
     }
-    match std::fs::read_to_string(&path) {
+}
+
+fn check_jsonl_history(path: &std::path::Path) -> (Status, String) {
+    match std::fs::read_to_string(path) {
         Ok(raw) => {
             let total = raw.lines().filter(|l| !l.trim().is_empty()).count();
-            let valid = crate::history::load(&path).len();
+            let valid = crate::history::load(path).len();
             let status = if valid == total {
                 Status::Pass
             } else {
                 Status::Warn
             };
-            Check {
-                name: "history".into(),
+            (
                 status,
-                detail: format!("{valid}/{total} valid record(s) in {}", path.display()),
-            }
+                format!("{valid}/{total} valid record(s) in {}", path.display()),
+            )
         }
-        Err(e) => Check {
-            name: "history".into(),
-            status: Status::Fail,
-            detail: format!("{} unreadable: {e}", path.display()),
-        },
+        Err(e) => (Status::Fail, format!("{} unreadable: {e}", path.display())),
     }
+}
+
+fn check_sqlite_history(path: &std::path::Path) -> (Status, String) {
+    #[cfg(feature = "sqlite")]
+    match crate::sqlite::count_records(path) {
+        Ok(n) => (Status::Pass, format!("{n} record(s) in {}", path.display())),
+        Err(e) => (
+            Status::Fail,
+            format!(
+                "{} unreadable: {}",
+                path.display(),
+                crate::util::truncate(&e.to_string(), 120)
+            ),
+        ),
+    }
+    #[cfg(not(feature = "sqlite"))]
+    (
+        Status::Warn,
+        format!(
+            "{} present (rebuild with --features sqlite to inspect)",
+            path.display()
+        ),
+    )
+}
+
+fn check_history_at(jsonl: &std::path::Path, sqlite: &std::path::Path) -> Check {
+    let has_jsonl = jsonl.exists();
+    let has_sqlite = sqlite.exists();
+    if !has_jsonl && !has_sqlite {
+        return Check {
+            name: "history".into(),
+            status: Status::Warn,
+            detail: format!("no history yet at {}", jsonl.display()),
+        };
+    }
+
+    let mut status = Status::Pass;
+    let mut details = Vec::new();
+    if has_jsonl {
+        let (s, d) = check_jsonl_history(jsonl);
+        status = worse_status(status, s);
+        details.push(d);
+    }
+    if has_sqlite {
+        let (s, d) = check_sqlite_history(sqlite);
+        status = worse_status(status, s);
+        details.push(d);
+    }
+    Check {
+        name: "history".into(),
+        status,
+        detail: details.join("; "),
+    }
+}
+
+/// Checks history readability and size.
+pub fn check_history() -> Check {
+    check_history_at(
+        &crate::history::history_path(),
+        &crate::history::sqlite_history_path(),
+    )
 }
 
 /// Renders checks as a terminal table with a summary line.
@@ -304,4 +359,201 @@ pub fn render(checks: &[Check]) -> String {
     ));
     out.push_str("attach this output when filing bugs\n");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::history::HistoryRecord;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "llmrace-doctor-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sample_record() -> HistoryRecord {
+        HistoryRecord {
+            timestamp_unix: 1_700_000_000,
+            provider: "mock".into(),
+            model: "mock-1".into(),
+            variant: None,
+            concurrency: 1,
+            mean_total_ms: 100.0,
+            p95_total_ms: 110.0,
+            mean_ttfb_ms: 10.0,
+            mean_tokens_per_sec: 50.0,
+            itl_p95_ms: None,
+            reasoning_tokens: None,
+            thinking_ms_estimate: None,
+            failure_rate: None,
+            goodput_tokens_per_sec: None,
+            retry_attempts: 0,
+            cost_per_run_usd: None,
+            task_pass_rate: None,
+            request_sha256: None,
+        }
+    }
+
+    #[test]
+    fn check_history_at_warns_when_neither_exists_without_creating_files() {
+        let dir = unique_temp_dir("neither");
+        let nested = dir.join("missing");
+        let jsonl = nested.join("history.jsonl");
+        let sqlite = nested.join("history.sqlite3");
+
+        let check = check_history_at(&jsonl, &sqlite);
+        assert_eq!(check.name, "history");
+        assert_eq!(check.status, Status::Warn);
+        assert_eq!(
+            check.detail,
+            format!("no history yet at {}", jsonl.display())
+        );
+        assert!(!nested.exists());
+        assert!(!jsonl.exists());
+        assert!(!sqlite.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_history_at_checks_jsonl_only_without_creating_sqlite() {
+        let dir = unique_temp_dir("jsonl-only");
+        let jsonl = dir.join("history.jsonl");
+        let sqlite = dir.join("history.sqlite3");
+        crate::history::append(&jsonl, &[sample_record()]).unwrap();
+
+        let check = check_history_at(&jsonl, &sqlite);
+        assert_eq!(check.status, Status::Pass);
+        assert_eq!(
+            check.detail,
+            format!("1/1 valid record(s) in {}", jsonl.display())
+        );
+        assert!(!sqlite.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_history_at_handles_sqlite_only() {
+        let dir = unique_temp_dir("sqlite-only");
+        let jsonl = dir.join("history.jsonl");
+        let sqlite = dir.join("history.sqlite3");
+
+        #[cfg(feature = "sqlite")]
+        {
+            let conn = crate::sqlite::open(&sqlite).unwrap();
+            crate::sqlite::save(&conn, &[sample_record(), sample_record()]).unwrap();
+        }
+        #[cfg(not(feature = "sqlite"))]
+        std::fs::write(&sqlite, b"placeholder").unwrap();
+
+        let check = check_history_at(&jsonl, &sqlite);
+        #[cfg(feature = "sqlite")]
+        {
+            assert_eq!(check.status, Status::Pass);
+            assert_eq!(check.detail, format!("2 record(s) in {}", sqlite.display()));
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            assert_eq!(check.status, Status::Warn);
+            assert_eq!(
+                check.detail,
+                format!(
+                    "{} present (rebuild with --features sqlite to inspect)",
+                    sqlite.display()
+                )
+            );
+        }
+        assert!(!jsonl.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_history_at_combines_jsonl_and_sqlite() {
+        let dir = unique_temp_dir("both");
+        let jsonl = dir.join("history.jsonl");
+        let sqlite = dir.join("history.sqlite3");
+        crate::history::append(&jsonl, &[sample_record()]).unwrap();
+
+        #[cfg(feature = "sqlite")]
+        {
+            let conn = crate::sqlite::open(&sqlite).unwrap();
+            crate::sqlite::save(&conn, &[sample_record()]).unwrap();
+        }
+        #[cfg(not(feature = "sqlite"))]
+        std::fs::write(&sqlite, b"placeholder").unwrap();
+
+        let check = check_history_at(&jsonl, &sqlite);
+        assert!(
+            check.detail.contains("1/1 valid record(s)"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("; "), "{}", check.detail);
+        #[cfg(feature = "sqlite")]
+        {
+            assert_eq!(check.status, Status::Pass);
+            assert!(check.detail.contains("1 record(s) in"), "{}", check.detail);
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            assert_eq!(check.status, Status::Warn);
+            assert!(
+                check
+                    .detail
+                    .contains("rebuild with --features sqlite to inspect"),
+                "{}",
+                check.detail
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_history_at_reports_corrupt_sqlite() {
+        let dir = unique_temp_dir("corrupt-sqlite");
+        let jsonl = dir.join("history.jsonl");
+        let sqlite = dir.join("history.sqlite3");
+        crate::history::append(&jsonl, &[sample_record()]).unwrap();
+        std::fs::write(&sqlite, b"corrupt garbage bytes").unwrap();
+
+        let check = check_history_at(&jsonl, &sqlite);
+        #[cfg(feature = "sqlite")]
+        {
+            assert_eq!(check.status, Status::Fail);
+            assert!(
+                check
+                    .detail
+                    .contains(&format!("{} unreadable:", sqlite.display())),
+                "{}",
+                check.detail
+            );
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            assert_eq!(check.status, Status::Warn);
+            assert!(
+                check
+                    .detail
+                    .contains("rebuild with --features sqlite to inspect"),
+                "{}",
+                check.detail
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
