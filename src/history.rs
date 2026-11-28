@@ -73,6 +73,13 @@ pub fn history_path() -> PathBuf {
     base.join("llmrace").join("history.jsonl")
 }
 
+/// Default SQLite history database location: sibling of [`history_path`]
+/// with the `.sqlite3` extension.
+#[must_use]
+pub fn sqlite_history_path() -> PathBuf {
+    history_path().with_extension("sqlite3")
+}
+
 /// Appends records to `path` as JSON lines, creating parent directories.
 ///
 /// ```
@@ -383,5 +390,16 @@ mod tests {
         append(&path, &records).unwrap();
         assert_eq!(load(&path), records);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sqlite_history_path_is_sibling_sqlite3_file() {
+        let jsonl = history_path();
+        let sqlite = sqlite_history_path();
+        assert_eq!(sqlite.parent(), jsonl.parent());
+        assert_eq!(
+            sqlite.file_name().and_then(|n| n.to_str()),
+            Some("history.sqlite3")
+        );
     }
 }
