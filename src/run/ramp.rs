@@ -18,14 +18,23 @@ pub(crate) struct RampLevel {
     pub summaries: Vec<LaneSummary>,
 }
 
+/// Per-concurrency-level measurements for one lane in a ramp.
+struct RampPoint {
+    concurrency: usize,
+    tps: f64,
+    goodput: f64,
+    request_ttfb_p50_ms: Option<f64>,
+    request_ttfb_p95_ms: Option<f64>,
+}
+
 /// Aggregated saturation summary for one provider/model lane across ramp phases,
 /// shared by terminal, Markdown, JSON, and HTML outputs so peak goodput and
 /// post-peak degradation never drift between renderers.
 struct RampRow {
     name: String,
     model: String,
-    /// `(concurrency, mean_tps, goodput)` for each completed phase.
-    points: Vec<(usize, f64, f64)>,
+    /// Per-concurrency measurements for each completed phase.
+    points: Vec<RampPoint>,
     peak_concurrency: usize,
     peak_tps: f64,
     peak_goodput: f64,
@@ -44,6 +53,28 @@ impl RampRow {
             format!("c={} ({:.1})", self.peak_concurrency, self.peak_goodput)
         }
     }
+}
+
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+fn json_opt_round1(v: Option<f64>) -> serde_json::Value {
+    match v.filter(|x| x.is_finite()) {
+        Some(x) => serde_json::json!(round1(x)),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn fmt_opt_ms(v: Option<f64>) -> String {
+    v.filter(|x| x.is_finite())
+        .map(llmrace::stats::fmt_ms)
+        .unwrap_or_else(|| "\u{2014}".to_string())
+}
+
+fn has_request_ttfb_p95(rows: &[RampRow]) -> bool {
+    rows.iter()
+        .any(|row| row.points.iter().any(|p| p.request_ttfb_p95_ms.is_some()))
 }
 
 fn build_ramp_rows(phases: &[RampLevel]) -> Vec<RampRow> {
@@ -67,14 +98,11 @@ fn build_ramp_rows(phases: &[RampLevel]) -> Vec<RampRow> {
                 .summaries
                 .iter()
                 .find(|s| s.name == name && s.model == model);
-            let tps = lane
-                .filter(|s| s.successful())
-                .map(|s| s.mean_tokens_per_sec())
-                .unwrap_or(0.0);
-            let goodput = lane
-                .filter(|s| s.successful())
-                .map(|s| s.goodput_tokens_per_sec())
-                .unwrap_or(0.0);
+            let ok_lane = lane.filter(|s| s.successful());
+            let tps = ok_lane.map(|s| s.mean_tokens_per_sec()).unwrap_or(0.0);
+            let goodput = ok_lane.map(|s| s.goodput_tokens_per_sec()).unwrap_or(0.0);
+            let request_ttfb_p50_ms = ok_lane.and_then(|s| s.request_ttfb_p50_ms());
+            let request_ttfb_p95_ms = ok_lane.and_then(|s| s.request_ttfb_p95_ms());
             if best.is_none_or(|(_, _, b)| goodput > b) {
                 best = Some((phase.concurrency, tps, goodput));
             }
@@ -85,14 +113,20 @@ fn build_ramp_rows(phases: &[RampLevel]) -> Vec<RampRow> {
             {
                 failure_rate_crosses_at = Some(phase.concurrency);
             }
-            points.push((phase.concurrency, tps, goodput));
+            points.push(RampPoint {
+                concurrency: phase.concurrency,
+                tps,
+                goodput,
+                request_ttfb_p50_ms,
+                request_ttfb_p95_ms,
+            });
         }
         let (peak_concurrency, peak_tps, peak_goodput) = best.unwrap_or((1, 0.0, 0.0));
         // Flag degradation when any higher concurrency drops >10% below peak goodput.
         let degraded = peak_goodput > 0.0
             && points
                 .iter()
-                .any(|&(c, _, g)| c > peak_concurrency && g < peak_goodput * 0.9);
+                .any(|p| p.concurrency > peak_concurrency && p.goodput < peak_goodput * 0.9);
         rows.push(RampRow {
             name,
             model,
@@ -105,6 +139,122 @@ fn build_ramp_rows(phases: &[RampLevel]) -> Vec<RampRow> {
         });
     }
     rows
+}
+
+fn build_ramp_json(rows: &[RampRow]) -> Vec<serde_json::Value> {
+    let mut ramp_json: Vec<serde_json::Value> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut per_level = serde_json::Map::new();
+        let mut ttfb_p50_by_level = serde_json::Map::new();
+        let mut ttfb_p95_by_level = serde_json::Map::new();
+        for point in &row.points {
+            let key = point.concurrency.to_string();
+            per_level.insert(key.clone(), serde_json::json!(round1(point.tps)));
+            ttfb_p50_by_level.insert(key.clone(), json_opt_round1(point.request_ttfb_p50_ms));
+            ttfb_p95_by_level.insert(key, json_opt_round1(point.request_ttfb_p95_ms));
+        }
+        ramp_json.push(serde_json::json!({
+            "provider": row.name,
+            "model": row.model,
+            "tokens_per_sec_by_concurrency": per_level,
+            "request_ttfb_p50_ms_by_concurrency": ttfb_p50_by_level,
+            "request_ttfb_p95_ms_by_concurrency": ttfb_p95_by_level,
+            "peak_concurrency": row.peak_concurrency,
+            "peak_tokens_per_sec": round1(row.peak_tps),
+            "peak_goodput_tokens_per_sec": round1(row.peak_goodput),
+            "failure_rate_crosses_at": row.failure_rate_crosses_at,
+            "degrades_past_peak": row.degraded,
+        }));
+    }
+    ramp_json
+}
+
+fn ramp_terminal(levels: &[usize], rows: &[RampRow]) -> String {
+    let mut out = format!("{:<20}", "Provider");
+    for level in levels {
+        let _ = write!(out, " {:>10}", format!("c={level}"));
+    }
+    out.push_str("      peak\n");
+    out.push_str(&"-".repeat(out.len().saturating_sub(1)));
+    out.push('\n');
+    for row in rows {
+        let name = llmrace::util::sanitize_control_chars(&row.name);
+        let _ = write!(out, "{name:<20}");
+        for point in &row.points {
+            let _ = write!(out, " {:>10.1}", point.tps);
+        }
+        let peak_note = row.peak_label();
+        let _ = writeln!(out, "  {peak_note}");
+    }
+
+    if has_request_ttfb_p95(rows) {
+        out.push_str("\nRequest TTFT p95 (ms)\n");
+        let mut header = format!("{:<20}", "Provider");
+        for level in levels {
+            let _ = write!(header, " {:>10}", format!("c={level}"));
+        }
+        let sep_len = header.len();
+        out.push_str(&header);
+        out.push('\n');
+        out.push_str(&"-".repeat(sep_len));
+        out.push('\n');
+        for row in rows {
+            let name = llmrace::util::sanitize_control_chars(&row.name);
+            let _ = write!(out, "{name:<20}");
+            for point in &row.points {
+                let cell = fmt_opt_ms(point.request_ttfb_p95_ms);
+                let _ = write!(out, " {cell:>10}");
+            }
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+fn ramp_markdown_curve(levels: &[usize], rows: &[RampRow]) -> String {
+    let mut out = String::from("| Provider |");
+    for level in levels {
+        let _ = write!(out, " c={level} |");
+    }
+    out.push_str(" peak |\n|---|");
+    for _ in levels {
+        out.push_str("---:|");
+    }
+    out.push_str("---:|\n");
+
+    for row in rows {
+        let _ = write!(out, "| {} |", llmrace::util::md_escape_cell(&row.name));
+        for point in &row.points {
+            let _ = write!(out, " {:.1} |", point.tps);
+        }
+        let _ = writeln!(out, " {} |", row.peak_label());
+    }
+
+    out.push_str("\n> Peak is the concurrency where goodput is highest. The cells are tokens/s of successful rounds. \u{2b07} flags a goodput drop of more than 10% past that peak. A failure rate above 5% is `failure_rate_crosses_at` in the JSON.\n");
+
+    if has_request_ttfb_p95(rows) {
+        out.push_str("\n### Request TTFT p95 (ms)\n\n| Provider |");
+        for level in levels {
+            let _ = write!(out, " c={level} |");
+        }
+        out.push_str("\n|---|");
+        for _ in levels {
+            out.push_str("---:|");
+        }
+        out.push('\n');
+
+        for row in rows {
+            let _ = write!(out, "| {} |", llmrace::util::md_escape_cell(&row.name));
+            for point in &row.points {
+                let cell = llmrace::util::md_escape_cell(&fmt_opt_ms(point.request_ttfb_p95_ms));
+                let _ = write!(out, " {cell} |");
+            }
+            out.push('\n');
+        }
+    }
+
+    out
 }
 
 /// Parses a `--ramp` level list (`1,2,4,8`): values must be \u{2265} 1 and
@@ -188,57 +338,9 @@ pub(crate) async fn ramp_race(mut cfg: RunConfig, levels: &[usize]) -> Result<i3
 
     let completed_levels: Vec<usize> = phases.iter().map(|p| p.concurrency).collect();
     let rows = build_ramp_rows(&phases);
-
-    // curve table (terminal + markdown)
-    let mut curve = String::from("| Provider |");
-    let mut header = String::new();
-    for level in &completed_levels {
-        let _ = write!(header, " c={level} |");
-    }
-    curve.push_str(&header);
-    curve.push_str(" peak |\n|---|");
-    for _ in &completed_levels {
-        curve.push_str("---:|");
-    }
-    curve.push_str("---:|\n");
-
-    let mut curve_term = format!("{:<20}", "Provider");
-    for level in &completed_levels {
-        let _ = write!(curve_term, " {:>10}", format!("c={level}"));
-    }
-    curve_term.push_str("      peak\n");
-    curve_term.push_str(&"-".repeat(curve_term.len()));
-    curve_term.push('\n');
-
-    let mut ramp_json: Vec<serde_json::Value> = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let mut md_row = format!("| {} |", llmrace::util::md_escape_cell(&row.name));
-        let mut term_row = format!("{:<20}", row.name);
-        let mut per_level = serde_json::Map::new();
-        for &(concurrency, tps, _goodput) in &row.points {
-            per_level.insert(
-                concurrency.to_string(),
-                serde_json::json!((tps * 10.0).round() / 10.0),
-            );
-            let _ = write!(md_row, " {tps:.1} |");
-            let _ = write!(term_row, " {tps:>10.1}");
-        }
-        let peak_note = row.peak_label();
-        let _ = writeln!(md_row, " {peak_note} |");
-        let _ = writeln!(term_row, "  {peak_note}");
-        curve.push_str(&md_row);
-        curve_term.push_str(&term_row);
-        ramp_json.push(serde_json::json!({
-            "provider": row.name,
-            "model": row.model,
-            "tokens_per_sec_by_concurrency": per_level,
-            "peak_concurrency": row.peak_concurrency,
-            "peak_tokens_per_sec": (row.peak_tps * 10.0).round() / 10.0,
-            "peak_goodput_tokens_per_sec": (row.peak_goodput * 10.0).round() / 10.0,
-            "failure_rate_crosses_at": row.failure_rate_crosses_at,
-            "degrades_past_peak": row.degraded,
-        }));
-    }
+    let curve = ramp_markdown_curve(&completed_levels, &rows);
+    let curve_term = ramp_terminal(&completed_levels, &rows);
+    let ramp_json = build_ramp_json(&rows);
 
     if !cfg.quiet {
         cfg.status(format!("\n{curve_term}"));
@@ -261,7 +363,6 @@ pub(crate) async fn ramp_race(mut cfg: RunConfig, levels: &[usize]) -> Result<i3
     }
     md.push_str("\n## Saturation curve (tokens/s by concurrency)\n\n");
     md.push_str(&curve);
-    md.push_str("\n> Peak is the concurrency where goodput is highest. The cells are tokens/s of successful rounds. \u{2b07} flags a goodput drop of more than 10% past that peak. A failure rate above 5% is `failure_rate_crosses_at` in the JSON.\n");
 
     let out_ext = if cfg.out == "-" {
         None
@@ -323,6 +424,32 @@ pub(crate) async fn ramp_race(mut cfg: RunConfig, levels: &[usize]) -> Result<i3
     Ok(0)
 }
 
+fn ramp_html_ttfb_table(levels: &[usize], rows: &[RampRow]) -> String {
+    if !has_request_ttfb_p95(rows) {
+        return String::new();
+    }
+    let mut out = String::from("<h2>Request TTFT p95 (ms)</h2><table><tr><th>Provider</th>");
+    for level in levels {
+        let _ = write!(out, "<th>c={level}</th>");
+    }
+    out.push_str("</tr>");
+    for row in rows {
+        let _ = write!(
+            out,
+            "<tr><td>{} ({})</td>",
+            llmrace::util::html_escape(&row.name),
+            llmrace::util::html_escape(&row.model)
+        );
+        for point in &row.points {
+            let cell = llmrace::util::html_escape(&fmt_opt_ms(point.request_ttfb_p95_ms));
+            let _ = write!(out, "<td>{cell}</td>");
+        }
+        out.push_str("</tr>");
+    }
+    out.push_str("</table>");
+    out
+}
+
 /// Self-contained HTML page for a ramp: SVG throughput-by-concurrency
 /// series per provider plus the curve table.
 fn ramp_html(levels: &[usize], rows: &[RampRow]) -> String {
@@ -335,7 +462,7 @@ fn ramp_html(levels: &[usize], rows: &[RampRow]) -> String {
 
     let max_tps = rows
         .iter()
-        .flat_map(|row| row.points.iter().map(|&(_, tps, _)| tps))
+        .flat_map(|row| row.points.iter().map(|p| p.tps))
         .fold(1.0, f64::max);
     let max_level = levels.last().copied().unwrap_or(1).max(1) as f64;
     let x = |level: usize| PAD + (level as f64 / max_level) * (W - 2.0 * PAD);
@@ -376,17 +503,17 @@ fn ramp_html(levels: &[usize], rows: &[RampRow]) -> String {
         let points: Vec<String> = row
             .points
             .iter()
-            .map(|&(level, tps, _)| format!("{:.1},{:.1}", x(level), y(tps)))
+            .map(|p| format!("{:.1},{:.1}", x(p.concurrency), y(p.tps)))
             .collect();
         svg.push_str(&format!(
             "<polyline fill='none' stroke='{color}' stroke-width='2' points='{}'/>",
             points.join(" ")
         ));
-        for &(level, tps, _) in &row.points {
+        for point in &row.points {
             svg.push_str(&format!(
                 "<circle cx='{:.1}' cy='{:.1}' r='3' fill='{color}'/>",
-                x(level),
-                y(tps)
+                x(point.concurrency),
+                y(point.tps)
             ));
         }
         legend.push_str(&format!(
@@ -408,8 +535,8 @@ fn ramp_html(levels: &[usize], rows: &[RampRow]) -> String {
             llmrace::util::html_escape(&row.name),
             llmrace::util::html_escape(&row.model)
         ));
-        for &(_, tps, _) in &row.points {
-            table.push_str(&format!("<td>{tps:.1}</td>"));
+        for point in &row.points {
+            table.push_str(&format!("<td>{:.1}</td>", point.tps));
         }
         table.push_str(&format!(
             "<td><b>{}</b></td></tr>",
@@ -417,10 +544,11 @@ fn ramp_html(levels: &[usize], rows: &[RampRow]) -> String {
         ));
     }
     table.push_str("</table>");
+    let ttfb_table = ramp_html_ttfb_table(levels, rows);
 
     format!(
-        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>llmrace ramp</title><style>:root {{ color-scheme: dark; }}body {{ font-family: ui-monospace, 'SF Mono', Menlo, monospace; background: #0d1117; color: #e6edf3; margin: 0 auto; max-width: 820px; padding: 2rem 1rem; }}h1 {{ color: #3390ff; }} svg {{ width: 100%; height: auto; background: #161b22; border: 1px solid #21262d; border-radius: 6px; }}text {{ fill: #8b949e; font-size: 10px; }} table {{ border-collapse: collapse; width: 100%; margin-top: 1rem; }}th, td {{ border: 1px solid #21262d; padding: .3rem .6rem; text-align: left; }} th {{ color: #8b949e; }}ul {{ list-style: none; padding: 0; }} footer {{ color: #484f58; margin-top: 3rem; }}
-</style></head><body><h1>\u{1f3c1} llmrace ramp</h1><p>throughput by concurrency — peak marks each provider's saturation point (by goodput; \u{2b07} flags &gt;10% post-peak drop)</p>{svg}<ul>{legend}</ul>{table}<footer>generated with <a style='color:#3390ff' href='https://github.com/dfbustosus/llmrace'>llmrace</a> v{} \u{1f980}</footer></body></html>",
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>llmrace ramp</title><style>:root {{ color-scheme: dark; }}body {{ font-family: ui-monospace, 'SF Mono', Menlo, monospace; background: #0d1117; color: #e6edf3; margin: 0 auto; max-width: 820px; padding: 2rem 1rem; }}h1 {{ color: #3390ff; }} h2 {{ color: #e6edf3; font-size: 1.1rem; margin-top: 2rem; }} svg {{ width: 100%; height: auto; background: #161b22; border: 1px solid #21262d; border-radius: 6px; }}text {{ fill: #8b949e; font-size: 10px; }} table {{ border-collapse: collapse; width: 100%; margin-top: 1rem; }}th, td {{ border: 1px solid #21262d; padding: .3rem .6rem; text-align: left; }} th {{ color: #8b949e; }}ul {{ list-style: none; padding: 0; }} footer {{ color: #484f58; margin-top: 3rem; }}
+</style></head><body><h1>\u{1f3c1} llmrace ramp</h1><p>throughput by concurrency — peak marks each provider's saturation point (by goodput; \u{2b07} flags &gt;10% post-peak drop)</p>{svg}<ul>{legend}</ul>{table}{ttfb_table}<footer>generated with <a style='color:#3390ff' href='https://github.com/dfbustosus/llmrace'>llmrace</a> v{} \u{1f980}</footer></body></html>",
         env!("CARGO_PKG_VERSION"),
     )
 }
@@ -428,7 +556,7 @@ fn ramp_html(levels: &[usize], rows: &[RampRow]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use llmrace::bench::{FailureClass, RoundFailure, RunMetrics};
+    use llmrace::bench::{FailureClass, RequestAttempt, RequestOutcome, RoundFailure, RunMetrics};
 
     fn make_lane(concurrency: usize, tokens: u64, failed_rounds: usize) -> LaneSummary {
         LaneSummary {
@@ -451,6 +579,59 @@ mod tests {
                     prompt_id: String::new(),
                 })
                 .collect(),
+            concurrency,
+            ..LaneSummary::default()
+        }
+    }
+
+    fn make_lane_with_request_ttfb(
+        name: &str,
+        concurrency: usize,
+        tokens: u64,
+        ttfbs: &[f64],
+    ) -> LaneSummary {
+        let requests = ttfbs
+            .iter()
+            .map(|&ttfb_ms| RequestOutcome {
+                elapsed_ms: 1000.0,
+                attempts: vec![RequestAttempt::Success(RunMetrics {
+                    total_ms: 1000.0,
+                    ttfb_ms,
+                    tokens: tokens / ttfbs.len().max(1) as u64,
+                    ..RunMetrics::default()
+                })],
+            })
+            .collect();
+        LaneSummary {
+            name: name.into(),
+            model: "m1".into(),
+            runs: vec![RunMetrics {
+                requests,
+                total_ms: 1000.0,
+                ttfb_ms: ttfbs.first().copied().unwrap_or(0.0),
+                tokens,
+                ..RunMetrics::default()
+            }],
+            concurrency,
+            ..LaneSummary::default()
+        }
+    }
+
+    fn make_failed_lane(name: &str, concurrency: usize) -> LaneSummary {
+        LaneSummary {
+            name: name.into(),
+            model: "m1".into(),
+            runs: Vec::new(),
+            failures: vec![RoundFailure {
+                task_checked: false,
+                requests: Vec::new(),
+                elapsed_ms: 1000.0,
+                class: FailureClass::Server,
+                attempts: 1,
+                message: "503".into(),
+                prompt_id: String::new(),
+            }],
+            error: Some("503".into()),
             concurrency,
             ..LaneSummary::default()
         }
@@ -479,5 +660,113 @@ mod tests {
 
         let html = ramp_html(&[1, 4], &rows);
         assert!(html.contains("<b>c=1 (100.0) \u{2b07}</b>"), "{html}");
+    }
+
+    #[test]
+    fn ramp_points_collect_request_ttfb_percentiles_and_json_fields() {
+        // [10, 20, 30, 40, 100] -> p50 = 30.0, p95 = 88.0 (linear interpolation).
+        let phases = vec![
+            RampLevel {
+                concurrency: 1,
+                summaries: vec![make_lane_with_request_ttfb(
+                    "mock",
+                    1,
+                    100,
+                    &[10.0, 20.0, 30.0, 40.0, 100.0],
+                )],
+            },
+            RampLevel {
+                concurrency: 4,
+                summaries: vec![make_failed_lane("mock", 4)],
+            },
+        ];
+        let rows = build_ramp_rows(&phases);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].points.len(), 2);
+
+        let p0 = &rows[0].points[0];
+        assert_eq!(p0.concurrency, 1);
+        let p50 = p0.request_ttfb_p50_ms.expect("p50 present at c=1");
+        let p95 = p0.request_ttfb_p95_ms.expect("p95 present at c=1");
+        assert!((p50 - 30.0).abs() < 1e-6, "got {p50}");
+        assert!((p95 - 88.0).abs() < 1e-6, "got {p95}");
+
+        let p1 = &rows[0].points[1];
+        assert_eq!(p1.concurrency, 4);
+        assert!(p1.request_ttfb_p50_ms.is_none());
+        assert!(p1.request_ttfb_p95_ms.is_none());
+
+        let json = build_ramp_json(&rows);
+        assert_eq!(json.len(), 1);
+        let entry = &json[0];
+        assert_eq!(entry["request_ttfb_p50_ms_by_concurrency"]["1"], 30.0);
+        assert!(entry["request_ttfb_p50_ms_by_concurrency"]["4"].is_null());
+        assert_eq!(entry["request_ttfb_p95_ms_by_concurrency"]["1"], 88.0);
+        assert!(entry["request_ttfb_p95_ms_by_concurrency"]["4"].is_null());
+    }
+
+    #[test]
+    fn ramp_html_escapes_sub_millisecond_ttfb_and_handles_missing() {
+        let phases = vec![
+            RampLevel {
+                concurrency: 1,
+                summaries: vec![make_lane_with_request_ttfb("edge<1>", 1, 100, &[0.4])],
+            },
+            RampLevel {
+                concurrency: 4,
+                summaries: vec![make_failed_lane("edge<1>", 4)],
+            },
+        ];
+        let rows = build_ramp_rows(&phases);
+        let html = ramp_html(&[1, 4], &rows);
+        assert!(html.contains("<h2>Request TTFT p95 (ms)</h2>"), "{html}");
+        assert!(html.contains("<td>&lt;1</td>"), "{html}");
+        assert!(!html.contains("<td><1</td>"), "raw '<1' in HTML: {html}");
+        assert!(html.contains("<td>\u{2014}</td>"), "{html}");
+        assert!(html.contains("edge&lt;1&gt;"), "{html}");
+    }
+
+    #[test]
+    fn ramp_markdown_and_terminal_render_ttfb_table_and_sanitize_labels() {
+        let phases = vec![
+            RampLevel {
+                concurrency: 1,
+                summaries: vec![make_lane_with_request_ttfb(
+                    "acme|edge\x1b[31m",
+                    1,
+                    100,
+                    &[0.4],
+                )],
+            },
+            RampLevel {
+                concurrency: 4,
+                summaries: vec![make_failed_lane("acme|edge\x1b[31m", 4)],
+            },
+        ];
+        let rows = build_ramp_rows(&phases);
+
+        let md = ramp_markdown_curve(&[1, 4], &rows);
+        assert!(md.contains("### Request TTFT p95 (ms)"), "{md}");
+        assert!(
+            md.contains("| acme\\|edge[31m | &lt;1 | \u{2014} |"),
+            "{md}"
+        );
+        assert!(!md.contains('\x1b'), "{md}");
+
+        let term = ramp_terminal(&[1, 4], &rows);
+        assert!(term.contains("Request TTFT p95 (ms)"), "{term}");
+        assert!(term.contains("<1"), "{term}");
+        assert!(term.contains('\u{2014}'), "{term}");
+        assert!(!term.contains('\x1b'), "{term}");
+
+        // When no concurrency level has TTFT p95 data, omit the secondary table.
+        let empty_phases = vec![RampLevel {
+            concurrency: 1,
+            summaries: vec![make_failed_lane("mock", 1)],
+        }];
+        let empty_rows = build_ramp_rows(&empty_phases);
+        assert!(!ramp_terminal(&[1], &empty_rows).contains("Request TTFT p95 (ms)"));
+        assert!(!ramp_markdown_curve(&[1], &empty_rows).contains("Request TTFT p95 (ms)"));
+        assert!(!ramp_html(&[1], &empty_rows).contains("Request TTFT p95 (ms)"));
     }
 }
