@@ -178,6 +178,26 @@ pub fn markdown(summaries: &[LaneSummary], prompt: &str, runs: usize, max_tokens
 
     out.push_str(&prompt_table(summaries));
     out.push_str("\n> TTFT is time to first token, the same clock as TTFB. Tokens/s divides successful output tokens by the effective generation window: the larger of total minus TTFT and reported server time. TPOT is that window divided by output tokens. Latency, tokens/s and cost/run summarize rounds with at least one successful response; round wall time includes failed requests and retry delays. Token counts prefer provider-reported usage.\n");
+    let sat_ttft: Vec<String> = summaries
+        .iter()
+        .filter(|s| s.successful() && s.concurrency > 1)
+        .filter_map(|s| {
+            let p95 = s.request_ttfb_p95_ms()?;
+            let p50 = s.request_ttfb_p50_ms()?;
+            Some(format!(
+                "{} (p50 {} ms, p95 {} ms)",
+                crate::util::md_escape_cell(&lane_label(s, summaries)),
+                crate::util::md_escape_cell(&fmt_ms(p50)),
+                crate::util::md_escape_cell(&fmt_ms(p95))
+            ))
+        })
+        .collect();
+    if !sat_ttft.is_empty() {
+        out.push_str(&format!(
+            "> Per-request TTFT under concurrency: {}.\n",
+            sat_ttft.join(", ")
+        ));
+    }
     if summaries.iter().any(|s| s.failed_rounds() > 0) {
         out.push_str("> Fail is failed/measured rounds: any failed request marks its round as failed. JSON also reports the request-level failure rate. Rank is goodput: tokens/s × the round success rate.\n");
     }
@@ -784,6 +804,9 @@ fn render_json(
             value["failed_requests"] = serde_json::json!(s.failed_requests());
             value["request_failure_rate"] = serde_json::json!(s.request_failure_rate());
             value["end_to_end_tokens_per_sec"] = serde_json::json!(s.end_to_end_tokens_per_sec());
+            value["request_ttfb_p50_ms"] = serde_json::json!(s.request_ttfb_p50_ms());
+            value["request_ttfb_p95_ms"] = serde_json::json!(s.request_ttfb_p95_ms());
+            value["server_total_ms"] = serde_json::json!(s.median_server_total_ms());
             let prompts: Vec<serde_json::Value> = s
                 .prompt_rows()
                 .into_iter()
@@ -1324,7 +1347,7 @@ pub fn html_report_grouped(
             s.mean_total_ms(),
             ci,
             s.p95_total_ms(),
-            fmt_ms(s.mean_ttfb_ms()),
+            crate::util::html_escape(&fmt_ms(s.mean_ttfb_ms())),
             s.itl_p95_ms().map(|v| format!("{v:.0} ms")).unwrap_or_else(|| "—".into()),
             match s.task_pass() {
                 Some((ok, n)) => format!("{ok}/{n}"),
@@ -1481,5 +1504,78 @@ mod tests {
         assert!(md.contains("id\\|1"), "{md}");
         assert!(md.contains("&lt;script&gt;\\|x"), "{md}");
         assert!(md.contains("prompt \\`with\\` \\| &lt;tag&gt;"), "{md}");
+    }
+
+    #[test]
+    fn html_report_escapes_sub_millisecond_ttfb() {
+        let fast = LaneSummary {
+            name: "local".into(),
+            model: "m".into(),
+            concurrency: 1,
+            runs: vec![RunMetrics {
+                total_ms: 10.0,
+                ttfb_ms: 0.4,
+                tokens: 5,
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        let html = html_report(&[fast], "hi", 1, 32, &[]);
+        assert!(html.contains("<td>&lt;1</td>"), "{html}");
+        assert!(!html.contains("<td><1</td>"), "{html}");
+    }
+
+    #[test]
+    fn json_and_markdown_surface_request_ttfb_and_server_total_ms() {
+        use crate::bench::{RequestAttempt, RequestOutcome};
+        let lane = LaneSummary {
+            name: "bedrock".into(),
+            model: "claude".into(),
+            concurrency: 2,
+            runs: vec![RunMetrics {
+                requests: vec![
+                    RequestOutcome {
+                        elapsed_ms: 200.0,
+                        attempts: vec![RequestAttempt::Success(RunMetrics {
+                            total_ms: 200.0,
+                            ttfb_ms: 30.0,
+                            tokens: 10,
+                            server_total_ms: Some(180.0),
+                            ..RunMetrics::default()
+                        })],
+                    },
+                    RequestOutcome {
+                        elapsed_ms: 350.0,
+                        attempts: vec![RequestAttempt::Success(RunMetrics {
+                            total_ms: 350.0,
+                            ttfb_ms: 130.0,
+                            tokens: 10,
+                            server_total_ms: Some(320.0),
+                            ..RunMetrics::default()
+                        })],
+                    },
+                ],
+                total_ms: 350.0,
+                ttfb_ms: 30.0,
+                tokens: 20,
+                server_total_ms: Some(250.0),
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+
+        let raw = json_report(std::slice::from_ref(&lane), "hi", 1, 32);
+        let doc: serde_json::Value = serde_json::from_str(&raw).expect("valid json");
+        let p = &doc["providers"][0];
+        assert_eq!(p["request_ttfb_p50_ms"].as_f64(), Some(80.0));
+        assert_eq!(p["request_ttfb_p95_ms"].as_f64(), Some(125.0));
+        assert_eq!(p["server_total_ms"].as_f64(), Some(250.0));
+        assert_eq!(p["runs"][0]["server_total_ms"].as_f64(), Some(250.0));
+
+        let md = markdown(&[lane], "hi", 1, 32);
+        assert!(
+            md.contains("Per-request TTFT under concurrency: bedrock (p50 80 ms, p95 125 ms)."),
+            "{md}"
+        );
     }
 }
