@@ -968,3 +968,83 @@ async fn permanent_client_errors_are_not_retried() {
         "a 400 was retried; elapsed {elapsed:?}"
     );
 }
+
+#[tokio::test]
+async fn reasoning_starvation_reports_clear_non_retryable_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&requests);
+    let server = tokio::spawn(async move {
+        let events = vec![
+            r#"data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}"#.to_string(),
+            r#"data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":16,"completion_tokens_details":{"reasoning_tokens":16}}}"#.to_string(),
+            "data: [DONE]".to_string(),
+        ];
+        loop {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 2048];
+            loop {
+                let n = socket.read(&mut tmp).await.expect("read request");
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&tmp[..n]);
+                if let Some(header_end) = find_header_end(&buf) {
+                    let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                    if let Some(cl) = content_length(&headers) {
+                        if buf.len() >= header_end + 4 + cl {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            respond(
+                &mut socket,
+                Script::Sse {
+                    events: events.clone(),
+                    chunk_size: 1024,
+                },
+            )
+            .await;
+            socket.shutdown().await.ok();
+        }
+    });
+
+    let endpoint = format!("http://{addr}/v1/chat/completions");
+    let spec = ProviderSpec::custom("reasoning-starved", &endpoint, None, "test-model");
+    let (handle, _progress) = spawn_lane(
+        reqwest::Client::new(),
+        spec,
+        "test-model".into(),
+        BenchConfig {
+            prompt: "hi".into(),
+            runs: 1,
+            warmup: 0,
+            retries: 2,
+            ..BenchConfig::default()
+        },
+    );
+    let summary = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("lane should finish promptly")
+        .expect("lane task");
+    server.abort();
+
+    assert!(!summary.successful(), "expected failure: {summary:?}");
+    let err = summary.error.expect("lane error");
+    assert!(
+        err.contains("reasoning budget exhausted before first visible token"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        requests.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "reasoning starvation must not be retried"
+    );
+    assert_eq!(summary.retry_attempts, 0);
+}
