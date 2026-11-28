@@ -90,7 +90,7 @@ pub fn md_escape_cell(s: &str) -> String {
 /// `\t` with spaces and dropping all other control characters (such as ANSI
 /// escape sequences' `\x1b` and bell `\x07`).
 #[must_use]
-pub(crate) fn sanitize_control_chars(s: &str) -> String {
+pub fn sanitize_control_chars(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
