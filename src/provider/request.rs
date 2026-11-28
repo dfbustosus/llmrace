@@ -7,13 +7,17 @@ use crate::error::{Error, Result};
 use serde_json::json;
 use std::time::Duration;
 
+const MAX_RESPONSE_SCHEMA_BYTES: usize = 256 * 1024;
+
 /// Response-format enforcement requested for the race.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonOutput {
     /// Any valid JSON value (`json_object`, `responseMimeType`).
     Object,
     /// A JSON Schema the answer must follow (`json_schema` strict on
-    /// OpenAI wires, `responseSchema` on Gemini wires).
+    /// OpenAI wires, `output_config.format` on Anthropic, `response_format`
+    /// with `json_object` + `schema` on Cohere, and `responseSchema` on
+    /// Gemini/Vertex wires).
     Schema(serde_json::Value),
 }
 
@@ -36,7 +40,10 @@ pub struct Sampling {
     /// System prompt, encoded in the wire's native slot.
     pub system: Option<String>,
     /// Response-format enforcement. Encoded on the OpenAI chat, OpenAI
-    /// Responses, Cohere and Gemini wires; the other wires ignore it.
+    /// Responses, Cohere (`response_format` with `json_object` + optional
+    /// `schema`), Gemini/Vertex, and Anthropic (`output_config.format` for
+    /// schemas; Anthropic has no schema-less `json_object` mode) wires;
+    /// Bedrock and Mock ignore it.
     pub json_output: Option<JsonOutput>,
 }
 
@@ -80,6 +87,15 @@ impl Sampling {
         if let Some(JsonOutput::Schema(schema)) = &self.json_output {
             if !schema.is_object() {
                 return Err("response schema must be a JSON object".into());
+            }
+            if serde_json::to_vec(schema)
+                .map(|b| b.len())
+                .unwrap_or(usize::MAX)
+                > MAX_RESPONSE_SCHEMA_BYTES
+            {
+                return Err(format!(
+                    "response schema exceeds {MAX_RESPONSE_SCHEMA_BYTES} bytes"
+                ));
             }
         }
         Ok(self)
@@ -275,8 +291,13 @@ fn apply_messages(body: &mut serde_json::Value, wire: Wire, req: &CompletionRequ
 
 /// Writes response-format enforcement in each wire's native shape.
 ///
-/// Anthropic, Bedrock and the mock have no such field; the control is
-/// theirs to ignore, and the request hash records that it was requested.
+/// OpenAI Chat uses `response_format`, OpenAI Responses uses `text.format`,
+/// Cohere uses `response_format` (`json_object`, with a top-level `schema`
+/// when one is provided), Gemini/Vertex use `generationConfig.responseMimeType`
+/// (and `responseSchema`), and Anthropic uses `output_config.format` for
+/// schemas (Anthropic has no schema-less `json_object` mode). Bedrock and the
+/// mock wire ignore the control; the request hash still records that it was
+/// requested.
 fn apply_json_output(body: &mut serde_json::Value, wire: Wire, json_output: &JsonOutput) {
     match (wire, json_output) {
         (Wire::OpenAiCompat | Wire::Cohere, JsonOutput::Object) => {
@@ -309,6 +330,12 @@ fn apply_json_output(body: &mut serde_json::Value, wire: Wire, json_output: &Jso
                 "strict": true,
             });
         }
+        (Wire::Anthropic, JsonOutput::Schema(schema)) => {
+            body["output_config"]["format"] = json!({
+                "type": "json_schema",
+                "schema": schema,
+            });
+        }
         (Wire::Gemini | Wire::Vertex, JsonOutput::Object) => {
             body["generationConfig"]["responseMimeType"] = json!("application/json");
         }
@@ -316,7 +343,7 @@ fn apply_json_output(body: &mut serde_json::Value, wire: Wire, json_output: &Jso
             body["generationConfig"]["responseMimeType"] = json!("application/json");
             body["generationConfig"]["responseSchema"] = schema.clone();
         }
-        _ => {}
+        (Wire::Anthropic, JsonOutput::Object) | (Wire::Bedrock | Wire::Mock, _) => {}
     }
 }
 
@@ -1225,6 +1252,7 @@ mod tests {
         assert!(body["generationConfig"].get("responseSchema").is_none());
         let body = build_body(&ProviderSpec::anthropic(), &request);
         assert!(body.get("response_format").is_none(), "{body}");
+        assert!(body.get("output_config").is_none(), "{body}");
 
         sampling.json_output = Some(JsonOutput::Schema(schema.clone()));
         request.sampling = sampling;
@@ -1247,12 +1275,79 @@ mod tests {
             body["generationConfig"]["responseSchema"]["required"][0],
             "city"
         );
+        let body = build_body(&ProviderSpec::anthropic(), &request);
+        assert_eq!(
+            body["output_config"]["format"],
+            json!({
+                "type": "json_schema",
+                "schema": schema,
+            })
+        );
+        assert!(body.get("response_format").is_none(), "{body}");
 
         let not_object = Sampling {
             json_output: Some(JsonOutput::Schema(json!("array"))),
             ..Sampling::default()
         };
         assert!(not_object.checked().is_err());
+    }
+
+    #[test]
+    fn anthropic_json_schema_composes_with_reproducible_sampling_and_tools() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+            "additionalProperties": false
+        });
+        let reproducible = Sampling {
+            temperature: Some(0.0),
+            top_p: Some(1.0),
+            seed: Some(0),
+            system: Some("Be brief.".into()),
+            json_output: Some(JsonOutput::Schema(schema.clone())),
+        };
+        let mut request = req("claude-sonnet-4-5", reproducible);
+        request.tools = true;
+        let body = build_body(&ProviderSpec::anthropic(), &request);
+        assert_eq!(body["temperature"].as_f64(), Some(0.0));
+        assert!(
+            body.get("top_p").is_none(),
+            "Anthropic omits top_p when temperature is set: {body}"
+        );
+        assert!(body.get("seed").is_none(), "{body}");
+        assert_eq!(body["system"], "Be brief.");
+        assert_eq!(
+            body["output_config"]["format"],
+            json!({
+                "type": "json_schema",
+                "schema": schema,
+            })
+        );
+        assert!(body["tools"].is_array(), "{body}");
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+    }
+
+    #[test]
+    fn sampling_checked_rejects_oversized_response_schema() {
+        let provider_schema = Sampling {
+            json_output: Some(JsonOutput::Schema(json!({
+                "type": "object",
+                "$defs": {"item": {"anyOf": [{"type": "string"}, {"type": "null"}]}},
+                "properties": {"x": {"$ref": "#/$defs/item"}}
+            }))),
+            ..Sampling::default()
+        };
+        assert!(provider_schema.checked().is_ok());
+
+        let oversized = Sampling {
+            json_output: Some(JsonOutput::Schema(json!({
+                "type": "object",
+                "description": "x".repeat(MAX_RESPONSE_SCHEMA_BYTES),
+            }))),
+            ..Sampling::default()
+        };
+        assert!(oversized.checked().is_err());
     }
 
     #[test]
