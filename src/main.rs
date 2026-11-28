@@ -498,37 +498,15 @@ async fn dispatch(
         return modes::list(cli.json).map(|_| 0);
     }
     if let Some(target) = &cli.models {
-        // a custom endpoint takes precedence when named explicitly or
-        // when listing "everything available"
-        let custom_spec = match (&cli.endpoint, &cli.provider_name) {
-            (Some(endpoint), Some(name)) => {
-                let model = resolve_model(&cli.model, "custom", "default");
-                Some(ProviderSpec::custom(
-                    name,
-                    endpoint,
-                    cli.api_key_env.as_deref(),
-                    &model,
-                ))
-            }
-            _ => None,
-        };
-        let providers = if target == "*" {
-            let mut list: Vec<ProviderSpec> = ProviderSpec::registry()
-                .into_iter()
-                .filter(|p| *p.id != *"mock" && p.is_available() && !p.opt_in)
-                .collect();
-            list.extend(custom_spec);
-            list
-        } else if let Some(spec) = custom_spec.filter(|c| *c.id == *target) {
-            vec![spec]
-        } else {
-            vec![ProviderSpec::find(target)
-                .with_context(|| format!("unknown provider '{target}' (try --list)"))?]
-        };
-        if providers.is_empty() {
-            anyhow::bail!("no providers available; set an API key or name one explicitly");
-        }
-        return modes::models(providers).await.map(|_| 0);
+        return modes::models_for_cli(
+            target,
+            cli.endpoint.as_deref(),
+            cli.provider_name.as_deref(),
+            cli.api_key_env.as_deref(),
+            &cli.model,
+        )
+        .await
+        .map(|_| 0);
     }
     if cli.dashboard {
         return modes::dashboard(cli.days, &cli.out, &cli.storage).map(|_| 0);
@@ -545,84 +523,17 @@ async fn dispatch(
     if cli.compare.len() == 1 {
         anyhow::bail!("--compare expects two comma-separated report paths (a.json,b.json)");
     }
-    // structured version info for CI scripts
     if cli.version_json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "name": "llmrace",
-                "version": env!("CARGO_PKG_VERSION"),
-                "rustc": option_env!("LLMRACE_RUSTC").unwrap_or("unknown"),
-                    "providers": llmrace::provider::ProviderSpec::registry().len(),
-                    "sqlite_enabled": cfg!(feature = "sqlite"),
-            }))?
-        );
-        return Ok(0);
+        return modes::version_json().map(|_| 0);
     }
-
     if cli.alert_test {
-        let Some(url) = &cli.alert_webhook else {
-            anyhow::bail!("--alert-test requires --alert-webhook <url>");
-        };
-        let test_alert = llmrace::watch::Alert {
-            round: 0,
-            provider: "test".into(),
-            metric: "alert-test",
-            baseline: 100.0,
-            current: 200.0,
-            delta_pct: 100.0,
-        };
-        let client = llmrace::provider::benchmark_client(std::time::Duration::from_secs(10), 1)?;
-        llmrace::notify::post_webhook(&client, url, &test_alert).await?;
-        println!(
-            "✓ test alert sent to {} — check your Slack/Discord",
-            llmrace::util::redact_url(url)
-        );
-        if cli.notify_desktop {
-            llmrace::notify::desktop_notification(
-                "llmrace alert-test",
-                "If you can read this, desktop notifications work",
-            );
-        }
-        return Ok(0);
+        return modes::alert_test(cli.alert_webhook.as_deref(), cli.notify_desktop)
+            .await
+            .map(|_| 0);
     }
-
     if cli.recommend {
-        let records = run::reports::load_history_entries(&cli.storage)?;
-        let profiles = llmrace::recommend::build_profiles(&records);
-        if cli.json {
-            let payload: Vec<serde_json::Value> = profiles
-                .iter()
-                .map(|p| {
-                    serde_json::json!({
-                        "provider": p.name,
-                        "model": p.current_model,
-                        "races": p.races,
-                        "median_latency_ms": p.median_latency_ms,
-                        "median_ttfb_ms": p.median_ttfb_ms,
-                        "median_tokens_per_sec": p.median_tokens_per_sec,
-                        "latency_cv": p.latency_cv,
-                        "cost_per_run_usd": p.cost_per_run_usd,
-                        "monthly_cost_usd": p.monthly_cost_usd,
-                        "value_for_money": p.value_for_money,
-                    })
-                })
-                .collect();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "tool": "llmrace",
-                    "mode": "recommend",
-                    "version": env!("CARGO_PKG_VERSION"),
-                    "providers": payload,
-                }))?
-            );
-        } else {
-            print!("{}", llmrace::recommend::render_recommendation(&profiles));
-        }
-        return Ok(0);
+        return modes::recommend(cli.json, &cli.storage).map(|_| 0);
     }
-
     if cli.trend {
         return modes::trend(cli.days, &cli.providers, &cli.storage).map(|_| 0);
     }
@@ -640,15 +551,11 @@ async fn dispatch(
     if let Some(spec) = &cfg.ramp {
         let levels = run::parse_ramp_levels(spec)?;
         run::ramp_race(cfg, &levels).await
-    } else if cfg_watch(&cfg) {
+    } else if cfg.watch {
         run::watch_race(cfg).await
     } else {
         run::run_race(cfg).await.map(|(code, _)| code)
     }
-}
-
-fn cfg_watch(cfg: &RunConfig) -> bool {
-    cfg.watch
 }
 
 impl Cli {
