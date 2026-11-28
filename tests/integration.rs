@@ -1811,6 +1811,7 @@ fn stats_edge_branches() {
     assert!(!spiky.outliers_3sigma().is_empty());
 }
 
+#[cfg(feature = "cli")]
 #[test]
 fn race_with_unreachable_endpoint_exits_nonzero() {
     use std::process::Command;
