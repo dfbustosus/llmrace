@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-11-28
+
+Lean library-embedder feature gating, modularized single-pass report rendering, read-only SQLite diagnostics, and cleaner CLI mode boundaries.
+
+### Added
+
+- **Lean library embedder feature (`default = ["cli"]`)**: `clap`, `clap_complete`, and `clap_mangen` are now gated behind the default-on `cli` Cargo feature (`[[bin]] required-features = ["cli"]`). Library embedders can set `default-features = false` to drop 14+ CLI parsing crates while preserving full library and TUI APIs; `fuzz/Cargo.toml` also builds with `default-features = false`, and CI verifies `--no-default-features` clippy and tests on every push
+- **Single-pass JSON & HTML report APIs**: `report::JsonReportOptions`, `report::render_json_report`, and `report::html_report_with_sampling` (used by `RaceOutcome::json()` and CLI report writing) eliminate 3× JSON serialize/deserialize round-trips, duplicate experiment manifest construction, and brittle HTML `replacen` patching while preserving all legacy `report::*` functions
+- **Read-only SQLite diagnostics**: `history::sqlite_history_path()` (single source of truth for `history.sqlite3`) and `sqlite::count_records()` (`SQLITE_OPEN_READ_ONLY`, zero WAL/DDL/file creation) power `doctor::check_history()` to inspect both JSONL and SQLite stores safely across `--features sqlite` and default builds
+
+### Changed
+
+- Split monolithic `src/report.rs` (~1,580 lines) into focused internal submodules `src/report/{mod,identity,markdown,json,html,junit}.rs` re-exporting all public items identically (zero breaking changes)
+- Removed unused direct `crossterm = "0.29"` manifest dependency (`src/tui.rs` imports `ratatui::crossterm`)
+- Moved standalone `--models`, `--version-json`, `--alert-test`, and `--recommend` handlers from `main::dispatch()` into narrow-parameter helpers in `src/modes.rs`
+
 ## [1.42.0] - 2026-11-28
 
 Anthropic native structured outputs, richer JSON Schema validation with bounded compiled-regex caching, and inline MCP `response_schema` parity.
