@@ -41,6 +41,31 @@ pub struct StreamEvent {
     /// [`Self::completion_tokens`]. Gemini thoughts are separate.
     /// OpenAI `completion_tokens` already includes reasoning.
     pub reasoning_billed_separately: bool,
+    /// `true` when hidden reasoning/thinking activity was present in this frame;
+    /// by itself never starts the TTFT clock.
+    pub reasoning_seen: bool,
+    /// Provider-reported end-to-end server duration (prefill + generation) in
+    /// milliseconds when available (e.g., Bedrock `metadata.metrics.latencyMs`),
+    /// distinct from pre-stream [`ServerTiming::processing_ms`].
+    pub server_total_ms: Option<f64>,
+}
+
+impl StreamEvent {
+    fn has_payload(&self) -> bool {
+        self.token.is_some()
+            || self.tool_args.is_some()
+            || self.completion_tokens.is_some()
+            || self.prompt_tokens.is_some()
+            || self.cache_read_tokens.is_some()
+            || self.cache_write_tokens.is_some()
+            || self.cache_write_1h_tokens.is_some()
+            || self.reasoning_tokens.is_some()
+            || self.server_total_ms.is_some()
+    }
+
+    fn is_reasoning_only(&self) -> bool {
+        self.reasoning_seen && !self.has_payload()
+    }
 }
 
 /// Input-side usage, normalized so every cache bucket is a subset of
@@ -85,6 +110,8 @@ impl InputUsage {
             cache_write_1h_tokens: self.cache_write_1h_tokens,
             reasoning_tokens: None,
             reasoning_billed_separately: false,
+            reasoning_seen: false,
+            server_total_ms: None,
         }
     }
 }
@@ -166,13 +193,23 @@ fn bedrock_input(usage: &serde_json::Value) -> InputUsage {
 }
 
 fn bedrock_metadata_event(v: &serde_json::Value) -> Option<StreamEvent> {
-    let usage = v.get("usage")?;
-    let input = bedrock_input(usage);
-    let completion = field_u64(usage, &["outputTokens", "output_tokens"]);
-    if completion.is_none() && input.is_empty() {
+    let (input, completion) = match v.get("usage") {
+        Some(usage) => (
+            bedrock_input(usage),
+            field_u64(usage, &["outputTokens", "output_tokens"]),
+        ),
+        None => (InputUsage::empty(), None),
+    };
+    let server_total_ms = v
+        .pointer("/metrics/latencyMs")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|ms| ms.is_finite() && (0.0..=86_400_000.0).contains(ms));
+    if completion.is_none() && input.is_empty() && server_total_ms.is_none() {
         return None;
     }
-    Some(input.into_event(None, None, completion))
+    let mut event = input.into_event(None, None, completion);
+    event.server_total_ms = server_total_ms;
+    Some(event)
 }
 
 fn summed_input(
@@ -262,6 +299,7 @@ pub struct SseStream {
     pending: std::collections::VecDeque<Result<StreamEvent>>,
     upstream_done: bool,
     completed: bool,
+    reasoning_emitted: bool,
     timing: ServerTiming,
 }
 
@@ -289,6 +327,7 @@ impl SseStream {
             pending: std::collections::VecDeque::new(),
             upstream_done: false,
             completed: false,
+            reasoning_emitted: false,
             timing,
         }
     }
@@ -350,15 +389,13 @@ impl SseStream {
             _ => false,
         };
         if let Some(event) = decode_value(&value, self.wire) {
-            let carries_output = event.token.is_some()
-                || event.completion_tokens.is_some()
-                || event.tool_args.is_some()
-                || event.prompt_tokens.is_some()
-                || event.cache_read_tokens.is_some()
-                || event.cache_write_tokens.is_some()
-                || event.cache_write_1h_tokens.is_some()
-                || event.reasoning_tokens.is_some();
-            if carries_output {
+            if event.has_payload() || event.reasoning_seen {
+                if event.is_reasoning_only() {
+                    if self.reasoning_emitted {
+                        return;
+                    }
+                    self.reasoning_emitted = true;
+                }
                 self.pending.push_back(Ok(event));
             }
         }
@@ -439,12 +476,20 @@ fn decode_value(v: &serde_json::Value, wire: Wire) -> Option<StreamEvent> {
                 .and_then(|c| c.as_str())
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
+            let reasoning_seen = v
+                .pointer("/choices/0/delta/reasoning_content")
+                .and_then(|c| c.as_str())
+                .is_some_and(|s| !s.is_empty())
+                || v.pointer("/choices/0/delta/reasoning")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|s| !s.is_empty());
             let usage = json_u64(v.pointer("/usage/completion_tokens"));
             let mut event = openai_input(v).into_event(token, tool_args, usage);
             // Already inside completion_tokens, so it is recorded and not
             // added to the bill a second time.
             event.reasoning_tokens =
                 json_u64(v.pointer("/usage/completion_tokens_details/reasoning_tokens"));
+            event.reasoning_seen = reasoning_seen;
             Some(event)
         }
         Wire::Anthropic => {
@@ -461,7 +506,14 @@ fn decode_value(v: &serde_json::Value, wire: Wire) -> Option<StreamEvent> {
                         .and_then(|c| c.as_str())
                         .filter(|s| !s.is_empty())
                         .map(str::to_string);
-                    Some(InputUsage::empty().into_event(token, tool_args, None))
+                    let reasoning_seen = v.pointer("/delta/type").and_then(|c| c.as_str())
+                        == Some("thinking_delta")
+                        || v.pointer("/delta/thinking")
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|s| !s.is_empty());
+                    let mut event = InputUsage::empty().into_event(token, tool_args, None);
+                    event.reasoning_seen = reasoning_seen;
+                    Some(event)
                 }
                 "message_start" | "message_delta" => {
                     let input = anthropic_input(v);
@@ -478,12 +530,14 @@ fn decode_value(v: &serde_json::Value, wire: Wire) -> Option<StreamEvent> {
         Wire::Gemini | Wire::Vertex => {
             let mut text_out = String::new();
             let mut tool_args: Option<String> = None;
+            let mut reasoning_seen = false;
             if let Some(parts) = v
                 .pointer("/candidates/0/content/parts")
                 .and_then(serde_json::Value::as_array)
             {
                 for part in parts {
                     if part.get("thought").and_then(serde_json::Value::as_bool) == Some(true) {
+                        reasoning_seen = true;
                         continue;
                     }
                     if let Some(t) = part.get("text").and_then(serde_json::Value::as_str) {
@@ -508,12 +562,14 @@ fn decode_value(v: &serde_json::Value, wire: Wire) -> Option<StreamEvent> {
                 && tool_args.is_none()
                 && input.is_empty()
                 && thoughts.is_none()
+                && !reasoning_seen
             {
                 return None;
             }
             let mut event = input.into_event(token, tool_args, usage);
             event.reasoning_tokens = thoughts;
             event.reasoning_billed_separately = thoughts.is_some();
+            event.reasoning_seen = reasoning_seen;
             Some(event)
         }
         Wire::Cohere => {
@@ -573,6 +629,12 @@ fn decode_value(v: &serde_json::Value, wire: Wire) -> Option<StreamEvent> {
                         .map(str::to_string);
                     args.map(|args| InputUsage::empty().into_event(None, Some(args), None))
                 }
+                "response.reasoning_summary_text.delta"
+                | "response.reasoning_text.delta"
+                | "response.reasoning.delta" => Some(StreamEvent {
+                    reasoning_seen: true,
+                    ..StreamEvent::default()
+                }),
                 "response.completed" | "response.incomplete" => {
                     let usage = &v["response"]["usage"];
                     let input = InputUsage {
@@ -681,6 +743,7 @@ pub struct BedrockStream {
     pending: std::collections::VecDeque<Result<StreamEvent>>,
     upstream_done: bool,
     completed: bool,
+    reasoning_emitted: bool,
 }
 
 impl BedrockStream {
@@ -697,6 +760,7 @@ impl BedrockStream {
             pending: std::collections::VecDeque::new(),
             upstream_done: false,
             completed: false,
+            reasoning_emitted: false,
         }
     }
 
@@ -740,9 +804,27 @@ impl BedrockStream {
                     .and_then(|c| c.as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
-                if token.is_some() || tool_args.is_some() {
-                    self.pending
-                        .push_back(Ok(InputUsage::empty().into_event(token, tool_args, None)));
+                let reasoning_seen = event_type == "contentBlockDelta"
+                    && v.pointer("/delta/reasoningContent")
+                        .filter(|rc| !rc.is_null())
+                        .is_some_and(|rc| {
+                            rc.get("text")
+                                .and_then(|t| t.as_str())
+                                .is_some_and(|s| !s.is_empty())
+                                || rc
+                                    .get("redactedContent")
+                                    .is_some_and(|r| !r.is_null() && r.as_str() != Some(""))
+                        });
+                if token.is_some() || tool_args.is_some() || reasoning_seen {
+                    let mut event = InputUsage::empty().into_event(token, tool_args, None);
+                    event.reasoning_seen = reasoning_seen;
+                    if event.is_reasoning_only() {
+                        if self.reasoning_emitted {
+                            return Ok(());
+                        }
+                        self.reasoning_emitted = true;
+                    }
+                    self.pending.push_back(Ok(event));
                 }
             }
             "messageStop" => self.completed = true,
@@ -879,17 +961,23 @@ mod tests {
 
     #[test]
     fn gemini_and_vertex_skip_thought_parts_and_keep_all_visible_parts() {
-        // Pure thought part must not emit visible token text (nor trigger TTFT).
+        // Pure thought part must not emit visible token text (nor trigger TTFT),
+        // while flagging reasoning_seen so budget exhaustion can be diagnosed.
         let thought_only =
             r#"{"candidates":[{"content":{"parts":[{"text":"internal chain","thought":true}]}}]}"#;
-        assert!(decode_payload(thought_only, Wire::Gemini).is_none());
-        assert!(decode_payload(thought_only, Wire::Vertex).is_none());
+        for wire in [Wire::Gemini, Wire::Vertex] {
+            let ev = decode_payload(thought_only, wire).expect("thought-only event");
+            assert!(ev.token.is_none());
+            assert!(ev.tool_args.is_none());
+            assert!(ev.reasoning_seen);
+        }
 
         // Thought part followed by multiple visible text parts concatenates visible parts only.
         let mixed = r#"{"candidates":[{"content":{"parts":[{"text":"secret","thought":true},{"text":"Hello"},{"text":", world"}]}}]}"#;
         for wire in [Wire::Gemini, Wire::Vertex] {
             let ev = decode_payload(mixed, wire).expect("mixed parts");
             assert_eq!(ev.token.as_deref(), Some("Hello, world"));
+            assert!(ev.reasoning_seen);
         }
 
         // Thought part followed by functionCall still extracts tool_args.
@@ -897,6 +985,7 @@ mod tests {
         let ev = decode_payload(thought_and_tool, Wire::Vertex).expect("tool call after thought");
         assert!(ev.token.is_none());
         assert_eq!(ev.tool_args.as_deref(), Some(r#"{"city":"Paris"}"#));
+        assert!(ev.reasoning_seen);
     }
 
     #[test]
@@ -911,5 +1000,184 @@ mod tests {
         let both = r#"{"choices":[],"usage":{"prompt_tokens":1000,"prompt_tokens_details":{"cached_tokens":600},"prompt_cache_hit_tokens":800}}"#;
         let ev = decode_payload(both, Wire::OpenAiCompat).expect("both");
         assert_eq!(ev.cache_read_tokens, Some(600));
+    }
+
+    #[test]
+    fn reasoning_deltas_flag_reasoning_seen_without_starting_ttft_across_wires() {
+        // OpenAI-compatible reasoning_content and reasoning fields
+        for payload in [
+            r#"{"choices":[{"delta":{"reasoning_content":"step 1"}}]}"#,
+            r#"{"choices":[{"delta":{"reasoning":"step 1"}}]}"#,
+        ] {
+            let ev = decode_payload(payload, Wire::OpenAiCompat).expect("openai reasoning");
+            assert!(ev.token.is_none());
+            assert!(ev.tool_args.is_none());
+            assert!(ev.reasoning_seen);
+        }
+
+        // OpenAI Responses reasoning event types
+        for kind in [
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+            "response.reasoning.delta",
+        ] {
+            let payload = format!(r#"{{"type":"{kind}","delta":"thinking"}}"#);
+            let ev = decode_payload(&payload, Wire::OpenAiResponses).expect("responses reasoning");
+            assert!(ev.token.is_none());
+            assert!(ev.tool_args.is_none());
+            assert!(ev.reasoning_seen);
+        }
+
+        // Anthropic thinking_delta and delta.thinking
+        for payload in [
+            r#"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}"#,
+            r#"{"type":"content_block_delta","delta":{"thinking":"hmm"}}"#,
+        ] {
+            let ev = decode_payload(payload, Wire::Anthropic).expect("anthropic thinking");
+            assert!(ev.token.is_none());
+            assert!(ev.tool_args.is_none());
+            assert!(ev.reasoning_seen);
+        }
+    }
+
+    #[test]
+    fn bedrock_metadata_parses_latency_ms_independently_and_validates_bounds() {
+        // Usage + valid latencyMs
+        let both = bedrock_metadata_event(&serde_json::json!({
+            "usage": {"inputTokens": 50, "outputTokens": 10},
+            "metrics": {"latencyMs": 1234.5}
+        }))
+        .expect("both");
+        assert_eq!(both.prompt_tokens, Some(50));
+        assert_eq!(both.completion_tokens, Some(10));
+        assert_eq!(both.server_total_ms, Some(1234.5));
+
+        // Metrics-only (missing usage)
+        let metrics_only = bedrock_metadata_event(&serde_json::json!({
+            "metrics": {"latencyMs": 420}
+        }))
+        .expect("metrics only");
+        assert_eq!(metrics_only.prompt_tokens, None);
+        assert_eq!(metrics_only.completion_tokens, None);
+        assert_eq!(metrics_only.server_total_ms, Some(420.0));
+
+        // Invalid latencyMs values are rejected (and return None when usage is absent)
+        for bad in [
+            serde_json::json!(-5.0),
+            serde_json::json!(1e308),
+            serde_json::json!(86_400_001.0),
+            serde_json::json!("1234"),
+            serde_json::json!(null),
+        ] {
+            assert!(
+                bedrock_metadata_event(&serde_json::json!({"metrics": {"latencyMs": bad}}))
+                    .is_none(),
+                "expected None for bad latencyMs={bad}"
+            );
+            // When usage is present, bad latencyMs is ignored while usage is kept.
+            let with_usage = bedrock_metadata_event(&serde_json::json!({
+                "usage": {"outputTokens": 5},
+                "metrics": {"latencyMs": bad}
+            }))
+            .expect("usage survives bad latencyMs");
+            assert_eq!(with_usage.completion_tokens, Some(5));
+            assert_eq!(with_usage.server_total_ms, None);
+        }
+    }
+
+    #[test]
+    fn sse_stream_coalesces_repeated_reasoning_only_deltas() {
+        let mut stream = SseStream {
+            stream: Box::pin(futures_util::stream::empty()),
+            parser: crate::sse::SseParser::new(),
+            wire: Wire::OpenAiCompat,
+            pending: std::collections::VecDeque::new(),
+            upstream_done: false,
+            completed: false,
+            reasoning_emitted: false,
+            timing: ServerTiming::default(),
+        };
+        let block = r#"data: {"choices":[{"delta":{"reasoning_content":"step"}}]}"#;
+        for _ in 0..50 {
+            stream.enqueue_block(block);
+        }
+        assert_eq!(
+            stream.pending.len(),
+            1,
+            "repeated reasoning-only SSE deltas must coalesce to a single event"
+        );
+        let first = stream
+            .pending
+            .pop_front()
+            .expect("one event")
+            .expect("ok event");
+        assert!(first.reasoning_seen);
+        assert!(first.token.is_none());
+
+        // Visible token still passes through after reasoning coalescing.
+        stream.enqueue_block(r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#);
+        let tok = stream
+            .pending
+            .pop_front()
+            .expect("token event")
+            .expect("ok token");
+        assert_eq!(tok.token.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn bedrock_stream_detects_reasoning_content_and_coalesces_repeats() {
+        use super::super::event_stream::EventFrame;
+        let mut stream = BedrockStream {
+            stream: Box::pin(futures_util::stream::empty()),
+            buf: Vec::new(),
+            start: 0,
+            prelude_checked: false,
+            pending: std::collections::VecDeque::new(),
+            upstream_done: false,
+            completed: false,
+            reasoning_emitted: false,
+        };
+        let text_frame = EventFrame {
+            event_type: "contentBlockDelta".into(),
+            message_type: "event".into(),
+            payload: br#"{"delta":{"reasoningContent":{"text":"thinking"}}}"#.to_vec(),
+        };
+        let redacted_frame = EventFrame {
+            event_type: "contentBlockDelta".into(),
+            message_type: "event".into(),
+            payload: br#"{"delta":{"reasoningContent":{"redactedContent":"YWJj"}}}"#.to_vec(),
+        };
+        for _ in 0..10 {
+            stream.enqueue_frame(&text_frame).expect("text reasoning");
+            stream
+                .enqueue_frame(&redacted_frame)
+                .expect("redacted reasoning");
+        }
+        assert_eq!(
+            stream.pending.len(),
+            1,
+            "repeated reasoning-only Bedrock frames must coalesce to one event"
+        );
+        let first = stream
+            .pending
+            .pop_front()
+            .expect("one event")
+            .expect("ok event");
+        assert!(first.reasoning_seen);
+        assert!(first.token.is_none());
+
+        // Visible text delta still emits normally.
+        let visible = EventFrame {
+            event_type: "contentBlockDelta".into(),
+            message_type: "event".into(),
+            payload: br#"{"delta":{"text":"answer"}}"#.to_vec(),
+        };
+        stream.enqueue_frame(&visible).expect("visible delta");
+        let tok = stream
+            .pending
+            .pop_front()
+            .expect("visible event")
+            .expect("ok visible");
+        assert_eq!(tok.token.as_deref(), Some("answer"));
     }
 }
