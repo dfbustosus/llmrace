@@ -116,7 +116,9 @@ pub(crate) struct Cli {
     json_output: bool,
 
     /// Require every lane to answer with JSON matching this JSON Schema
-    /// file (`response_format: json_schema` / `responseSchema`).
+    /// file (OpenAI `json_schema`, Anthropic `output_config.format`,
+    /// Cohere `response_format.schema`, Gemini/Vertex `responseSchema`;
+    /// Bedrock and mock ignore it).
     #[arg(help_heading = "Prompt shaping", long, value_name = "FILE")]
     response_schema: Option<String>,
 
@@ -391,13 +393,47 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+const MAX_RESPONSE_SCHEMA_BYTES: u64 = 256 * 1024;
+
+fn read_response_schema_file(path: &str) -> Result<String> {
+    use std::io::Read as _;
+    // Stat before open so POSIX FIFOs are rejected without blocking on open().
+    let meta =
+        std::fs::metadata(path).with_context(|| format!("reading response schema {path}"))?;
+    if !meta.is_file() {
+        anyhow::bail!("response schema {path} must be a regular file");
+    }
+    let file =
+        std::fs::File::open(path).with_context(|| format!("reading response schema {path}"))?;
+    let fmeta = file
+        .metadata()
+        .with_context(|| format!("reading response schema {path}"))?;
+    if !fmeta.is_file() {
+        anyhow::bail!("response schema {path} must be a regular file");
+    }
+    if fmeta.len() > MAX_RESPONSE_SCHEMA_BYTES {
+        anyhow::bail!(
+            "response schema {path} exceeds {MAX_RESPONSE_SCHEMA_BYTES} byte (256 KiB) limit"
+        );
+    }
+    let mut buf = Vec::new();
+    file.take(MAX_RESPONSE_SCHEMA_BYTES.saturating_add(1))
+        .read_to_end(&mut buf)
+        .with_context(|| format!("reading response schema {path}"))?;
+    if buf.len() as u64 > MAX_RESPONSE_SCHEMA_BYTES {
+        anyhow::bail!(
+            "response schema {path} exceeds {MAX_RESPONSE_SCHEMA_BYTES} byte (256 KiB) limit"
+        );
+    }
+    String::from_utf8(buf).with_context(|| format!("reading response schema {path}: invalid UTF-8"))
+}
+
 /// Routes to a standalone mode or the race; returns the process exit code.
 pub(crate) fn sampling_from_cli(cli: &Cli) -> Result<llmrace::provider::Sampling> {
     let json_output = if cli.json_output {
         Some(llmrace::provider::JsonOutput::Object)
     } else if let Some(path) = &cli.response_schema {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading response schema {path}"))?;
+        let raw = read_response_schema_file(path)?;
         let schema: serde_json::Value = serde_json::from_str(&raw)
             .with_context(|| format!("parsing response schema {path}"))?;
         Some(llmrace::provider::JsonOutput::Schema(schema))
@@ -889,4 +925,53 @@ fn apply_profile(
     }
     println!("\u{2699}  profile '{name}' loaded");
     Ok((cli, Some(config)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_response_schema_file_rejects_directories_and_oversized_files() {
+        let dir =
+            std::env::temp_dir().join(format!("llmrace-main-schema-unit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let dir_err = read_response_schema_file(dir.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(dir_err.contains("regular file"), "{dir_err}");
+
+        let ok_file = dir.join("ok.json");
+        let ok_body = r#"{"type":"object"}"#;
+        std::fs::write(&ok_file, ok_body).unwrap();
+        assert_eq!(
+            read_response_schema_file(ok_file.to_str().unwrap()).unwrap(),
+            ok_body
+        );
+
+        let exact_file = dir.join("exact.json");
+        let exact_body = " ".repeat(MAX_RESPONSE_SCHEMA_BYTES as usize);
+        std::fs::write(&exact_file, &exact_body).unwrap();
+        assert_eq!(
+            read_response_schema_file(exact_file.to_str().unwrap())
+                .unwrap()
+                .len(),
+            MAX_RESPONSE_SCHEMA_BYTES as usize
+        );
+
+        let big_file = dir.join("big.json");
+        std::fs::write(
+            &big_file,
+            "a".repeat(MAX_RESPONSE_SCHEMA_BYTES as usize + 1),
+        )
+        .unwrap();
+        let big_err = read_response_schema_file(big_file.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(big_err.contains("256 KiB"), "{big_err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
