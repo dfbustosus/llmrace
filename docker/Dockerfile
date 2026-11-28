@@ -3,14 +3,14 @@
 # ubuntu 24.04 matches the release builder exactly — glibc stays aligned.
 #
 # Build (CI does this on release tags; locally pass the version):
-#   docker build --build-arg VERSION=1.40.0 --build-arg TARGET=x86_64-unknown-linux-gnu \
+#   docker build --build-arg VERSION=1.41.0 --build-arg TARGET=x86_64-unknown-linux-gnu \
 #     -t ghcr.io/dfbustosus/llmrace .
 #
 # Run:
 #   docker run --rm -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace openai -n 5
 
 FROM ubuntu:24.04 AS fetch
-ARG VERSION=1.40.0
+ARG VERSION=1.41.0
 ARG TARGET=x86_64-unknown-linux-gnu
 WORKDIR /tmp
 RUN apt-get update \
