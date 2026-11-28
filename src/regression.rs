@@ -46,8 +46,10 @@ pub struct MetricComparison {
     pub delta_pct: f64,
     /// Whether this metric regressed beyond the threshold.
     pub regressed: bool,
-    /// Welch p-value for the difference, when both sides carry per-run
-    /// samples (`None` for reports saved without per-run data).
+    /// Statistical p-value for the difference (Welch's t-test for means,
+    /// percentile bootstrap for p95 latency), when both sides carry enough
+    /// per-run samples (`None` for reports saved without sufficient per-run
+    /// data or ratio metrics without a sample test).
     pub p_value: Option<f64>,
     /// Workload prompt this metric belongs to. `None` for a lane metric.
     pub prompt_id: Option<String>,
@@ -57,8 +59,10 @@ impl MetricComparison {
     /// Whether this metric fails the process, under the significance rule.
     ///
     /// With `require_significance`, a latency or throughput breach needs a
-    /// Welch p < 0.05; failure rate, goodput, cost and task success are
-    /// ratios of the whole sample, so a threshold breach on those counts.
+    /// significant p-value (`p < 0.05`, Welch's t-test for means or percentile
+    /// bootstrap for p95 latency); failure rate, goodput, cost and task
+    /// success are ratios of the whole sample, so a threshold breach on those
+    /// counts.
     #[must_use]
     pub fn fails_the_gate(&self, require_significance: bool) -> bool {
         if !self.regressed {
@@ -138,10 +142,10 @@ impl RegressionReport {
     }
 
     /// `true` when at least one metric regressed beyond the threshold
-    /// **and** the difference is statistically significant (Welch
-    /// p < 0.05, when per-run data allows the test). Threshold breaches
-    /// without a significant p-value are treated as noise — the
-    /// flake-resistant gate for CI.
+    /// **and** the difference is statistically significant (`p < 0.05` via
+    /// Welch's t-test for means or percentile bootstrap for p95 latency, when
+    /// per-run data allows the test). Threshold breaches without a significant
+    /// p-value are treated as noise — the flake-resistant gate for CI.
     #[must_use]
     pub fn any_regressed_significant(&self) -> bool {
         self.comparisons
@@ -715,7 +719,7 @@ fn compare_lane_metrics(
             base.p95_total_ms,
             current.p95_total_ms,
             max_regression_pct,
-            None, // p95 is derived, not per-run
+            metric_bootstrap_p95(&base.runs, &current.runs),
         ),
         latency_metric(
             LABEL_TTFB,
@@ -896,16 +900,21 @@ fn prompt_unavailable(id: &str) -> MetricComparison {
     }
 }
 
-/// Filters a Welch `(t, p)` result so that a regressed metric only receives
-/// `p < 0.05` when `t` has the sign matching a regression in that direction:
-/// `t < 0` for higher-is-worse (`base < current`), `t > 0` for lower-is-worse
+/// Filters a `(signed_stat, p)` significance result (Welch's `t` or bootstrap
+/// `base_p95 - curr_p95`) so that a regressed metric only receives `p < 0.05`
+/// when `signed_stat` has the sign matching a regression in that direction:
+/// `< 0` for higher-is-worse (`base < current`), `> 0` for lower-is-worse
 /// (`base > current`). Non-regressed metrics preserve their two-sided `p`.
-fn directional_p(welch: Option<(f64, f64)>, regressed: bool, higher_is_worse: bool) -> Option<f64> {
-    let (t, p) = welch?;
+fn directional_p(test: Option<(f64, f64)>, regressed: bool, higher_is_worse: bool) -> Option<f64> {
+    let (stat, p) = test?;
     if !regressed {
         return Some(p);
     }
-    let matches_regression = if higher_is_worse { t < 0.0 } else { t > 0.0 };
+    let matches_regression = if higher_is_worse {
+        stat < 0.0
+    } else {
+        stat > 0.0
+    };
     if matches_regression {
         Some(p)
     } else {
@@ -1035,6 +1044,20 @@ fn metric_welch(
     Some((t, crate::stats::t_two_sided_p(t, df)))
 }
 
+/// Two-sample percentile bootstrap `(base_p95 - curr_p95, two_sided_p)` for
+/// round total latency p95 when both sides carry enough samples.
+///
+/// The first element matches [`metric_welch`]'s sign convention: negative when
+/// `current > base`, so [`directional_p`] filters opposite-sign regressions.
+fn metric_bootstrap_p95(base: &[BaselineRun], current: &[BaselineRun]) -> Option<(f64, f64)> {
+    let a: Vec<f64> = base.iter().map(|r| r.total_ms).collect();
+    let b: Vec<f64> = current.iter().map(|r| r.total_ms).collect();
+    let p = crate::stats::bootstrap_percentile_p(&a, &b, 95.0)?;
+    let base_p95 = crate::stats::Sample::from_values(a).percentile(95.0);
+    let curr_p95 = crate::stats::Sample::from_values(b).percentile(95.0);
+    Some((base_p95 - curr_p95, p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1105,5 +1128,131 @@ mod tests {
         assert_eq!(report.comparisons[0].variant.as_deref(), Some("short|v1"));
         let md = report.markdown_section(15.0, false);
         assert!(md.contains("p\\|evil (short\\|v1)"), "{md}");
+    }
+
+    fn provider_with_totals(
+        totals: &[f64],
+        mean_override: Option<f64>,
+        p95_override: Option<f64>,
+    ) -> BaselineReport {
+        let sample = crate::stats::Sample::from_values(totals.to_vec());
+        let runs: Vec<BaselineRun> = totals
+            .iter()
+            .map(|&total_ms| BaselineRun {
+                total_ms,
+                ttfb_ms: 10.0,
+                tokens_per_sec: 100.0,
+                prompt_id: String::new(),
+            })
+            .collect();
+        BaselineReport {
+            experiment_sha256: None,
+            request_sha256: None,
+            providers: vec![BaselineProvider {
+                successful: Some(true),
+                concurrency: Some(1),
+                provider: "mock".into(),
+                variant: None,
+                model: "m".into(),
+                mean_total_ms: mean_override.unwrap_or_else(|| sample.mean()),
+                p95_total_ms: p95_override.unwrap_or_else(|| sample.percentile(95.0)),
+                mean_ttfb_ms: 10.0,
+                mean_tokens_per_sec: 100.0,
+                failure_rate: None,
+                goodput_tokens_per_sec: None,
+                cost_per_run_usd: None,
+                task_pass_rate: None,
+                prompts: Vec::new(),
+                runs,
+            }],
+        }
+    }
+
+    #[test]
+    fn bootstrap_p95_conclusive_regression_fails_significance_gate() {
+        // Keep means close (within 15%) while shifting the upper tail significantly.
+        let mut base_totals = vec![100.0; 17];
+        base_totals.extend([105.0, 108.0, 110.0]);
+        let mut cur_totals = vec![90.0; 15];
+        cur_totals.extend([180.0, 190.0, 200.0, 210.0, 220.0]);
+        let base = provider_with_totals(&base_totals, Some(100.0), None);
+        let cur = provider_with_totals(&cur_totals, Some(100.0), None);
+
+        let report = compare_baselines(&cur, &base, 15.0);
+        let p95 = report.comparisons[0]
+            .metrics
+            .iter()
+            .find(|m| m.label == LABEL_P95_LATENCY)
+            .expect("p95 metric");
+        assert!(p95.regressed);
+        let p = p95.p_value.expect("bootstrap p-value for n=20");
+        assert!(p < 0.05, "expected significant p < 0.05, got {p}");
+        assert!(report.gate_failed_with_policy(true, true));
+        assert_eq!(report.status(true), "fail");
+    }
+
+    #[test]
+    fn bootstrap_p95_non_significant_noise_passes_significance_gate() {
+        // Single-outlier p95 spike on n=20 is statistically indistinguishable from noise.
+        let mut base_totals = vec![100.0; 19];
+        base_totals.push(105.0);
+        let mut cur_totals = vec![100.0; 19];
+        cur_totals.push(500.0);
+        let base = provider_with_totals(&base_totals, Some(100.0), None);
+        let cur = provider_with_totals(&cur_totals, Some(100.0), None);
+
+        let report = compare_baselines(&cur, &base, 15.0);
+        let p95 = report.comparisons[0]
+            .metrics
+            .iter()
+            .find(|m| m.label == LABEL_P95_LATENCY)
+            .expect("p95 metric");
+        assert!(p95.regressed);
+        let p = p95.p_value.expect("bootstrap p-value for n=20");
+        assert!(p >= 0.05, "expected non-significant p >= 0.05, got {p}");
+        assert_eq!(report.status(true), "pass");
+        assert!(!report.gate_failed_with_policy(true, true));
+    }
+
+    #[test]
+    fn bootstrap_p95_opposite_sign_protection_returns_p_one() {
+        // Summary claims p95 regressed (100 -> 200), yet underlying runs actually sped up (200 -> 100).
+        let base_totals: Vec<f64> = (0..20).map(|i| 200.0 + i as f64).collect();
+        let cur_totals: Vec<f64> = (0..20).map(|i| 100.0 + i as f64).collect();
+        let base = provider_with_totals(&base_totals, Some(100.0), Some(100.0));
+        let cur = provider_with_totals(&cur_totals, Some(100.0), Some(200.0));
+
+        let report = compare_baselines(&cur, &base, 15.0);
+        let p95 = report.comparisons[0]
+            .metrics
+            .iter()
+            .find(|m| m.label == LABEL_P95_LATENCY)
+            .expect("p95 metric");
+        assert!(p95.regressed);
+        assert_eq!(p95.p_value, Some(1.0));
+        assert!(!p95.fails_the_gate(true));
+        assert_eq!(report.status(true), "pass");
+    }
+
+    #[test]
+    fn bootstrap_p95_small_sample_remains_inconclusive() {
+        // n = 19 is below MIN_BOOTSTRAP_SAMPLES (20), so p95 breach stays inconclusive.
+        let base_totals: Vec<f64> = (0..19).map(|i| 100.0 + i as f64).collect();
+        let cur_totals: Vec<f64> = (0..19).map(|i| 200.0 + i as f64).collect();
+        let base = provider_with_totals(&base_totals, Some(100.0), None);
+        let cur = provider_with_totals(&cur_totals, Some(100.0), None);
+
+        let report = compare_baselines(&cur, &base, 15.0);
+        let p95 = report.comparisons[0]
+            .metrics
+            .iter()
+            .find(|m| m.label == LABEL_P95_LATENCY)
+            .expect("p95 metric");
+        assert!(p95.regressed);
+        assert_eq!(p95.p_value, None);
+        assert!(p95.inconclusive(true));
+        assert_eq!(report.status(true), "inconclusive");
+        assert!(!report.gate_failed_with_policy(true, false));
+        assert!(report.gate_failed_with_policy(true, true));
     }
 }
