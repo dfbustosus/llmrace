@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-11-28
+
+Anthropic native structured outputs, richer JSON Schema validation with bounded compiled-regex caching, and inline MCP `response_schema` parity.
+
+### Added
+
+- **Anthropic native structured outputs**: `--response-schema` (`Sampling::json_output = Some(JsonOutput::Schema(schema))`) now emits `output_config.format` (`{"type": "json_schema", "schema": ...}`) on `Wire::Anthropic` (composing cleanly with `--reproducible`, `--system`, and `--tools`; bare `--json-output` without a schema remains omitted on Anthropic since `output_config.format` requires a schema)
+- **Richer JSON Schema validation** (`tools::check_schema` and `tools::value_matches_schema`):
+  - Union `"type"` arrays (e.g., `["string", "null"]` required by OpenAI strict mode for optional properties; 1–7 unique valid primitive types)
+  - `"const"` and `"enum"` with lossless `i128` / IEEE-754 numeric equality (`5 == 5.0` without `2^53` integer collisions)
+  - `"pattern"` validated at load time via the 1 MiB DFA-capped Rust regex compiler (`<= 4096` bytes, `<= 32` patterns per schema)
+  - `"minItems"` and `"maxItems"` array bounds (32-bit safe `u64` comparisons) plus `min <= max` validation across `minimum`/`maximum`, `minLength`/`maxLength`, and `minItems`/`maxItems`
+- **Bounded compiled-regex cache**: internal 64-entry FIFO `RwLock` cache in `tools` shared by `ExpectMatch::Regex` (`answer_matches_mode`) and JSON Schema `"pattern"` validation, compiling outside the lock and eliminating per-round regex recompilation
+- **MCP `response_schema` parity**: `llmrace_race` and `llmrace_gate` now accept an optional **inline JSON Schema object** (`response_schema`, mutually exclusive with `json_output: true`, zero filesystem read surface, validated via `Sampling::checked()`)
+
+### Fixed
+
+- Hardened `tools::value_matches_schema` and `json_values_equal` with explicit recursion depth caps (`32` / `64`), schema node/value depth limits (`1024` nodes / `16` levels), and fail-closed handling on malformed unvalidated schemas
+- Bounded `--response-schema` CLI file loading (`<= 256 KiB` regular-file check preventing FIFO blocking and OOM) and enforced a 256 KiB serialized cap in `Sampling::checked()`
+- Made `apply_json_output` exhaustive on `Wire` so future wire protocols cannot silently drop structured output enforcement
+
 ## [1.41.0] - 2026-11-28
 
 Statistical tail-latency gates, per-request saturation TTFT visibility, reasoning-starvation diagnostics, and Bedrock server-duration reporting.
