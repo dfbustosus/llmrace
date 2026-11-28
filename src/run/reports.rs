@@ -114,33 +114,37 @@ pub(super) fn write_reports(
 
     if cfg.json || out_ext.as_deref() == Some("json") {
         let request = race_request_sha256(cfg);
-        let mut j = report::insert_sampling_json(
-            &report::json_report_cited(
-                summaries,
-                &cfg.prompt,
-                actual_runs,
-                cfg.bench.max_tokens,
-                cfg.region.as_deref(),
-                &report::SentPrompts {
-                    prompt: &cfg.bench.prompt,
-                    workload: &cfg.bench.workload,
-                    warmup: cfg.bench.warmup,
-                },
-                &request,
-            ),
-            &cfg.bench.sampling,
+        let variants = race_experiment_variants(cfg);
+        let variant_refs: Vec<(&str, &str)> = variants
+            .iter()
+            .map(|(name, prompt)| (name.as_str(), prompt.as_str()))
+            .collect();
+        let regression_verdict = regression.map(|r| {
+            r.verdict_json_with_policy(
+                cfg.max_regression,
+                cfg.require_significance,
+                cfg.fail_on_inconclusive,
+            )
+        });
+        let opts = report::JsonReportOptions {
+            region: cfg.region.as_deref(),
+            sent: Some(report::SentPrompts {
+                prompt: &cfg.bench.prompt,
+                workload: &cfg.bench.workload,
+                warmup: cfg.bench.warmup,
+            }),
+            request_sha256: Some(&request),
+            sampling: Some(&cfg.bench.sampling),
+            experiment: Some((&cfg.bench, &variant_refs)),
+            regression: regression_verdict.as_ref(),
+        };
+        let j = report::render_json_report(
+            summaries,
+            &cfg.prompt,
+            actual_runs,
+            cfg.bench.max_tokens,
+            &opts,
         );
-        j = report::insert_experiment_json(&j, &cfg.bench, &race_experiment_variants(cfg));
-        if let Some(regression) = regression {
-            j = report::insert_regression_json(
-                &j,
-                &regression.verdict_json_with_policy(
-                    cfg.max_regression,
-                    cfg.require_significance,
-                    cfg.fail_on_inconclusive,
-                ),
-            );
-        }
         let path = crate::report_sibling(&cfg.out, "json");
         write_atomic(Path::new(&path), j.as_bytes())?;
         cfg.status(format!("\u{1f4ca} json report saved to {path}"));
@@ -180,17 +184,14 @@ pub(super) fn write_reports(
         } else {
             Vec::new()
         };
-        let mut h = report::html_report_grouped(
+        let h = report::html_report_with_sampling(
             summaries,
             &cfg.prompt,
             actual_runs,
             cfg.bench.max_tokens,
             &groups,
+            Some(&cfg.bench.sampling),
         );
-        if let Some(inline) = report::sampling_inline(&cfg.bench.sampling) {
-            let escaped = llmrace::util::html_escape(&inline);
-            h = h.replacen("</code> ·", &format!("</code> · {escaped} ·"), 1);
-        }
         let path = crate::report_sibling(&cfg.out, "html");
         write_atomic(Path::new(&path), h.as_bytes())?;
         cfg.status(format!("\u{1f310} html report saved to {path}"));
@@ -242,11 +243,6 @@ fn race_experiment_variants(cfg: &RunConfig) -> Vec<(String, String)> {
         .collect()
 }
 
-#[cfg(feature = "sqlite")]
-fn sqlite_path() -> PathBuf {
-    llmrace::history::history_path().with_extension("sqlite3")
-}
-
 /// Persists history records using the selected storage backend (`jsonl` or `sqlite`)
 /// and returns the destination path.
 pub(crate) fn record_history_entries(
@@ -262,7 +258,7 @@ pub(crate) fn record_history_entries(
         }
         #[cfg(feature = "sqlite")]
         "sqlite" => {
-            let path = sqlite_path();
+            let path = llmrace::history::sqlite_history_path();
             let conn = llmrace::sqlite::open(&path).with_context(|| "opening sqlite history")?;
             llmrace::sqlite::save(&conn, records).with_context(|| "writing sqlite history")?;
             Ok(path)
@@ -279,8 +275,8 @@ pub(crate) fn load_history_entries(storage: &str) -> Result<Vec<llmrace::history
         "jsonl" => Ok(llmrace::history::load(&llmrace::history::history_path())),
         #[cfg(feature = "sqlite")]
         "sqlite" => {
-            let conn =
-                llmrace::sqlite::open(&sqlite_path()).with_context(|| "opening sqlite history")?;
+            let conn = llmrace::sqlite::open(&llmrace::history::sqlite_history_path())
+                .with_context(|| "opening sqlite history")?;
             Ok(llmrace::sqlite::load(&conn).with_context(|| "reading sqlite history")?)
         }
         #[cfg(not(feature = "sqlite"))]
