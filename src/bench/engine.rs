@@ -398,11 +398,9 @@ async fn run_round(
             total_ms: elapsed_ms,
             ttfb_ms: requests
                 .iter()
-                .filter_map(|r| {
-                    r.metrics()
-                        .map(|m| m.ttfb_ms + (r.elapsed_ms - m.total_ms).max(0.0))
-                })
-                .fold(f64::MAX, f64::min),
+                .filter_map(RequestOutcome::effective_ttfb_ms)
+                .reduce(f64::min)
+                .unwrap_or(0.0),
             tokens: all.iter().map(|m| m.tokens).sum(),
             chars: all.iter().map(|m| m.chars).sum(),
             prompt_tokens: all.iter().map(|m| m.prompt_tokens).sum(),
@@ -428,6 +426,14 @@ async fn run_round(
                 .iter()
                 .filter_map(|m| m.server_ms)
                 .fold(None::<f64>, |acc, v| Some(acc.map_or(v, |a: f64| a.max(v)))),
+            server_total_ms: {
+                let vals: Vec<f64> = all.iter().filter_map(|m| m.server_total_ms).collect();
+                if vals.is_empty() {
+                    None
+                } else {
+                    Some(crate::stats::Sample::from_values(vals).median())
+                }
+            },
             request_id: all.iter().filter_map(|m| m.request_id.clone()).next(),
             ratelimit_remaining: all
                 .iter()
@@ -604,6 +610,8 @@ async fn single_request(
     let mut cache_write_1h_tokens = 0u64;
     let mut reasoning_tokens: Option<u64> = None;
     let mut reasoning_billed_separately = false;
+    let mut saw_reasoning = false;
+    let mut server_total_ms: Option<f64> = None;
     let mut tool_args = String::new();
     let mut last_token_at: Option<Instant> = None;
     let mut itl_gaps_ms: Vec<f64> = Vec::new();
@@ -691,15 +699,35 @@ async fn single_request(
         if let Some(n) = event.cache_write_1h_tokens {
             cache_write_1h_tokens = n;
         }
+        if event.reasoning_seen {
+            saw_reasoning = true;
+        }
         if let Some(n) = event.reasoning_tokens {
             reasoning_tokens = Some(n);
             reasoning_billed_separately |= event.reasoning_billed_separately;
+            if n > 0 {
+                saw_reasoning = true;
+            }
+        }
+        if let Some(ms) = event
+            .server_total_ms
+            .filter(|v| v.is_finite() && (0.0..=86_400_000.0).contains(v))
+        {
+            server_total_ms = Some(ms);
         }
     }
 
     let total = start.elapsed();
-    let ttfb =
-        ttfb.ok_or_else(|| Error::Protocol(format!("{}: empty response stream", spec.id)))?;
+    let ttfb = ttfb.ok_or_else(|| {
+        if saw_reasoning {
+            Error::Protocol(format!(
+                "{}: reasoning budget exhausted before first visible token (increase --max-tokens={max_tokens})",
+                spec.id
+            ))
+        } else {
+            Error::Protocol(format!("{}: empty response stream", spec.id))
+        }
+    })?;
     // Visible streamed tokens: event count floored by a chars/4 estimate,
     // so coalesced multi-token deltas are not undercounted (#125).
     let visible_tokens = (tokens + arg_fragments).max((chars / 4).max(1));
@@ -731,6 +759,7 @@ async fn single_request(
         reasoning_billed_separately,
         tool_args,
         server_ms: server_timing.processing_ms,
+        server_total_ms,
         request_id: server_timing.request_id,
         ratelimit_remaining: server_timing.ratelimit_remaining,
         itl_gaps_ms,
