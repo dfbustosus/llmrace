@@ -47,6 +47,12 @@ pub struct RunMetrics {
     /// Provider-reported server-side processing time in milliseconds,
     /// from response headers (e.g. OpenAI's `openai-processing-ms`).
     pub server_ms: Option<f64>,
+    /// Provider-reported end-to-end server duration (prefill + generation) in
+    /// milliseconds, e.g., Bedrock `metadata.metrics.latencyMs`, kept separate
+    /// from pre-stream [`Self::server_ms`] so [`Self::effective_gen_ms`] and
+    /// network-overhead calculations stay accurate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_total_ms: Option<f64>,
     /// Provider request ID for correlation with provider dashboards.
     pub request_id: Option<String>,
     /// Remaining rate-limit requests after this call.
@@ -101,6 +107,17 @@ impl RequestOutcome {
     /// Extra attempts after the first.
     pub fn retries(&self) -> u64 {
         self.attempts.len().saturating_sub(1) as u64
+    }
+
+    /// Effective time-to-first-byte for this request in milliseconds, including
+    /// failed-attempt and retry-backoff time preceding the final successful
+    /// attempt. Returns `None` when the request failed or produced a non-finite
+    /// or negative duration.
+    #[must_use]
+    pub fn effective_ttfb_ms(&self) -> Option<f64> {
+        self.metrics()
+            .map(|m| m.ttfb_ms + (self.elapsed_ms - m.total_ms).max(0.0))
+            .filter(|v| v.is_finite() && *v >= 0.0)
     }
 }
 
