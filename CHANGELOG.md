@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-11-28
+
+Statistical tail-latency gates, per-request saturation TTFT visibility, reasoning-starvation diagnostics, and Bedrock server-duration reporting.
+
+### Added
+
+- **Conclusive `p95` regression gates**: `stats::bootstrap_percentile_p` (`MIN_BOOTSTRAP_SAMPLES = 20`, `MAX_BOOTSTRAP_SAMPLES = 10_000`) runs a deterministic fixed-seed SplitMix64 bootstrap (`B = 2000`, O(n) quickselect linear interpolation) wired into `regression` `p95 latency` comparisons with directional protection, so `--require-significance --fail-on-inconclusive` can evaluate tail-latency regressions conclusively at `n >= 20` while keeping smaller samples explicitly `inconclusive`
+- **Per-request saturation TTFT percentiles**: `RequestOutcome::effective_ttfb_ms()`, `LaneSummary::request_ttfb_p50_ms()`, and `LaneSummary::request_ttfb_p95_ms()` report true per-request TTFT distributions (including retry delays) under `--concurrency N` and `--ramp`, serialized as additive `request_ttfb_p50_ms` / `request_ttfb_p95_ms` fields in `race.json` and `docs/schema.json`, shown as a Markdown saturation footnote, and rendered as a dedicated `Request TTFT p95 (ms)` table across `--ramp` terminal, Markdown, JSON (`request_ttfb_p50_ms_by_concurrency` / `request_ttfb_p95_ms_by_concurrency`), and HTML outputs
+- **Bedrock end-to-end server duration**: `StreamEvent.server_total_ms` and `RunMetrics.server_total_ms` (additive minor public struct fields) capture bounded Bedrock `metadata.metrics.latencyMs` independently of `usage`, exposed via `LaneSummary::median_server_total_ms()` and `server_total_ms` in `race.json` / `docs/schema.json` without corrupting pre-stream `server_ms`, `effective_gen_ms()`, or `network_overhead_ms()`
+- **Reasoning-starvation diagnostics**: `StreamEvent.reasoning_seen` (additive minor public struct field) detects hidden reasoning/thinking activity across OpenAI Chat, OpenAI Responses, Anthropic, Gemini, Vertex, and Bedrock (coalesced per stream to prevent memory amplification and never starting the TTFT clock). Streams that exhaust their reasoning budget with zero visible tokens now fail with a clear, non-retryable `reasoning budget exhausted before first visible token (increase --max-tokens=...)` protocol error instead of `empty response stream`
+- Public helper `util::sanitize_control_chars` and `Wire::Vertex` coverage in `fuzz/fuzz_targets/decode_payload.rs`
+
+### Changed
+
+- `provider::stream::decode_payload` now returns `Some(StreamEvent { token: None, reasoning_seen: true, .. })` for reasoning/thought-only frames (including Gemini/Vertex `thought: true` parts) so downstream consumers can distinguish hidden reasoning from empty streams without starting TTFT
+
+### Fixed
+
+- Escaped sub-millisecond `fmt_ms` (`<1` → `&lt;1`) via `html_escape` in `report::html_report_grouped` and `ramp` HTML outputs and via `md_escape_cell` in Markdown saturation TTFT notes
+
 ## [1.40.0] - 2026-11-27
 
 Security hardening, wire-protocol fidelity, TUI/concurrency reliability, MCP/library parity, and release-pipeline hygiene.
