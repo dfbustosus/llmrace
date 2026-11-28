@@ -261,3 +261,48 @@ fn race_tool_supports_reproducible_probe_and_concurrency() {
         "reproducible sampling note should appear in report: {text}"
     );
 }
+
+#[test]
+fn race_tool_accepts_inline_response_schema_and_rejects_conflicts() {
+    let responses = talk(&[
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "llmrace_race", "arguments": {
+            "providers": ["mock"],
+            "runs": 1,
+            "warmup": 0,
+            "response_schema": {"type": "object", "required": ["city"]},
+        }}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "llmrace_race", "arguments": {
+            "providers": ["mock"],
+            "runs": 1,
+            "warmup": 0,
+            "response_schema": "/tmp/foo.json",
+        }}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "llmrace_race", "arguments": {
+            "providers": ["mock"],
+            "runs": 1,
+            "warmup": 0,
+            "json_output": true,
+            "response_schema": {"type": "object", "required": ["city"]},
+        }}}),
+    ]);
+    assert_eq!(responses.len(), 4);
+
+    let ok = &responses[1]["result"];
+    assert_eq!(ok["isError"], false, "{ok}");
+    let text = ok["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("# 🏁 llmrace report"), "{text}");
+    assert!(
+        text.contains("- **Sampling**: json schema"),
+        "sampling note should include json schema: {text}"
+    );
+
+    let non_object = &responses[2]["result"];
+    assert_eq!(non_object["isError"], true, "{non_object}");
+
+    let conflict = &responses[3]["result"];
+    assert_eq!(conflict["isError"], true, "{conflict}");
+}
