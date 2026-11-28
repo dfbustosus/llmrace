@@ -13,6 +13,7 @@ fuzz_target!(|data: &[u8]| {
             Wire::Anthropic,
             Wire::Gemini,
             Wire::Cohere,
+            Wire::Vertex,
         ] {
             let _ = decode_payload(text, wire);
         }
