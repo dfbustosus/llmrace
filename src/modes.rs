@@ -1,7 +1,8 @@
 //! Standalone informational modes: `--init`, `--doctor`, `--list`,
+//! `--models`, `--version-json`, `--alert-test`, `--recommend`,
 //! `--dashboard`, `--trend`, `--compare`, `--merge`, `--completions`,
-//! `--man`. Each handler declares only the inputs it needs, so mode
-//! logic stays decoupled from the full CLI surface.
+//! `--man`, `--suite`. Each handler declares only the inputs it needs,
+//! so mode logic stays decoupled from the full CLI surface.
 
 use anyhow::{Context, Result};
 
@@ -188,7 +189,7 @@ fn unix_now() -> u64 {
 }
 
 /// `llmrace --models [provider]`
-pub(crate) async fn models(providers: Vec<llmrace::provider::ProviderSpec>) -> Result<()> {
+async fn models(providers: Vec<llmrace::provider::ProviderSpec>) -> Result<()> {
     let client = llmrace::provider::benchmark_client(std::time::Duration::from_secs(10), 1)?;
     for spec in providers {
         match llmrace::provider::list_models(&client, &spec).await {
@@ -201,6 +202,123 @@ pub(crate) async fn models(providers: Vec<llmrace::provider::ProviderSpec>) -> R
             }
             Err(e) => println!("{}: {e}", spec.id),
         }
+    }
+    Ok(())
+}
+
+/// `llmrace --models [provider]` resolved from CLI endpoint/provider flags.
+pub(crate) async fn models_for_cli(
+    target: &str,
+    endpoint: Option<&str>,
+    provider_name: Option<&str>,
+    api_key_env: Option<&str>,
+    cli_models: &[String],
+) -> Result<()> {
+    use llmrace::provider::ProviderSpec;
+    // a custom endpoint takes precedence when named explicitly or
+    // when listing "everything available"
+    let custom_spec = match (endpoint, provider_name) {
+        (Some(endpoint), Some(name)) => {
+            let model = crate::run::resolve_model(cli_models, "custom", "default");
+            Some(ProviderSpec::custom(name, endpoint, api_key_env, &model))
+        }
+        _ => None,
+    };
+    let providers = if target == "*" {
+        let mut list: Vec<ProviderSpec> = ProviderSpec::registry()
+            .into_iter()
+            .filter(|p| *p.id != *"mock" && p.is_available() && !p.opt_in)
+            .collect();
+        list.extend(custom_spec);
+        list
+    } else if let Some(spec) = custom_spec.filter(|c| *c.id == *target) {
+        vec![spec]
+    } else {
+        vec![ProviderSpec::find(target)
+            .with_context(|| format!("unknown provider '{target}' (try --list)"))?]
+    };
+    if providers.is_empty() {
+        anyhow::bail!("no providers available; set an API key or name one explicitly");
+    }
+    models(providers).await
+}
+
+/// `llmrace --version-json`
+pub(crate) fn version_json() -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "llmrace",
+            "version": env!("CARGO_PKG_VERSION"),
+            "rustc": option_env!("LLMRACE_RUSTC").unwrap_or("unknown"),
+            "providers": llmrace::provider::ProviderSpec::registry().len(),
+            "sqlite_enabled": cfg!(feature = "sqlite"),
+        }))?
+    );
+    Ok(())
+}
+
+/// `llmrace --alert-test --alert-webhook <url>`
+pub(crate) async fn alert_test(webhook: Option<&str>, notify_desktop: bool) -> Result<()> {
+    let Some(url) = webhook else {
+        anyhow::bail!("--alert-test requires --alert-webhook <url>");
+    };
+    let redacted = llmrace::util::redact_url(url);
+    let test_alert = llmrace::watch::Alert {
+        round: 0,
+        provider: "test".into(),
+        metric: "alert-test",
+        baseline: 100.0,
+        current: 200.0,
+        delta_pct: 100.0,
+    };
+    let client = llmrace::provider::benchmark_client(std::time::Duration::from_secs(10), 1)?;
+    llmrace::notify::post_webhook(&client, url, &test_alert)
+        .await
+        .with_context(|| format!("sending test alert to {redacted}"))?;
+    println!("✓ test alert sent to {redacted} — check your Slack/Discord");
+    if notify_desktop {
+        llmrace::notify::desktop_notification(
+            "llmrace alert-test",
+            "If you can read this, desktop notifications work",
+        );
+    }
+    Ok(())
+}
+
+/// `llmrace --recommend [--json]`
+pub(crate) fn recommend(json: bool, storage: &str) -> Result<()> {
+    let records = crate::run::reports::load_history_entries(storage)?;
+    let profiles = llmrace::recommend::build_profiles(&records);
+    if json {
+        let payload: Vec<serde_json::Value> = profiles
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "provider": p.name,
+                    "model": p.current_model,
+                    "races": p.races,
+                    "median_latency_ms": p.median_latency_ms,
+                    "median_ttfb_ms": p.median_ttfb_ms,
+                    "median_tokens_per_sec": p.median_tokens_per_sec,
+                    "latency_cv": p.latency_cv,
+                    "cost_per_run_usd": p.cost_per_run_usd,
+                    "monthly_cost_usd": p.monthly_cost_usd,
+                    "value_for_money": p.value_for_money,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "tool": "llmrace",
+                "mode": "recommend",
+                "version": env!("CARGO_PKG_VERSION"),
+                "providers": payload,
+            }))?
+        );
+    } else {
+        print!("{}", llmrace::recommend::render_recommendation(&profiles));
     }
     Ok(())
 }
