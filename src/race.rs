@@ -492,23 +492,24 @@ impl RaceOutcome {
     /// The JSON report the CLI writes with `--json`.
     #[must_use]
     pub fn json(&self) -> String {
-        let json = crate::report::insert_sampling_json(
-            &crate::report::json_report_cited(
-                &self.summaries,
-                &self.bench.prompt,
-                self.actual_runs(),
-                self.bench.max_tokens,
-                self.region.as_deref(),
-                &crate::report::SentPrompts {
+        crate::report::render_json_report(
+            &self.summaries,
+            &self.bench.prompt,
+            self.actual_runs(),
+            self.bench.max_tokens,
+            &crate::report::JsonReportOptions {
+                region: self.region.as_deref(),
+                sent: Some(crate::report::SentPrompts {
                     prompt: &self.bench.prompt,
                     workload: &self.bench.workload,
                     warmup: self.bench.warmup,
-                },
-                &self.request_sha256,
-            ),
-            &self.bench.sampling,
-        );
-        crate::report::insert_experiment_json(&json, &self.bench, &[])
+                }),
+                request_sha256: Some(&self.request_sha256),
+                sampling: Some(&self.bench.sampling),
+                experiment: Some((&self.bench, &[])),
+                regression: None,
+            },
+        )
     }
 
     /// Compares this race against a baseline report.
