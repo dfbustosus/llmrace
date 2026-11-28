@@ -260,6 +260,13 @@ fn shared_race_properties() -> serde_json::Map<String, Value> {
         "json_output".into(),
         json!({"type": "boolean", "description": "Require JSON object output where supported"}),
     );
+    props.insert(
+        "response_schema".into(),
+        json!({
+            "type": "object",
+            "description": "Inline JSON Schema object to enforce structured output (mutually exclusive with json_output: true)"
+        }),
+    );
     props
 }
 
@@ -394,6 +401,16 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
         .ok_or_else(|| format!("'{key}' must be a string"))
 }
 
+fn opt_object(args: &Value, key: &str) -> Result<Option<Value>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(None);
+    };
+    if !value.is_object() {
+        return Err(format!("'{key}' must be a JSON object"));
+    }
+    Ok(Some(value.clone()))
+}
+
 async fn read_regular_file_bounded(path: &str, label: &'static str) -> Result<String, String> {
     read_regular_file_with_limit(path, label, MAX_FILE_BYTES).await
 }
@@ -493,6 +510,10 @@ async fn build_race(args: &Value) -> Result<Race, String> {
     let system = opt_str(args, "system")?.map(str::to_string);
     let tools = opt_bool(args, "tools")?;
     let json_output = opt_bool(args, "json_output")?;
+    let response_schema = opt_object(args, "response_schema")?;
+    if json_output == Some(true) && response_schema.is_some() {
+        return Err("'json_output' and 'response_schema' cannot both be set".into());
+    }
     let winner = opt_bool(args, "winner")?;
 
     let mut race = Race::new(specs).prompt(DEFAULT_PROMPT);
@@ -529,12 +550,17 @@ async fn build_race(args: &Value) -> Result<Race, String> {
     if let Some(timeout_secs) = timeout_secs {
         race = race.timeout(timeout_secs);
     }
-    if system.is_some() || json_output == Some(true) {
+    if system.is_some() || json_output == Some(true) || response_schema.is_some() {
+        let json_output = match response_schema {
+            Some(schema) => Some(JsonOutput::Schema(schema)),
+            None => (json_output == Some(true)).then_some(JsonOutput::Object),
+        };
         let sampling = Sampling {
             system,
-            json_output: (json_output == Some(true)).then_some(JsonOutput::Object),
+            json_output,
             ..Sampling::default()
-        };
+        }
+        .checked()?;
         race = race.sampling(sampling);
     }
     if reproducible == Some(true) {
@@ -788,5 +814,105 @@ mod tests {
         let too_many: Vec<Value> = (0..=MAX_PROVIDERS).map(|_| json!("mock")).collect();
         let err = resolve_providers(&json!({"providers": too_many})).unwrap_err();
         assert!(err.contains("exceeds maximum"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn build_race_response_schema_stamps_schema_and_enforces_constraints() {
+        let schema = json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": false
+        });
+
+        // response_schema alone stamps report["sampling"]["json_output"] == "schema"
+        let race = build_race(&json!({
+            "providers": ["mock"],
+            "runs": 1,
+            "warmup": 0,
+            "response_schema": schema
+        }))
+        .await
+        .unwrap();
+        let outcome = race.run().await.unwrap();
+        let report: Value = serde_json::from_str(&outcome.json()).unwrap();
+        assert_eq!(report["sampling"]["json_output"], "schema");
+
+        // json_output: false + response_schema is accepted cleanly
+        let race_false = build_race(&json!({
+            "providers": ["mock"],
+            "runs": 1,
+            "warmup": 0,
+            "json_output": false,
+            "response_schema": schema
+        }))
+        .await
+        .unwrap();
+        let outcome_false = race_false.run().await.unwrap();
+        let report_false: Value = serde_json::from_str(&outcome_false.json()).unwrap();
+        assert_eq!(report_false["sampling"]["json_output"], "schema");
+
+        // json_output: true + response_schema is rejected
+        let both_err = build_race(&json!({
+            "providers": ["mock"],
+            "json_output": true,
+            "response_schema": schema
+        }))
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            both_err.contains("json_output") && both_err.contains("response_schema"),
+            "{both_err}"
+        );
+
+        // Non-object response_schema (filesystem path string or array) is rejected
+        for invalid in [
+            json!("/etc/passwd"),
+            json!(["not", "an", "object"]),
+            json!(null),
+        ] {
+            let err = build_race(&json!({
+                "providers": ["mock"],
+                "response_schema": invalid
+            }))
+            .await
+            .err()
+            .unwrap();
+            assert!(err.contains("must be a JSON object"), "{err}");
+        }
+
+        // Oversized (> 256 KiB) inline response_schema is rejected via Sampling::checked()
+        let huge = json!({
+            "type": "object",
+            "description": "x".repeat(256 * 1024 + 64)
+        });
+        let oversized_err = build_race(&json!({
+            "providers": ["mock"],
+            "response_schema": huge
+        }))
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            oversized_err.contains("256")
+                || oversized_err.contains("262144")
+                || oversized_err.to_ascii_lowercase().contains("schema"),
+            "{oversized_err}"
+        );
+
+        // Tool schemas expose response_schema as an inline JSON object
+        let list = tools_list();
+        let tools = list["tools"].as_array().unwrap();
+        for tool_name in ["llmrace_race", "llmrace_gate"] {
+            let tool = tools
+                .iter()
+                .find(|t| t["name"] == tool_name)
+                .expect("tool listed");
+            assert_eq!(
+                tool["inputSchema"]["properties"]["response_schema"]["type"],
+                "object"
+            );
+        }
     }
 }
