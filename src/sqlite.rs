@@ -7,6 +7,7 @@
 use crate::history::HistoryRecord;
 use rusqlite::Connection;
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::Duration;
 
 /// Opens (creating if needed) the history database and ensures the schema.
@@ -156,11 +157,36 @@ pub fn load(conn: &Connection) -> rusqlite::Result<Vec<HistoryRecord>> {
     rows.collect()
 }
 
+/// Counts records in the `runs` table without creating, migrating, or modifying
+/// the database file.
+pub fn count_records(path: &Path) -> rusqlite::Result<usize> {
+    let flags =
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags)?;
+    conn.busy_timeout(Duration::from_secs(2))?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))?;
+    Ok(usize::try_from(count.max(0)).unwrap_or(usize::MAX))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "llmrace-sqlite-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     fn sample_record(ts: u64, provider: &str) -> HistoryRecord {
         HistoryRecord {
@@ -228,6 +254,63 @@ mod tests {
         assert_eq!(loaded[2].provider, "a");
 
         drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn count_records_fails_on_absent_file_without_creating_it() {
+        let dir = unique_temp_dir("absent");
+        let missing = dir.join("nested").join("history.sqlite3");
+        assert!(count_records(&missing).is_err());
+        assert!(!missing.exists());
+        assert!(!dir.join("nested").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn count_records_reads_readonly_database() {
+        let dir = unique_temp_dir("readonly");
+        let db_path = dir.join("history.sqlite3");
+        {
+            let conn = open(&db_path).unwrap();
+            save(&conn, &[sample_record(1, "a"), sample_record(2, "b")]).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&db_path).unwrap().permissions();
+            perms.set_mode(0o444);
+            std::fs::set_permissions(&db_path, perms).unwrap();
+        }
+
+        assert_eq!(count_records(&db_path).unwrap(), 2);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&db_path).unwrap().permissions();
+            perms.set_mode(0o644);
+            std::fs::set_permissions(&db_path, perms).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn count_records_fails_on_corrupt_and_empty_databases() {
+        let dir = unique_temp_dir("corrupt");
+
+        let corrupt = dir.join("corrupt.sqlite3");
+        std::fs::write(&corrupt, b"not a valid sqlite file").unwrap();
+        assert!(count_records(&corrupt).is_err());
+
+        let empty = dir.join("empty.sqlite3");
+        {
+            let conn = Connection::open(&empty).unwrap();
+            conn.execute_batch("CREATE TABLE other (id INTEGER);")
+                .unwrap();
+        }
+        assert!(count_records(&empty).is_err());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
