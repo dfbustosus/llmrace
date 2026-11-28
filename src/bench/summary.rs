@@ -180,6 +180,38 @@ impl LaneSummary {
         })
     }
 
+    fn request_ttfb_sample(&self) -> Option<Sample> {
+        let mut values = Vec::new();
+        for r in &self.runs {
+            if !r.requests.is_empty() {
+                values.extend(r.requests.iter().filter_map(|q| q.effective_ttfb_ms()));
+            } else if r.ttfb_ms.is_finite() && r.ttfb_ms >= 0.0 {
+                values.push(r.ttfb_ms);
+            }
+        }
+        (!values.is_empty()).then(|| Sample::from_values(values))
+    }
+
+    /// p50 per-request effective time-to-first-byte across successful requests
+    /// in measured rounds; `None` when no valid observations exist.
+    ///
+    /// Under `--concurrency N` (`N > 1`), this captures the per-request median
+    /// (including queueing and retry delays) rather than the round minimum.
+    #[must_use]
+    pub fn request_ttfb_p50_ms(&self) -> Option<f64> {
+        self.request_ttfb_sample().map(|s| s.percentile(50.0))
+    }
+
+    /// p95 per-request effective time-to-first-byte across successful requests
+    /// in measured rounds; `None` when no valid observations exist.
+    ///
+    /// Under `--concurrency N` (`N > 1`), this surfaces queueing tails that the
+    /// round-minimum [`Self::ttfb_p95_ms`] hides.
+    #[must_use]
+    pub fn request_ttfb_p95_ms(&self) -> Option<f64> {
+        self.request_ttfb_sample().map(|s| s.percentile(95.0))
+    }
+
     /// Mean time-to-first-byte.
     #[must_use]
     pub fn mean_ttfb_ms(&self) -> f64 {
@@ -402,6 +434,23 @@ impl LaneSummary {
     #[must_use]
     pub fn median_server_ms(&self) -> Option<f64> {
         let values: Vec<f64> = self.runs.iter().filter_map(|r| r.server_ms).collect();
+        if values.is_empty() {
+            return None;
+        }
+        Some(Sample::from_values(values).median())
+    }
+
+    /// Median of provider-reported end-to-end server duration in milliseconds
+    /// (e.g., Bedrock `metadata.metrics.latencyMs`); `None` when no round
+    /// reported one.
+    #[must_use]
+    pub fn median_server_total_ms(&self) -> Option<f64> {
+        let values: Vec<f64> = self
+            .runs
+            .iter()
+            .filter_map(|r| r.server_total_ms)
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .collect();
         if values.is_empty() {
             return None;
         }
@@ -954,5 +1003,109 @@ mod tests {
             ..single.clone()
         };
         assert!((quad.priced_usage().prompt - single.priced_usage().prompt * 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn request_ttfb_percentiles_expose_concurrency_queueing_tail_and_retries() {
+        let make_req = |ttfb_ms: f64, total_ms: f64, elapsed_ms: f64| RequestOutcome {
+            elapsed_ms,
+            attempts: vec![RequestAttempt::Success(RunMetrics {
+                total_ms,
+                ttfb_ms,
+                tokens: 10,
+                ..RunMetrics::default()
+            })],
+        };
+        // Round has 4 concurrent requests: fast (50ms), mid (80ms, 120ms), and queued/retried tail
+        // (attempt total 200ms, ttfb 40ms, total elapsed including retry 600ms -> effective ttfb 440ms).
+        let summary = LaneSummary {
+            name: "p".into(),
+            model: "m".into(),
+            concurrency: 4,
+            runs: vec![RunMetrics {
+                requests: vec![
+                    make_req(50.0, 200.0, 200.0),
+                    make_req(80.0, 220.0, 220.0),
+                    make_req(120.0, 260.0, 260.0),
+                    make_req(40.0, 200.0, 600.0), // effective_ttfb = 40 + (600 - 200) = 440
+                ],
+                total_ms: 600.0,
+                ttfb_ms: 50.0, // round minimum
+                tokens: 40,
+                ..RunMetrics::default()
+            }],
+            ..LaneSummary::default()
+        };
+        assert_eq!(summary.ttfb_p95_ms(), Some(50.0));
+        // Sorted effective TTFBs: [50.0, 80.0, 120.0, 440.0]
+        // p50 = 100.0; p95: idx = 0.95 * 3 = 2.85 -> 120 + 0.85 * 320 = 392.0
+        let p50 = summary.request_ttfb_p50_ms().expect("p50");
+        let p95 = summary.request_ttfb_p95_ms().expect("p95");
+        assert!((p50 - 100.0).abs() < 1e-9, "got {p50}");
+        assert!((p95 - 392.0).abs() < 1e-9, "got {p95}");
+        assert!(p95 > summary.ttfb_p95_ms().expect("round p95"));
+    }
+
+    #[test]
+    fn request_ttfb_falls_back_to_round_ttfb_when_requests_empty() {
+        let summary = LaneSummary {
+            name: "p".into(),
+            model: "m".into(),
+            concurrency: 1,
+            runs: vec![
+                RunMetrics {
+                    ttfb_ms: 20.0,
+                    ..RunMetrics::default()
+                },
+                RunMetrics {
+                    ttfb_ms: 40.0,
+                    ..RunMetrics::default()
+                },
+                RunMetrics {
+                    ttfb_ms: f64::NAN,
+                    ..RunMetrics::default()
+                },
+            ],
+            ..LaneSummary::default()
+        };
+        assert_eq!(summary.request_ttfb_p50_ms(), Some(30.0));
+        let p95 = summary.request_ttfb_p95_ms().expect("p95");
+        assert!((p95 - 39.0).abs() < 1e-9, "got {p95}");
+
+        let empty = LaneSummary::default();
+        assert_eq!(empty.request_ttfb_p50_ms(), None);
+        assert_eq!(empty.request_ttfb_p95_ms(), None);
+    }
+
+    #[test]
+    fn median_server_total_ms_aggregates_present_values_only() {
+        let none = LaneSummary {
+            runs: vec![RunMetrics::default()],
+            ..LaneSummary::default()
+        };
+        assert_eq!(none.median_server_total_ms(), None);
+
+        let present = LaneSummary {
+            runs: vec![
+                RunMetrics {
+                    server_total_ms: Some(300.0),
+                    ..RunMetrics::default()
+                },
+                RunMetrics {
+                    server_total_ms: None,
+                    ..RunMetrics::default()
+                },
+                RunMetrics {
+                    server_total_ms: Some(500.0),
+                    ..RunMetrics::default()
+                },
+                RunMetrics {
+                    server_total_ms: Some(400.0),
+                    ..RunMetrics::default()
+                },
+            ],
+            ..LaneSummary::default()
+        };
+        assert_eq!(present.median_server_total_ms(), Some(400.0));
     }
 }
