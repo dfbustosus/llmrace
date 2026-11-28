@@ -355,6 +355,112 @@ fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
     h
 }
 
+/// Minimum sample size per side required for [`bootstrap_percentile_p`].
+pub const MIN_BOOTSTRAP_SAMPLES: usize = 20;
+
+/// Maximum sample size per side accepted by [`bootstrap_percentile_p`].
+pub const MAX_BOOTSTRAP_SAMPLES: usize = 10_000;
+
+/// Exact linear-interpolated percentile in `O(n)` average time on a mutable
+/// scratch slice via quickselect (`select_nth_unstable_by`).
+fn quickselect_percentile(buf: &mut [f64], p: f64) -> f64 {
+    let n = buf.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return buf[0];
+    }
+    let idx = (p / 100.0) * (n - 1) as f64;
+    let lo = (idx.floor() as usize).min(n - 1);
+    let hi = (idx.ceil() as usize).min(n - 1);
+    let (_, lo_ref, right) = buf.select_nth_unstable_by(lo, f64::total_cmp);
+    let lo_val = *lo_ref;
+    if hi > lo {
+        let hi_val = right
+            .iter()
+            .copied()
+            .min_by(f64::total_cmp)
+            .unwrap_or(lo_val);
+        let frac = idx - lo as f64;
+        (1.0 - frac) * lo_val + frac * hi_val
+    } else {
+        lo_val
+    }
+}
+
+/// Deterministic SplitMix64 PRNG step.
+fn splitmix64_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Deterministic two-sided percentile bootstrap p-value comparing the `p`-th
+/// percentile of `sample_a` and `sample_b`.
+///
+/// Uses a fixed-seed SplitMix64 generator (`B = 2000` replicates) so results
+/// are reproducible across runs and architectures. Returns `None` when either
+/// sample is outside `MIN_BOOTSTRAP_SAMPLES..=MAX_BOOTSTRAP_SAMPLES`, when `p`
+/// is outside `0.0..=100.0` (or non-finite), or when any observation is
+/// non-finite. Returns `Some(1.0)` when the observed percentiles are equal.
+#[must_use]
+pub fn bootstrap_percentile_p(sample_a: &[f64], sample_b: &[f64], p: f64) -> Option<f64> {
+    if sample_a.len() < MIN_BOOTSTRAP_SAMPLES
+        || sample_b.len() < MIN_BOOTSTRAP_SAMPLES
+        || sample_a.len() > MAX_BOOTSTRAP_SAMPLES
+        || sample_b.len() > MAX_BOOTSTRAP_SAMPLES
+        || !p.is_finite()
+        || !(0.0..=100.0).contains(&p)
+        || sample_a.iter().any(|v| !v.is_finite())
+        || sample_b.iter().any(|v| !v.is_finite())
+    {
+        return None;
+    }
+
+    let mut buf_a = sample_a.to_vec();
+    let mut buf_b = sample_b.to_vec();
+    let obs_a = quickselect_percentile(&mut buf_a, p);
+    let obs_b = quickselect_percentile(&mut buf_b, p);
+    if obs_a == obs_b {
+        return Some(1.0);
+    }
+
+    const B: usize = 2_000;
+    let na = sample_a.len() as u64;
+    let nb = sample_b.len() as u64;
+    let mut state: u64 = 0x517C_C1B7_2722_0A95;
+    let mut le_zero: usize = 0;
+    let mut ge_zero: usize = 0;
+
+    for _ in 0..B {
+        for slot in &mut buf_a {
+            let idx = (splitmix64_next(&mut state) % na) as usize;
+            if let Some(&v) = sample_a.get(idx) {
+                *slot = v;
+            }
+        }
+        for slot in &mut buf_b {
+            let idx = (splitmix64_next(&mut state) % nb) as usize;
+            if let Some(&v) = sample_b.get(idx) {
+                *slot = v;
+            }
+        }
+        let pa = quickselect_percentile(&mut buf_a, p);
+        let pb = quickselect_percentile(&mut buf_b, p);
+        if pb <= pa {
+            le_zero += 1;
+        }
+        if pb >= pa {
+            ge_zero += 1;
+        }
+    }
+
+    Some(((2.0 * (le_zero.min(ge_zero) as f64 + 1.0)) / (B as f64 + 1.0)).min(1.0))
+}
+
 /// Lanczos approximation of `ln Γ(x)`.
 #[allow(clippy::excessive_precision)] // the g coefficients are canonical
 fn ln_gamma(x: f64) -> f64 {
@@ -416,5 +522,105 @@ mod tests {
         assert_eq!(t_two_sided_p(2.0, f64::INFINITY), 1.0);
         assert_eq!(t_two_sided_p(2.0, 0.0), 1.0);
         assert_eq!(t_two_sided_p(2.0, -3.0), 1.0);
+    }
+
+    #[test]
+    fn quickselect_percentile_matches_sample_percentile_exactly() {
+        let cases: &[&[f64]] = &[
+            &[42.0],
+            &[10.0, 20.0],
+            &[100.0, 10.0, 40.0, 20.0, 30.0],
+            &[
+                95.5, 12.1, 45.0, 88.8, 12.1, 3.0, 77.7, 61.2, 19.4, 50.0, 101.0, 2.5, 33.3, 66.6,
+                44.4, 55.5, 22.2, 77.7, 11.1, 99.9,
+            ],
+            &[
+                5.0, 1.0, 9.0, 3.0, 7.0, 2.0, 8.0, 4.0, 6.0, 10.0, 15.0, 11.0, 19.0, 13.0, 17.0,
+                12.0, 18.0, 14.0, 16.0, 20.0, 21.0,
+            ],
+        ];
+        for &data in cases {
+            let sample = Sample::from_values(data.to_vec());
+            for p in [0.0, 50.0, 95.0, 99.0, 100.0] {
+                let mut scratch = data.to_vec();
+                let got = quickselect_percentile(&mut scratch, p);
+                let expected = sample.percentile(p);
+                assert!(
+                    (got - expected).abs() < 1e-12,
+                    "p={p}, len={}: got {got}, expected {expected}",
+                    data.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bootstrap_percentile_p_detects_shift_and_is_deterministic() {
+        let a: Vec<f64> = (0..MIN_BOOTSTRAP_SAMPLES)
+            .map(|i| 100.0 + (i as f64) * 0.5)
+            .collect();
+        let b: Vec<f64> = (0..MIN_BOOTSTRAP_SAMPLES)
+            .map(|i| 200.0 + (i as f64) * 0.5)
+            .collect();
+        let p1 = bootstrap_percentile_p(&a, &b, 95.0).expect("valid bootstrap p");
+        let p2 = bootstrap_percentile_p(&a, &b, 95.0).expect("deterministic bootstrap p");
+        assert_eq!(p1, p2);
+        assert!(
+            p1 < 0.05,
+            "expected p < 0.05 on clearly shifted samples, got {p1}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_percentile_p_is_non_significant_on_overlapping_samples() {
+        let a: Vec<f64> = (0..MIN_BOOTSTRAP_SAMPLES)
+            .map(|i| 100.0 + (i as f64) * 2.0)
+            .collect();
+        let b: Vec<f64> = (0..MIN_BOOTSTRAP_SAMPLES)
+            .map(|i| 101.0 + (i as f64) * 2.0)
+            .collect();
+        let p = bootstrap_percentile_p(&a, &b, 95.0).expect("valid bootstrap p");
+        assert!(
+            p > 0.05,
+            "expected p > 0.05 on overlapping samples, got {p}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_percentile_p_returns_one_on_identical_constant_samples() {
+        let a = vec![50.0; MIN_BOOTSTRAP_SAMPLES];
+        let b = vec![50.0; MIN_BOOTSTRAP_SAMPLES];
+        assert_eq!(bootstrap_percentile_p(&a, &b, 95.0), Some(1.0));
+    }
+
+    #[test]
+    fn bootstrap_percentile_p_validates_bounds_and_non_finite_inputs() {
+        let valid = vec![10.0; MIN_BOOTSTRAP_SAMPLES];
+        let short = vec![10.0; MIN_BOOTSTRAP_SAMPLES - 1];
+        assert!(bootstrap_percentile_p(&short, &valid, 95.0).is_none());
+        assert!(bootstrap_percentile_p(&valid, &short, 95.0).is_none());
+
+        let too_large = vec![10.0; MAX_BOOTSTRAP_SAMPLES + 1];
+        let started = std::time::Instant::now();
+        assert!(bootstrap_percentile_p(&too_large, &valid, 95.0).is_none());
+        assert!(bootstrap_percentile_p(&valid, &too_large, 95.0).is_none());
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(10),
+            "rejection of oversized samples must be upfront and fast"
+        );
+
+        assert!(bootstrap_percentile_p(&valid, &valid, f64::NAN).is_none());
+        assert!(bootstrap_percentile_p(&valid, &valid, -1.0).is_none());
+        assert!(bootstrap_percentile_p(&valid, &valid, 101.0).is_none());
+
+        let mut with_nan = valid.clone();
+        with_nan[5] = f64::NAN;
+        assert!(bootstrap_percentile_p(&with_nan, &valid, 95.0).is_none());
+        assert!(bootstrap_percentile_p(&valid, &with_nan, 95.0).is_none());
+
+        let mut with_inf = valid.clone();
+        with_inf[3] = f64::INFINITY;
+        assert!(bootstrap_percentile_p(&with_inf, &valid, 95.0).is_none());
+        assert!(bootstrap_percentile_p(&valid, &with_inf, 95.0).is_none());
     }
 }
