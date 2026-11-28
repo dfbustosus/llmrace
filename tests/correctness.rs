@@ -191,3 +191,80 @@ fn recommendation_uses_compatible_history_and_thirty_days_of_cost() {
     assert_eq!(profiles[0].median_latency_ms, 100.0);
     assert_eq!(profiles[0].monthly_cost_usd, Some(30.0));
 }
+
+#[test]
+fn p95_tail_regression_is_conclusive_with_twenty_samples() {
+    let report_for = |latencies: &[f64]| {
+        let summary = LaneSummary {
+            name: "a".into(),
+            model: "m".into(),
+            concurrency: 1,
+            runs: latencies
+                .iter()
+                .map(|&total_ms| RunMetrics {
+                    total_ms,
+                    ttfb_ms: 10.0,
+                    tokens: 20,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let raw =
+            llmrace::report::json_report(std::slice::from_ref(&summary), "p", latencies.len(), 256);
+        BaselineReport::from_json_str(&raw).unwrap()
+    };
+
+    let base_latencies: Vec<f64> = (0..20).map(|i| 100.0 + (i % 5) as f64).collect();
+    let regressed_latencies: Vec<f64> = (0..20).map(|i| 200.0 + (i % 5) as f64).collect();
+    let matching_latencies: Vec<f64> = (0..20).map(|i| 100.5 + (i % 5) as f64).collect();
+
+    let baseline = report_for(&base_latencies);
+    let regressed = report_for(&regressed_latencies);
+    let comparison = compare_baselines(&regressed, &baseline, 15.0);
+
+    let p95 = comparison.comparisons[0]
+        .metrics
+        .iter()
+        .find(|m| m.label == "p95 latency")
+        .expect("p95 latency metric");
+    assert!(
+        p95.p_value.is_some_and(|p| p < 0.05),
+        "expected significant bootstrap p-value for n=20, got {:?}",
+        p95.p_value
+    );
+    assert_eq!(comparison.status(true), "fail");
+    assert!(comparison.gate_failed_with_policy(true, true));
+
+    let matching = report_for(&matching_latencies);
+    let steady = compare_baselines(&matching, &baseline, 15.0);
+    assert_eq!(steady.status(true), "pass");
+    assert!(!steady.gate_failed_with_policy(true, true));
+}
+
+#[tokio::test]
+async fn concurrent_race_reports_per_request_ttfb_percentiles() {
+    use llmrace::provider::ProviderSpec;
+    use llmrace::race::Race;
+
+    let outcome = Race::new([ProviderSpec::mock()])
+        .runs(2)
+        .warmup(0)
+        .concurrency(3)
+        .run()
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&outcome.json()).unwrap();
+    let provider = &value["providers"][0];
+    let p50 = provider["request_ttfb_p50_ms"]
+        .as_f64()
+        .expect("numeric request_ttfb_p50_ms");
+    let p95 = provider["request_ttfb_p95_ms"]
+        .as_f64()
+        .expect("numeric request_ttfb_p95_ms");
+    assert!(p50 >= 0.0, "expected request_ttfb_p50_ms >= 0.0, got {p50}");
+    assert!(
+        p95 >= p50,
+        "expected request_ttfb_p95_ms ({p95}) >= request_ttfb_p50_ms ({p50})"
+    );
+}
