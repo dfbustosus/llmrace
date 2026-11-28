@@ -224,7 +224,7 @@ fn a_conversation_a_schema_and_a_tool_parse_and_change_the_hash() {
     );
     assert!(parse(r#"{"id":"a","messages":[{"role":"assistant","content":"hi"}]}"#).is_err());
     assert!(parse(
-        r#"{"id":"a","prompt":"q","expect":"{\"type\":\"object\",\"pattern\":\"a\"}","match":"json_schema"}"#
+        r#"{"id":"a","prompt":"q","expect":"{\"type\":\"object\",\"oneOf\":[{\"type\":\"object\"}]}","match":"json_schema"}"#
     )
     .is_err());
     let tool = parse(
@@ -310,4 +310,70 @@ async fn contains_and_regex_score_the_mock_answer() {
         Some(true)
     );
     assert_eq!(once("nope", ExpectMatch::Regex).await, Some(false));
+}
+
+#[test]
+fn json_schema_supports_union_types_const_pattern_and_array_bounds() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["code", "version", "note", "tags"],
+        "additionalProperties": false,
+        "properties": {
+            "code": {"type": "string", "pattern": "^[A-Z]{2}-[0-9]+$"},
+            "version": {"const": 42},
+            "note": {"type": ["string", "null"]},
+            "tags": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3},
+        },
+    });
+    let line = serde_json::json!({
+        "id": "structured",
+        "prompt": "Return structured JSON.",
+        "expect": schema.to_string(),
+        "match": "json_schema",
+    })
+    .to_string();
+    let prompts = parse(&line).unwrap();
+    let expect = prompts[0].expect.as_deref().unwrap();
+
+    assert!(llmrace::tools::answer_matches_mode(
+        r#"{"code":"AB-123","version":42,"note":"ok","tags":["a"]}"#,
+        expect,
+        ExpectMatch::JsonSchema,
+    ));
+    assert!(llmrace::tools::answer_matches_mode(
+        r#"{"code":"XY-0","version":42.0,"note":null,"tags":["a","b","c"]}"#,
+        expect,
+        ExpectMatch::JsonSchema,
+    ));
+    for invalid in [
+        r#"{"code":"ab-123","version":42,"note":"ok","tags":["a"]}"#,
+        r#"{"code":"AB-123","version":43,"note":"ok","tags":["a"]}"#,
+        r#"{"code":"AB-123","version":"42","note":"ok","tags":["a"]}"#,
+        r#"{"code":"AB-123","version":42,"note":123,"tags":["a"]}"#,
+        r#"{"code":"AB-123","version":42,"note":null,"tags":[]}"#,
+        r#"{"code":"AB-123","version":42,"note":null,"tags":["a","b","c","d"]}"#,
+    ] {
+        assert!(
+            !llmrace::tools::answer_matches_mode(invalid, expect, ExpectMatch::JsonSchema),
+            "expected invalid answer to fail schema: {invalid}"
+        );
+    }
+
+    for bad_schema in [
+        serde_json::json!({"type": "string", "pattern": "[unclosed"}),
+        serde_json::json!({"type": []}),
+        serde_json::json!({"type": "array", "minItems": 3, "maxItems": 1}),
+    ] {
+        let bad_line = serde_json::json!({
+            "id": "bad",
+            "prompt": "q",
+            "expect": bad_schema.to_string(),
+            "match": "json_schema",
+        })
+        .to_string();
+        assert!(
+            parse(&bad_line).is_err(),
+            "expected workload::parse to reject schema {bad_schema}"
+        );
+    }
 }
