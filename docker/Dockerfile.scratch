@@ -1,14 +1,14 @@
 # Truly static llmrace: a 100% musl binary on FROM scratch (~6 MB total).
 #
 # Build (CI does this on release tags; locally pass the version):
-#   docker build --build-arg VERSION=1.42.0 --build-arg TARGET=x86_64-unknown-linux-musl \
+#   docker build --build-arg VERSION=1.43.0 --build-arg TARGET=x86_64-unknown-linux-musl \
 #     -f docker/Dockerfile.scratch -t llmrace-scratch .
 #
 # Run:
 #   docker run --rm -e OPENAI_API_KEY ghcr.io/dfbustosus/llmrace:scratch openai -n 5
 
 FROM alpine:3.20 AS unpack
-ARG VERSION=1.42.0
+ARG VERSION=1.43.0
 ARG TARGET=x86_64-unknown-linux-musl
 WORKDIR /tmp
 RUN apk add --no-cache curl ca-certificates \
