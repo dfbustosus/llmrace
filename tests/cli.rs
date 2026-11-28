@@ -1,3 +1,5 @@
+#![cfg(feature = "cli")]
+
 use llmrace::provider::split_model_override;
 use std::path::PathBuf;
 use std::process::Command;
